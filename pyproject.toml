@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "flame-sheep"
+version = "0.1.0"
+description = "Audio-reactive flame fractal wallpaper — Electric Sheep reimagined"
+license = { text = "GPL-2.0-or-later" }
+requires-python = ">=3.12"
+dependencies = [
+    "moderngl>=5.12.0",
+    "moderngl-window>=3.1.1",
+    "numpy>=2.0",
+    "scipy>=1.16",
+    "sounddevice>=0.5.1",
+]
+
+[project.scripts]
+flame-sheep = "flame_sheep.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
