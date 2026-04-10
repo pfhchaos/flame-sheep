@@ -87,6 +87,8 @@ class FlameSheepApp(mglw.WindowConfig):
             self.current_genome = self.target_genome
             self.morph_t        = 0.0
             self._swap_next_genome()
+            dist = self.current_genome.distance(self.target_genome)
+            print(f'[morph complete]  dist={dist:.3f}')
 
         self.renderer.upload_genome(display_genome)
 
@@ -107,6 +109,8 @@ class FlameSheepApp(mglw.WindowConfig):
                 self._swap_next_genome()
                 self.morph_t     = 0.0
                 self.morph_speed = self.DRIFT_MORPH_SPEED
+                dist = self.current_genome.distance(self.target_genome)
+                print(f'[drift] rms={rms:.5f}  dist={dist:.3f}')
         else:
             self._quiet_frames = 0
 
