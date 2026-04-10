@@ -7,6 +7,7 @@ Eventually: replace window with wlr-layer-shell for true wallpaper mode.
 
 import argparse
 import sys
+import time
 import threading
 import numpy as np
 import moderngl_window as mglw
@@ -59,6 +60,9 @@ class FlameSheepApp(mglw.WindowConfig):
 
         # Upload initial state
         self.renderer.upload_genome(self.current_genome)
+
+        # Per-band timestamp of last beat, for inter-beat interval logging
+        self._last_beat_time: dict[str, float] = {'kick': 0.0, 'snare': 0.0, 'hihat': 0.0}
 
         print('flame-sheep started. Press Q to quit.')
 
@@ -127,26 +131,29 @@ class FlameSheepApp(mglw.WindowConfig):
         self._prefetch_genome()
 
     def _handle_beats(self, events: list[BeatEvent]):
+        now = time.perf_counter()
         for event in events:
+            since = now - self._last_beat_time[event.kind]
+            self._last_beat_time[event.kind] = now
+
             if event.kind == 'kick':
                 # Major mutation: swap in prefetched genome instantly, speed up morph
                 self._swap_next_genome()
                 self.morph_t       = 0.0
                 self.morph_speed   = 0.05 + event.energy * 0.15
                 dist = self.current_genome.distance(self.target_genome)
-                print(f'[kick]  energy={event.energy:.2f}  '
-                      f'genome distance={dist:.3f}  morph_speed={self.morph_speed:.3f}')
+                print(f'[kick]  +{since:.3f}s  energy={event.energy:.2f}  '
+                      f'dist={dist:.3f}  spd={self.morph_speed:.3f}')
 
             elif event.kind == 'snare':
-                # Shift palette of target genome
                 self.target_genome.palette = _shift_palette(
                     self.target_genome.palette, event.energy, self.rng
                 )
-                print(f'[snare] energy={event.energy:.2f}  palette shift')
+                print(f'[snare] +{since:.3f}s  energy={event.energy:.2f}')
 
             elif event.kind == 'hihat':
-                # Small perturbation to affine coefficients
                 _perturb_genome(self.target_genome, event.energy * 0.05, self.rng)
+                print(f'[hihat] +{since:.3f}s  energy={event.energy:.2f}')
 
     def resize(self, width: int, height: int):
         self.renderer.resize(width, height)
