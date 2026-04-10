@@ -4,13 +4,18 @@ ModernGL renderer — manages GPU resources and shader execution.
 Render pipeline each frame:
   1. Upload genome uniforms (affines, variations, palette, global params)
   2. Upload audio texture (FFT spectrum)
-  3. Dispatch compute shader (chaos game — accumulates histogram)
-  4. Full-screen quad pass (log-density tonemap + color)
-  5. Clear histogram buffer for next frame (or accumulate, TBD)
+  3. Dispatch compute shader (chaos game — accumulates histogram SSBO)
+  4. Memory barrier — ensure compute writes visible to fragment shader
+  5. Full-screen quad pass (log-density tonemap + color)
+  6. Clear histogram SSBO for next frame
 
-The histogram is a 2-channel float32 texture:
-  channel 0: hit count (accumulated)
-  channel 1: color accumulator (weighted average of transform colors)
+Histogram layout (SSBO, binding=0):
+  uint hit_count[width * height]   — how many times each pixel was hit
+  uint color_acc[width * height]   — color accumulator (scaled to uint)
+  Both arrays packed sequentially in one buffer.
+
+Walker state (SSBO, binding=1):
+  float[N_WALKERS * 3]  — [x, y, color] per walker, persists between frames
 """
 
 import moderngl
@@ -47,10 +52,15 @@ class FlameRenderer:
 
     def _create_resources(self):
         w, h = self.width, self.height
+        n_pixels = w * h
 
-        # Histogram texture: RG32F — R = hit count, G = color accumulator
-        self.histogram = self.ctx.texture((w, h), components=2, dtype='f4')
-        self.histogram.bind_to_image(0, read=True, write=True)
+        # Histogram SSBO (binding=0): two packed uint arrays
+        #   [0          .. n_pixels-1] = hit_count
+        #   [n_pixels   .. 2*n_pixels-1] = color_acc
+        # Initialized to zeros
+        histogram_data = np.zeros(n_pixels * 2, dtype=np.uint32)
+        self.histogram_buf = self.ctx.buffer(histogram_data.tobytes())
+        self.histogram_buf.bind_to_storage_buffer(0)
 
         # Palette texture: 256 x 1 RGB32F
         self.palette_tex = self.ctx.texture((256, 1), components=3, dtype='f4')
@@ -61,12 +71,13 @@ class FlameRenderer:
         self.audio_tex = self.ctx.texture((N_BINS, 1), components=1, dtype='f4')
         self.audio_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
 
-        # Walker state buffer: each walker needs (x, y, color) — 3 floats
+        # Walker state SSBO (binding=1): [x, y, color] per walker
+        # Randomize initial positions so walkers spread across attractor quickly
         walker_data = np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(np.float32)
         self.walker_buf = self.ctx.buffer(walker_data.tobytes())
         self.walker_buf.bind_to_storage_buffer(1)
 
-        # Fullscreen quad
+        # Fullscreen quad — two triangles covering clip space
         quad_verts = np.array([
             -1, -1,   1, -1,   -1,  1,
              1, -1,   1,  1,   -1,  1,
@@ -102,9 +113,9 @@ class FlameRenderer:
         self.audio_tex.write(spectrum.astype(np.float32).tobytes())
 
     def clear_histogram(self):
-        """Zero the histogram texture between frames."""
-        zeros = np.zeros((self.width * self.height * 2,), dtype=np.float32)
-        self.histogram.write(zeros.tobytes())
+        """Zero the histogram SSBO between frames."""
+        zeros = np.zeros(self.width * self.height * 2, dtype=np.uint32)
+        self.histogram_buf.write(zeros.tobytes())
 
     def dispatch_chaos_game(self, n_iterations: int = 100):
         """
@@ -118,16 +129,17 @@ class FlameRenderer:
         self.compute_shader.run(group_x=groups)
 
     def render_tonemap(self):
-        """Full-screen tonemap pass — reads histogram, writes to screen."""
-        self.histogram.use(location=0)
-        self.palette_tex.use(location=1)
-        self.audio_tex.use(location=2)
+        """Full-screen tonemap pass — reads histogram SSBO, writes to screen."""
+        # Histogram is already bound as SSBO at binding=0 — fragment shader
+        # reads it directly via the buffer binding, no texture needed.
+        # Palette and audio are still textures.
+        self.palette_tex.use(location=0)
+        self.audio_tex.use(location=1)
 
-        self.tonemap_program['u_histogram'] = 0
-        self.tonemap_program['u_palette']   = 1
-        self.tonemap_program['u_audio']     = 2
-        self.tonemap_program['u_width']     = self.width
-        self.tonemap_program['u_height']    = self.height
+        self.tonemap_program['u_palette'] = 0
+        self.tonemap_program['u_audio']   = 1
+        self.tonemap_program['u_width']   = self.width
+        self.tonemap_program['u_height']  = self.height
 
         self.quad_vao.render(moderngl.TRIANGLES)
 
