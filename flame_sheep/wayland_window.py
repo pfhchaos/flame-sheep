@@ -21,10 +21,20 @@ import ctypes.util
 import time
 import signal
 
+import cffi
 import moderngl
 import numpy as np
 
 from pywayland.client import Display
+
+_ffi = cffi.FFI()
+
+
+def _cffi_to_void_p(cdata) -> ctypes.c_void_p:
+    """Convert a cffi cdata pointer to a ctypes c_void_p."""
+    return ctypes.c_void_p(int(_ffi.cast('uintptr_t', cdata)))
+
+
 from pywayland.protocol.wayland import WlCompositor, WlOutput, WlSeat
 from .protocol.wlr_layer_shell_unstable_v1.zwlr_layer_shell_v1 import ZwlrLayerShellV1
 from .protocol.wlr_layer_shell_unstable_v1.zwlr_layer_surface_v1 import ZwlrLayerSurfaceV1
@@ -123,17 +133,52 @@ class WallpaperWindow:
     A wlr-layer-shell BACKGROUND surface with an OpenGL 4.3 core context.
     """
 
-    def __init__(self, width: int = 1920, height: int = 1080):
+    @staticmethod
+    def list_outputs() -> list[str]:
+        """Return names of all active Wayland outputs (e.g. ['DP-2', 'DP-3'])."""
+        names = []
+        display = Display()
+        display.connect()
+        registry = display.get_registry()
+        outputs  = []
+
+        def _on_global(reg, name, interface, version):
+            if interface == WlOutput.name:
+                out = reg.bind(name, WlOutput, min(version, 4))
+                outputs.append(out)
+
+        registry.dispatcher['global'] = _on_global
+        display.roundtrip()
+
+        # Collect output names via WlOutput.name event
+        output_names: dict = {}
+
+        def make_name_handler(out):
+            def _on_name(output, name):
+                output_names[id(out)] = name
+            return _on_name
+
+        for out in outputs:
+            out.dispatcher['name'] = make_name_handler(out)
+        display.roundtrip()
+        display.disconnect()
+
+        return list(output_names.values())
+
+    def __init__(self, width: int = 1920, height: int = 1080,
+                 output_name: str | None = None):
         self.width        = width
         self.height       = height
         self.should_close = False
         self._configured  = False   # True once compositor sends configure
+        self._target_output_name = output_name
 
         # State gathered during registry enumeration
         self._compositor  = None
         self._layer_shell = None
-        self._output      = None    # first output (monitor)
+        self._output      = None    # matched output (or first if no name given)
         self._seat        = None
+        self._outputs_by_name: dict[str, object] = {}
 
         # Wayland objects
         self._wl_display  = None
@@ -152,6 +197,7 @@ class WallpaperWindow:
         self._setup_layer_surface()
         self._wait_for_configure()
         self._make_current()
+        _libegl.eglSwapInterval(self._egl_display, 1)  # vsync on
 
         # Create moderngl context from the current EGL context
         self.ctx = moderngl.create_context(require=430)
@@ -170,13 +216,16 @@ class WallpaperWindow:
 
         registry = self._wl_display.get_registry()
         registry.dispatcher['global'] = self._on_global
-        self._wl_display.dispatch(block=True)
-        self._wl_display.roundtrip()
+        self._wl_display.roundtrip()  # get globals
+        self._wl_display.roundtrip()  # get output name events
 
         if self._compositor is None:
             raise RuntimeError('No wl_compositor in registry')
         if self._layer_shell is None:
             raise RuntimeError('No zwlr_layer_shell_v1 in registry — is this sway/wlroots?')
+        if self._output is None:
+            raise RuntimeError(f'Output {self._target_output_name!r} not found. '
+                               f'Available: {list(self._outputs_by_name.keys())}')
 
         self._wl_surface = self._compositor.create_surface()
 
@@ -185,12 +234,22 @@ class WallpaperWindow:
             self._compositor = registry.bind(name, WlCompositor, min(version, 5))
         elif interface == ZwlrLayerShellV1.name:
             self._layer_shell = registry.bind(name, ZwlrLayerShellV1, min(version, 4))
-        elif interface == WlOutput.name and self._output is None:
-            self._output = registry.bind(name, WlOutput, min(version, 4))
+        elif interface == WlOutput.name:
+            out = registry.bind(name, WlOutput, min(version, 4))
+            # Wire up name event to match target output
+            def _on_output_name(output, oname, _out=out):
+                self._outputs_by_name[oname] = _out
+                if self._target_output_name is None and self._output is None:
+                    self._output = _out
+                elif oname == self._target_output_name:
+                    self._output = _out
+            out.dispatcher['name'] = _on_output_name
+            if self._output is None and self._target_output_name is None:
+                self._output = out  # fallback: first output before name arrives
 
     def _setup_egl(self):
-        # Get the raw wl_display* pointer from pywayland
-        wl_display_ptr = ctypes.c_void_p(self._wl_display._ptr)
+        # Get the raw wl_display* pointer from pywayland (cffi cdata -> ctypes)
+        wl_display_ptr = _cffi_to_void_p(self._wl_display._ptr)
 
         if _eglGetPlatformDisplayEXT is not None:
             self._egl_display = _eglGetPlatformDisplayEXT(
@@ -246,7 +305,7 @@ class WallpaperWindow:
         # Create the wl_egl_window and EGL surface BEFORE the layer surface,
         # so the compositor gets a buffer when we first commit.
         self._egl_window = _libwlegl.wl_egl_window_create(
-            ctypes.c_void_p(self._wl_surface._ptr),
+            _cffi_to_void_p(self._wl_surface._ptr),
             self.width, self.height)
         if not self._egl_window:
             raise RuntimeError('wl_egl_window_create failed')
@@ -255,10 +314,6 @@ class WallpaperWindow:
             self._egl_display, self._egl_config,
             ctypes.c_void_p(self._egl_window), None)
         _egl_check('eglCreateWindowSurface')
-
-        # vsync
-        self._make_current()
-        _libegl.eglSwapInterval(self._egl_display, 1)
 
         # Create layer-shell surface
         layer      = ZwlrLayerShellV1.layer.background.value
@@ -284,17 +339,21 @@ class WallpaperWindow:
         self._layer_surface.dispatcher['configure'] = self._on_configure
         self._layer_surface.dispatcher['closed']    = self._on_closed
 
+        # commit() triggers sway to send a configure event back.
+        # roundtrip() flushes our request AND processes all incoming events
+        # (including configure) before returning.
         self._wl_surface.commit()
-        self._wl_display.flush()
+        self._wl_display.roundtrip()
 
     def _wait_for_configure(self, timeout: float = 5.0):
+        # roundtrip() in _setup_layer_surface should have already delivered
+        # the configure event. This loop is a safety net for slow compositors.
         deadline = time.monotonic() + timeout
         while not self._configured:
-            self._wl_display.dispatch(block=False)
-            self._wl_display.flush()
+            self._wl_display.roundtrip()
             if time.monotonic() > deadline:
                 raise RuntimeError('Timed out waiting for layer-surface configure')
-            time.sleep(0.001)
+            time.sleep(0.005)
 
     def _on_configure(self, layer_surface, serial: int, width: int, height: int):
         if width > 0:
@@ -315,13 +374,23 @@ class WallpaperWindow:
     def _on_closed(self, layer_surface):
         self.should_close = True
 
-    def _make_current(self):
+    def make_current(self):
+        """Make this window's EGL context current on the calling thread."""
         _libegl.eglMakeCurrent(
             self._egl_display,
             ctypes.c_void_p(self._egl_surface),
             ctypes.c_void_p(self._egl_surface),
             ctypes.c_void_p(self._egl_context))
         _egl_check('eglMakeCurrent')
+
+    def release_current(self):
+        """Release this EGL context from the calling thread."""
+        _libegl.eglMakeCurrent(
+            self._egl_display,
+            EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)
+
+    # Keep _make_current as internal alias used during init
+    _make_current = make_current
 
     # ------------------------------------------------------------------
     # Per-frame interface

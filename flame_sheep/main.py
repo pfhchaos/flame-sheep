@@ -30,25 +30,24 @@ _TEST_AUDIO:   bool = False
 
 class FlameSheepCore:
     """
-    All audio/genome/rendering logic, independent of window system.
-    Requires a moderngl.Context and (width, height) at construction.
-    Call .render_frame(frame_time) each frame.
+    Audio + genome state, shared across all outputs.
+    Does NOT hold a renderer or GL context — that lives in each window.
+
+    Each frame, call:
+      genome, spectrum = core.tick(frame_time)   # advance state, get current genome
+    Then render with those values in your per-window renderer.
+
     Call .force_genome_swap() to kick a degenerate image.
     Call .stop() on shutdown.
     """
 
-    # Minimum genome distance before accepting a prefetched candidate.
     MIN_GENOME_DISTANCE = 0.15
-
-    # Autonomous drift mode — active when RMS is below threshold
     DRIFT_RMS_THRESHOLD = 0.002
     DRIFT_SWAP_FRAMES   = 60 * 8
     DRIFT_MORPH_SPEED   = 0.003
 
-    def __init__(self, ctx: 'moderngl.Context', width: int, height: int,
-                 audio_device=DEFAULT_DEVICE, test_audio: bool = False):
-        self.rng      = np.random.default_rng()
-        self.renderer = FlameRenderer(ctx, width, height)
+    def __init__(self, audio_device=DEFAULT_DEVICE, test_audio: bool = False):
+        self.rng = np.random.default_rng()
 
         self.current_genome = Genome.random(self.rng)
         self.target_genome  = Genome.random(self.rng)
@@ -73,13 +72,12 @@ class FlameSheepCore:
             print(f'audio device: {audio_device!r}')
         self.audio.start()
 
-        self.renderer.upload_genome(self.current_genome)
-
-    def render_frame(self, frame_time: float):
-        """Run one frame. frame_time is seconds since last frame."""
+    def tick(self, frame_time: float) -> tuple['Genome', np.ndarray]:
+        """Advance audio/genome state one frame. Returns (display_genome, spectrum).
+        Call once per frame (not once per output).
+        """
         beat_events = self.audio.process()
         spectrum    = self.audio.spectrum
-        self.renderer.upload_audio(spectrum)
         self._handle_beats(beat_events)
 
         self.morph_t = min(1.0, self.morph_t + self.morph_speed)
@@ -90,12 +88,6 @@ class FlameSheepCore:
             self.morph_t        = 0.0
             self._swap_next_genome()
             self.morph_speed    = self.DRIFT_MORPH_SPEED
-
-        self.renderer.upload_genome(display_genome)
-        self.renderer.clear_histogram()
-        self.renderer.dispatch_chaos_game(n_iterations=1000)
-        self.renderer.ctx.memory_barrier()
-        self.renderer.render_tonemap()
 
         rms = self.audio.rms
         if rms < self.DRIFT_RMS_THRESHOLD:
@@ -111,9 +103,7 @@ class FlameSheepCore:
             self._quiet_frames = 0
 
         self.morph_speed = max(self.DRIFT_MORPH_SPEED, self.morph_speed * 0.98)
-
-    def resize(self, width: int, height: int):
-        self.renderer.resize(width, height)
+        return display_genome, spectrum
 
     def force_genome_swap(self):
         """Immediately swap to a new genome — call when image looks degenerate."""
@@ -182,19 +172,22 @@ class FlameSheepApp(mglw.WindowConfig):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._core = FlameSheepCore(
-            self.ctx, *self.window_size,
-            audio_device=_AUDIO_DEVICE,
-            test_audio=_TEST_AUDIO,
-        )
+        self._core     = FlameSheepCore(audio_device=_AUDIO_DEVICE, test_audio=_TEST_AUDIO)
+        self._renderer = FlameRenderer(self.ctx, *self.window_size)
         print('flame-sheep started. Press Q to quit, F to force genome swap.')
 
     def on_render(self, time_val: float, frame_time: float):
         self.ctx.clear(0.0, 0.0, 0.0)
-        self._core.render_frame(frame_time)
+        genome, spectrum = self._core.tick(frame_time)
+        self._renderer.upload_audio(spectrum)
+        self._renderer.upload_genome(genome)
+        self._renderer.clear_histogram()
+        self._renderer.dispatch_chaos_game(n_iterations=1000)
+        self.ctx.memory_barrier()
+        self._renderer.render_tonemap()
 
     def resize(self, width: int, height: int):
-        self._core.resize(width, height)
+        self._renderer.resize(width, height)
 
     def key_event(self, key, action, modifiers):
         if action == self.wnd.keys.ACTION_PRESS:
@@ -220,32 +213,98 @@ def _perturb_genome(genome: Genome, scale: float, rng: np.random.Generator):
         tr.affine += rng.uniform(-scale, scale, tr.affine.shape).astype(np.float32)
 
 
-def _run_wallpaper(width: int, height: int, audio_device, test_audio: bool):
-    """Wallpaper mode: wlr-layer-shell BACKGROUND surface."""
+def _render_on_window(win: 'WallpaperWindow', renderer: 'FlameRenderer',
+                      core: 'FlameSheepCore', stop_event: threading.Event):
+    """Per-output render loop. Runs on its own thread.
+    The main thread released the EGL context before starting this thread.
+    """
+    win.make_current()   # acquire on this thread
+    while not stop_event.is_set() and not win.should_close:
+        genome   = core._display_genome
+        spectrum = core._display_spectrum
+        if genome is not None:
+            win.ctx.clear(0.0, 0.0, 0.0)
+            renderer.upload_audio(spectrum)
+            renderer.upload_genome(genome)
+            renderer.clear_histogram()
+            renderer.dispatch_chaos_game(n_iterations=1000)
+            win.ctx.memory_barrier()
+            renderer.render_tonemap()
+            win.swap()
+        else:
+            time.sleep(0.001)
+
+
+def _run_wallpaper(audio_device, test_audio: bool):
+    """Wallpaper mode: one wlr-layer-shell surface per output, shared genome state."""
     from .wayland_window import WallpaperWindow
 
-    win  = WallpaperWindow(width, height)
-    core = FlameSheepCore(
-        win.ctx, win.width, win.height,
-        audio_device=audio_device,
-        test_audio=test_audio,
-    )
-    print('flame-sheep wallpaper running. Ctrl-C or SIGTERM to quit.')
-    print('  swaymsg \'[app_id=flame-sheep] focus\' then press F to force genome swap')
+    # Enumerate all outputs via a throw-away display connection
+    output_names = WallpaperWindow.list_outputs()
+    print(f'[wallpaper] outputs: {output_names}')
+
+    # Shared genome/audio state
+    core = FlameSheepCore(audio_device=audio_device, test_audio=test_audio)
+    core._display_genome   = None
+    core._display_spectrum = np.zeros(512, dtype=np.float32)
+
+    # One window + renderer per output
+    windows   = []
+    renderers = []
+    for name in output_names:
+        win = WallpaperWindow(output_name=name)
+        renderer = FlameRenderer(win.ctx, win.width, win.height)
+        windows.append(win)
+        renderers.append(renderer)
+        print(f'[wallpaper] {name}: {win.width}x{win.height}')
+
+    print('flame-sheep wallpaper running on all outputs. Ctrl-C to quit.')
+
+    stop_event = threading.Event()
+
+    # Spin up per-output render threads (all but the first; first runs on main).
+    # Release each secondary context on main thread first so it can be
+    # acquired on the render thread.
+    threads = []
+    for win, renderer in zip(windows[1:], renderers[1:]):
+        win.release_current()
+        t = threading.Thread(
+            target=_render_on_window,
+            args=(win, renderer, core, stop_event),
+            daemon=True,
+        )
+        t.start()
+        threads.append(t)
 
     last_time = time.perf_counter()
     try:
-        while not win.should_close:
+        while not stop_event.is_set() and not any(w.should_close for w in windows):
             now        = time.perf_counter()
             frame_time = now - last_time
             last_time  = now
 
-            win.ctx.clear(0.0, 0.0, 0.0)
-            core.render_frame(frame_time)
-            win.swap()
+            # Advance genome/audio state once per frame
+            genome, spectrum = core.tick(frame_time)
+            core._display_genome   = genome
+            core._display_spectrum = spectrum
+
+            # Render on first output (main thread)
+            win0, r0 = windows[0], renderers[0]
+            win0.ctx.clear(0.0, 0.0, 0.0)
+            r0.upload_audio(spectrum)
+            r0.upload_genome(genome)
+            r0.clear_histogram()
+            r0.dispatch_chaos_game(n_iterations=1000)
+            win0.ctx.memory_barrier()
+            r0.render_tonemap()
+            win0.swap()
     finally:
+        stop_event.set()
+        for t in threads:
+            t.join(timeout=1.0)
         core.stop()
-        win.destroy()
+        for win in windows:
+            win.destroy()
 
 
 def main():
@@ -285,7 +344,7 @@ def main():
         return
 
     if args.wallpaper:
-        _run_wallpaper(args.width, args.height, args.audio_device, args.test_audio)
+        _run_wallpaper(args.audio_device, args.test_audio)
         return
 
     # Strip our flags from sys.argv so moderngl-window's arg parser
