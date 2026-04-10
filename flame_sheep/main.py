@@ -6,6 +6,7 @@ Eventually: replace window with wlr-layer-shell for true wallpaper mode.
 """
 
 import argparse
+import sys
 import threading
 import numpy as np
 import moderngl_window as mglw
@@ -173,7 +174,13 @@ def _perturb_genome(genome: Genome, scale: float, rng: np.random.Generator):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='flame-sheep: audio-reactive flame fractal wallpaper')
+    parser = argparse.ArgumentParser(
+        description='flame-sheep: audio-reactive flame fractal wallpaper',
+        # Don't error on moderngl-window's own flags — we strip ours then
+        # leave the rest for mglw to handle.
+        add_help=False,
+    )
+    parser.add_argument('-h', '--help', action='store_true')
     parser.add_argument('--fullscreen', action='store_true', help='run fullscreen')
     parser.add_argument('--width',  type=int, default=1920)
     parser.add_argument('--height', type=int, default=1080)
@@ -181,7 +188,13 @@ def main():
     parser.add_argument('--audio-device', type=int, default=6, help='audio input device index (default: 6 pipewire)')
     parser.add_argument('--test-audio', action='store_true',
                         help='use synthetic metronome instead of real audio (120bpm, predictable beats)')
-    args = parser.parse_args()
+
+    # parse_known_args so moderngl-window's own flags don't cause errors here
+    args, remaining = parser.parse_known_args()
+
+    if args.help:
+        parser.print_help()
+        return
 
     global _AUDIO_DEVICE, _TEST_AUDIO
     _AUDIO_DEVICE = args.audio_device
@@ -192,6 +205,10 @@ def main():
         for d in list_monitor_devices():
             print(f"  [{d['index']:2d}] {d['name']}")
         return
+
+    # Strip our flags from sys.argv so moderngl-window's arg parser
+    # doesn't choke on arguments it doesn't know about.
+    sys.argv = [sys.argv[0]] + remaining
 
     settings.WINDOW['class']      = 'moderngl_window.context.glfw.Window'
     settings.WINDOW['size']       = (args.width, args.height)
