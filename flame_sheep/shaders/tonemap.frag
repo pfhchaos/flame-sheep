@@ -39,8 +39,8 @@ uniform int u_width;
 uniform int u_height;
 
 // Tone mapping parameters — tweak these to taste
-uniform float u_gamma     = 2.2;    // gamma correction
-uniform float u_brightness= 3.0;    // overall brightness multiplier
+uniform float u_gamma     = 1.8;    // gamma correction (lower = brighter midtones)
+uniform float u_brightness= 6.0;    // overall brightness multiplier
 uniform float u_vibrancy  = 1.0;    // 0=desaturated, 1=full color
 
 void main() {

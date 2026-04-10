@@ -5,9 +5,8 @@ Uses moderngl-window for window management (handles Wayland/X11 transparently).
 Eventually: replace window with wlr-layer-shell for true wallpaper mode.
 """
 
-import sys
-import time
 import argparse
+import threading
 import numpy as np
 import moderngl_window as mglw
 from moderngl_window import settings
@@ -40,6 +39,11 @@ class FlameSheepApp(mglw.WindowConfig):
         self.morph_t        = 0.0    # 0 = current, 1 = target
         self.morph_speed    = 0.003  # per frame, slow baseline drift
 
+        # Pre-generate next genome in background so beat response is instant
+        self._next_genome: Genome | None = None
+        self._genome_lock = threading.Lock()
+        self._prefetch_genome()
+
         # Audio
         self.audio = AudioProcessor(device=_AUDIO_DEVICE)
         self.audio.start()
@@ -62,11 +66,11 @@ class FlameSheepApp(mglw.WindowConfig):
         self.morph_t = min(1.0, self.morph_t + self.morph_speed)
         display_genome = self.current_genome.lerp(self.target_genome, self.morph_t)
 
-        # When morph completes, current becomes target, pick new target
+        # When morph completes, current becomes target, fetch next
         if self.morph_t >= 1.0:
             self.current_genome = self.target_genome
-            self.target_genome  = Genome.random(self.rng)
             self.morph_t        = 0.0
+            self._swap_next_genome()
 
         self.renderer.upload_genome(display_genome)
 
@@ -79,11 +83,32 @@ class FlameSheepApp(mglw.WindowConfig):
         # Decay morph speed back toward baseline after a beat spike
         self.morph_speed = max(0.005, self.morph_speed * 0.98)
 
+    def _prefetch_genome(self):
+        """Generate next genome in background thread with its own RNG."""
+        def _gen():
+            # Use a fresh RNG per thread — numpy generators aren't thread-safe
+            rng = np.random.default_rng()
+            g = Genome.random(rng)
+            with self._genome_lock:
+                self._next_genome = g
+        threading.Thread(target=_gen, daemon=True).start()
+
+    def _swap_next_genome(self):
+        """Use prefetched genome as new target, start prefetching another."""
+        with self._genome_lock:
+            if self._next_genome is not None:
+                self.target_genome = self._next_genome
+                self._next_genome  = None
+            else:
+                # Prefetch wasn't ready — generate synchronously as fallback
+                self.target_genome = Genome.random(self.rng)
+        self._prefetch_genome()
+
     def _handle_beats(self, events: list[BeatEvent]):
         for event in events:
             if event.kind == 'kick':
-                # Major mutation: jump toward a new genome, speed up morph
-                self.target_genome = Genome.random(self.rng)
+                # Major mutation: swap in prefetched genome instantly, speed up morph
+                self._swap_next_genome()
                 self.morph_t       = 0.0
                 self.morph_speed   = 0.05 + event.energy * 0.15
                 print(f'[kick]  energy={event.energy:.2f}  new target genome')
