@@ -61,10 +61,14 @@ class AudioProcessor:
         # Frequency bin ranges for each band
         freqs = np.fft.rfftfreq(FFT_SIZE, 1.0 / SAMPLE_RATE)
         self._bands = {
-            'kick':  (freqs >= 20)   & (freqs <  150),
+            'kick':  (freqs >= 50)   & (freqs <  100),
             'snare': (freqs >= 150)  & (freqs <  800),
             'hihat': (freqs >= 8000),
         }
+
+        # Per-band cooldown: frame counter since last onset
+        self._cooldown_frames = {'kick': 0, 'snare': 0, 'hihat': 0}
+        self._frame_count     = {'kick': 0, 'snare': 0, 'hihat': 0}
 
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -100,7 +104,7 @@ class AudioProcessor:
             pcm = np.array(self._buffer, dtype=np.float32)
 
         windowed  = pcm * self._window
-        spectrum  = np.abs(np.fft.rfft(windowed)).astype(np.float32)
+        spectrum  = (np.abs(np.fft.rfft(windowed)) / FFT_SIZE).astype(np.float32)
 
         with self._lock:
             self._spectrum[:] = spectrum
@@ -112,29 +116,34 @@ class AudioProcessor:
     def _detect_onsets(self, spectrum: np.ndarray) -> list[BeatEvent]:
         """
         Simple local-average onset detection per band.
-        An onset fires when current energy exceeds local mean by threshold.
+        An onset fires when current energy exceeds local mean by threshold
+        AND the band is not in cooldown (frame counter since last onset).
         """
         events = []
         THRESHOLD  = 2.5   # current must be > 2.5x local average
         # Minimum absolute energy floor — ignore noise below this level
         MIN_ENERGY = {'kick': 0.02, 'snare': 0.01, 'hihat': 0.005}
         # Don't fire same band twice within N frames
-        COOLDOWN   = 8
+        COOLDOWN   = 20
 
         for band, mask in self._bands.items():
             energy = float(spectrum[mask].mean())
             hist   = self._history[band]
 
-            if len(hist) >= 10 and energy > MIN_ENERGY[band]:
+            self._frame_count[band] += 1
+            in_cooldown = (self._frame_count[band] - self._cooldown_frames[band]) < COOLDOWN
+
+            if len(hist) >= 10 and energy > MIN_ENERGY[band] and not in_cooldown:
                 local_avg = float(np.mean(hist))
-                # cooldown: check recent history for a prior onset
-                recent     = list(hist)[-COOLDOWN:]
-                recent_max = float(np.max(recent)) if recent else 0.0
-                if (local_avg > 0
-                        and energy > local_avg  * THRESHOLD
-                        and energy > recent_max * 0.9):   # not still decaying from last hit
+                # If local average is near-zero (e.g. silence warmup), treat any
+                # energy above floor as an onset at max strength.
+                if local_avg < MIN_ENERGY[band]:
+                    events.append(BeatEvent(kind=band, energy=1.0))
+                    self._cooldown_frames[band] = self._frame_count[band]
+                elif energy > local_avg * THRESHOLD:
                     normalized = min(1.0, (energy / local_avg - THRESHOLD) / THRESHOLD)
                     events.append(BeatEvent(kind=band, energy=normalized))
+                    self._cooldown_frames[band] = self._frame_count[band]
 
             hist.append(energy)
 

@@ -1,0 +1,252 @@
+"""
+Tests for genome generation, validation, and mutation.
+No GPU required — pure CPU/numpy.
+"""
+
+import numpy as np
+import pytest
+from flame_sheep.genome import (
+    Genome, Transform, _apply_variation_cpu,
+    MAX_TRANSFORMS, NUM_VARIATIONS
+)
+
+
+RNG = np.random.default_rng(42)  # fixed seed for reproducibility
+
+
+# ----------------------------------------------------------------
+# Transform
+# ----------------------------------------------------------------
+
+class TestTransform:
+
+    def test_random_is_contractive(self):
+        """Random transforms must have all singular values < 0.9."""
+        rng = np.random.default_rng(0)
+        for _ in range(50):
+            t = Transform.random(rng)
+            a, b, c, d, e, f = t.affine
+            M = np.array([[a, b], [d, e]])
+            svs = np.linalg.svd(M, compute_uv=False)
+            assert np.all(svs < 0.9), f"singular values {svs} not contractive"
+
+    def test_random_variation_weights_sum_to_one(self):
+        """Active variation weights must sum to 1.0."""
+        rng = np.random.default_rng(1)
+        for _ in range(20):
+            t = Transform.random(rng)
+            total = t.variations.sum()
+            assert abs(total - 1.0) < 1e-5, f"variation weights sum to {total}"
+
+    def test_random_color_in_range(self):
+        rng = np.random.default_rng(2)
+        for _ in range(20):
+            t = Transform.random(rng)
+            assert 0.0 <= t.color <= 1.0
+
+    def test_affine_shape(self):
+        rng = np.random.default_rng(3)
+        t = Transform.random(rng)
+        assert t.affine.shape == (6,)
+        assert t.affine.dtype == np.float32
+
+    def test_variations_shape(self):
+        rng = np.random.default_rng(4)
+        t = Transform.random(rng)
+        assert t.variations.shape == (NUM_VARIATIONS,)
+
+
+# ----------------------------------------------------------------
+# Genome generation
+# ----------------------------------------------------------------
+
+class TestGenomeRandom:
+
+    def test_random_produces_genome(self):
+        g = Genome.random(RNG)
+        assert isinstance(g, Genome)
+        assert len(g.transforms) >= 2
+        assert len(g.transforms) <= MAX_TRANSFORMS
+
+    def test_random_palette_shape(self):
+        g = Genome.random(RNG)
+        assert g.palette.shape == (256, 3)
+        assert g.palette.dtype == np.float32
+
+    def test_random_palette_in_range(self):
+        g = Genome.random(RNG)
+        assert np.all(g.palette >= 0.0)
+        assert np.all(g.palette <= 1.0)
+
+    def test_random_zoom_in_range(self):
+        rng = np.random.default_rng(10)
+        for _ in range(20):
+            g = Genome.random(rng)
+            assert 0.8 <= g.zoom <= 1.5
+
+    def test_random_is_viable(self):
+        """Genome.random() should always return a viable genome."""
+        rng = np.random.default_rng(20)
+        for _ in range(10):
+            g = Genome.random(rng)
+            assert g.is_viable(), "Genome.random() returned non-viable genome"
+
+
+# ----------------------------------------------------------------
+# Viability
+# ----------------------------------------------------------------
+
+class TestGenomeViability:
+
+    def test_diverging_genome_rejected(self):
+        """A genome with expanding transforms should fail viability."""
+        g = Genome()
+        t = Transform()
+        # Deliberately non-contractive: scale factor 2, translation 0.1 so
+        # the origin fixed-point is avoided and points actually escape.
+        t.affine = np.array([2.0, 0.0, 0.1, 0.0, 2.0, 0.1], dtype=np.float32)
+        t.variations[0] = 1.0  # linear
+        t.weight = 1.0
+        g.transforms = [t]
+        assert not g.is_viable()
+
+    def test_sierpinski_genome_viable(self):
+        """Classic Sierpinski triangle IFS should be viable."""
+        g = Genome()
+        corners = [(0.0, 0.0), (1.0, 0.0), (0.5, 1.0)]
+        for cx, cy in corners:
+            t = Transform()
+            # Shrink by 0.5 toward each corner
+            t.affine = np.array([0.5, 0.0, cx*0.5,
+                                  0.0, 0.5, cy*0.5], dtype=np.float32)
+            t.variations[0] = 1.0  # linear
+            t.weight = 1.0
+            g.transforms.append(t)
+        assert g.is_viable()
+
+    def test_nan_genome_rejected(self):
+        """A genome producing NaN should be rejected immediately."""
+        g = Genome()
+        t = Transform()
+        t.affine = np.array([np.nan, 0.0, 0.0, 0.0, 0.5, 0.0], dtype=np.float32)
+        t.variations[0] = 1.0
+        t.weight = 1.0
+        g.transforms = [t]
+        assert not g.is_viable()
+
+
+# ----------------------------------------------------------------
+# Lerp / morphing
+# ----------------------------------------------------------------
+
+class TestGenomeLerp:
+
+    def setup_method(self):
+        rng = np.random.default_rng(30)
+        self.g1 = Genome.random(rng)
+        self.g2 = Genome.random(rng)
+
+    def test_lerp_t0_equals_current(self):
+        result = self.g1.lerp(self.g2, 0.0)
+        n = min(len(self.g1.transforms), len(self.g2.transforms))
+        for i in range(n):
+            np.testing.assert_allclose(
+                result.transforms[i].affine,
+                self.g1.transforms[i].affine,
+                atol=1e-5
+            )
+
+    def test_lerp_t1_equals_target(self):
+        result = self.g1.lerp(self.g2, 1.0)
+        n = min(len(self.g1.transforms), len(self.g2.transforms))
+        for i in range(n):
+            np.testing.assert_allclose(
+                result.transforms[i].affine,
+                self.g2.transforms[i].affine,
+                atol=1e-5
+            )
+
+    def test_lerp_midpoint(self):
+        result = self.g1.lerp(self.g2, 0.5)
+        n = min(len(self.g1.transforms), len(self.g2.transforms))
+        for i in range(n):
+            expected = (self.g1.transforms[i].affine + self.g2.transforms[i].affine) * 0.5
+            np.testing.assert_allclose(result.transforms[i].affine, expected, atol=1e-5)
+
+    def test_lerp_zoom(self):
+        result = self.g1.lerp(self.g2, 0.5)
+        expected = (self.g1.zoom + self.g2.zoom) * 0.5
+        assert abs(result.zoom - expected) < 1e-5
+
+    def test_lerp_palette_shape(self):
+        result = self.g1.lerp(self.g2, 0.5)
+        assert result.palette.shape == (256, 3)
+
+
+# ----------------------------------------------------------------
+# GPU array packing
+# ----------------------------------------------------------------
+
+class TestToGpuArrays:
+
+    def test_weights_sum_to_one(self):
+        rng = np.random.default_rng(40)
+        g = Genome.random(rng)
+        _, _, _, weights = g.to_gpu_arrays()
+        n = len(g.transforms)
+        assert abs(weights[:n].sum() - 1.0) < 1e-5
+
+    def test_affines_shape(self):
+        rng = np.random.default_rng(41)
+        g = Genome.random(rng)
+        affines, _, _, _ = g.to_gpu_arrays()
+        assert affines.shape == (MAX_TRANSFORMS, 6)
+        assert affines.dtype == np.float32
+
+    def test_variations_shape(self):
+        rng = np.random.default_rng(42)
+        g = Genome.random(rng)
+        _, variations, _, _ = g.to_gpu_arrays()
+        assert variations.shape == (MAX_TRANSFORMS, NUM_VARIATIONS)
+
+    def test_unused_transform_slots_zero(self):
+        """Transforms beyond n_transforms should be zero."""
+        rng = np.random.default_rng(43)
+        g = Genome.random(rng, n_transforms=2)
+        affines, _, _, weights = g.to_gpu_arrays()
+        assert np.all(affines[2:] == 0.0)
+        assert np.all(weights[2:] == 0.0)
+
+
+# ----------------------------------------------------------------
+# Variation CPU implementations
+# ----------------------------------------------------------------
+
+class TestVariationCpu:
+
+    def test_linear(self):
+        x, y = _apply_variation_cpu(0, 1.0, 2.0, 1.0)
+        assert abs(x - 1.0) < 1e-6
+        assert abs(y - 2.0) < 1e-6
+
+    def test_linear_weight(self):
+        x, y = _apply_variation_cpu(0, 1.0, 2.0, 0.5)
+        assert abs(x - 0.5) < 1e-6
+        assert abs(y - 1.0) < 1e-6
+
+    def test_sinusoidal(self):
+        x, y = _apply_variation_cpu(1, np.pi/2, 0.0, 1.0)
+        assert abs(x - 1.0) < 1e-6
+        assert abs(y - 0.0) < 1e-6
+
+    def test_exponential_clamped(self):
+        """Exponential with large x should not overflow."""
+        x, y = _apply_variation_cpu(18, 1000.0, 0.0, 1.0)
+        assert np.isfinite(x)
+        assert np.isfinite(y)
+
+    def test_spherical_near_origin(self):
+        """Spherical near origin should not produce infinity."""
+        x, y = _apply_variation_cpu(2, 1e-8, 1e-8, 1.0)
+        assert np.isfinite(x)
+        assert np.isfinite(y)
