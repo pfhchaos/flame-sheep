@@ -27,7 +27,7 @@ SAMPLE_RATE   = 48000
 BLOCK_SIZE    = 1024   # frames per callback
 FFT_SIZE      = 2048   # FFT window (zero-padded if > BLOCK_SIZE)
 N_BINS        = FFT_SIZE // 2 + 1
-HISTORY_LEN   = 43     # ~0.5s of frames at 60fps for local average
+HISTORY_LEN   = 20     # ~0.33s of frames at 60fps — shorter = less averaging of sustained bass
 
 
 @dataclass
@@ -120,11 +120,11 @@ class AudioProcessor:
         AND the band is not in cooldown (frame counter since last onset).
         """
         events = []
-        THRESHOLD  = 2.5   # current must be > 2.5x local average
+        THRESHOLD  = 1.5   # current must be > 1.5x local average
         # Minimum absolute energy floor — ignore noise below this level
         MIN_ENERGY = {'kick': 0.0002, 'snare': 0.0001, 'hihat': 0.00005}
         # Don't fire same band twice within N frames
-        COOLDOWN   = 20
+        COOLDOWN   = 12
 
         for band, mask in self._bands.items():
             energy = float(spectrum[mask].mean())
