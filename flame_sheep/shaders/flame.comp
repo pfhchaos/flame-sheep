@@ -49,13 +49,17 @@ layout(std430, binding = 1) buffer Walkers {
 #define MAX_TRANSFORMS 6
 #define NUM_VARIATIONS 30
 
-// Each transform's affine: [a, b, c, d, e, f]
-// x' = a*x + b*y + c
-// y' = d*x + e*y + f
-uniform float u_affines[MAX_TRANSFORMS * 6];
-
-// Each transform's variation weights [NUM_VARIATIONS floats per transform]
-uniform float u_variations[MAX_TRANSFORMS * NUM_VARIATIONS];
+// Large arrays via SSBOs (bindings 2, 3) — more reliable than uniform arrays
+// in OpenGL for arbitrary sizes, and avoids driver uniform limits.
+//
+// Affines: [a,b,c,d,e,f] per transform, flat — index as [tidx*6 + coeff]
+// Variations: [w0..w29] per transform, flat — index as [tidx*NUM_VARIATIONS + var]
+layout(std430, binding = 2) readonly buffer Affines {
+    float u_affines[];   // length = MAX_TRANSFORMS * 6
+};
+layout(std430, binding = 3) readonly buffer Variations {
+    float u_variations[];  // length = MAX_TRANSFORMS * NUM_VARIATIONS
+};
 
 // Color index per transform (0..1)
 uniform float u_colors[MAX_TRANSFORMS];

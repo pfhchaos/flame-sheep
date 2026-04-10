@@ -18,7 +18,6 @@ Mutation is driven by beat detection from audio.py:
 
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Self
 
 # Variation function indices — matches order in flame.comp
 class Variation:
@@ -75,7 +74,10 @@ class Transform:
         # Random affine — keep it contractive (det < 1) to ensure attractor exists
         while True:
             a, b, d, e = rng.uniform(-1, 1, 4)
-            if abs(a*e - b*d) < 0.9:  # rough contractivity check
+            M = np.array([[a, b], [d, e]])
+            # contractivity: all singular values must be < 1
+            # determinant < 1 is necessary but not sufficient (shear can still stretch)
+            if np.max(np.linalg.svd(M, compute_uv=False)) < 0.9:
                 break
         c, f = rng.uniform(-1, 1, 2)
         t.affine = np.array([a, b, c, d, e, f], dtype=np.float32)
@@ -124,12 +126,12 @@ class Genome:
             tr = Transform()
             tr.affine    = _lerp_arr(self.transforms[i].affine,      other.transforms[i].affine,      t)
             tr.variations= _lerp_arr(self.transforms[i].variations,  other.transforms[i].variations,  t)
-            tr.color     = float(np.lerp(self.transforms[i].color,   other.transforms[i].color,       t))
-            tr.weight    = float(np.lerp(self.transforms[i].weight,  other.transforms[i].weight,      t))
+            tr.color     = float(self.transforms[i].color  * (1-t) + other.transforms[i].color  * t)
+            tr.weight    = float(self.transforms[i].weight * (1-t) + other.transforms[i].weight * t)
             result.transforms.append(tr)
         result.palette   = _lerp_arr(self.palette,  other.palette,  t)
-        result.zoom      = float(np.lerp(self.zoom,     other.zoom,     t))
-        result.rotation  = float(np.lerp(self.rotation, other.rotation, t))
+        result.zoom      = float(self.zoom     * (1-t) + other.zoom     * t)
+        result.rotation  = float(self.rotation * (1-t) + other.rotation * t)
         result.center    = _lerp_arr(self.center,   other.center,   t)
         return result
 

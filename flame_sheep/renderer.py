@@ -71,6 +71,15 @@ class FlameRenderer:
         self.audio_tex = self.ctx.texture((N_BINS, 1), components=1, dtype='f4')
         self.audio_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
 
+        # Genome array SSBOs (binding=2,3): affines and variations
+        # Allocated at max size, written each frame with current genome
+        affines_data    = np.zeros((MAX_TRANSFORMS, 6),              dtype=np.float32)
+        variations_data = np.zeros((MAX_TRANSFORMS, NUM_VARIATIONS), dtype=np.float32)
+        self.affines_buf    = self.ctx.buffer(affines_data.tobytes())
+        self.variations_buf = self.ctx.buffer(variations_data.tobytes())
+        self.affines_buf.bind_to_storage_buffer(2)
+        self.variations_buf.bind_to_storage_buffer(3)
+
         # Walker state SSBO (binding=1): [x, y, color] per walker
         # Randomize initial positions so walkers spread across attractor quickly
         walker_data = np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(np.float32)
@@ -89,15 +98,25 @@ class FlameRenderer:
         )
 
     def upload_genome(self, genome: Genome):
-        """Pack genome into uniform arrays and upload to both shaders."""
+        """Pack genome into arrays and upload to GPU.
+
+        Large arrays (affines, variations) go via SSBOs (binding 2,3) to avoid
+        moderngl uniform array limitations. Scalar uniforms upload directly.
+        """
         affines, variations, colors, weights = genome.to_gpu_arrays()
 
+        # Upload large arrays as SSBOs (binding 2, 3)
+        # These are read-only in the shader but SSBO is the reliable path
+        # for arbitrary-size float arrays in moderngl
+        self.affines_buf.write(affines.tobytes())
+        self.variations_buf.write(variations.tobytes())
+
+        # Small arrays — upload as individual uniform elements
         cs = self.compute_shader
-        # Flat uploads — GLSL std140 packing means we upload as flat float arrays
-        cs['u_affines'].write(affines.tobytes())
-        cs['u_variations'].write(variations.tobytes())
-        cs['u_colors'].write(colors.tobytes())
-        cs['u_weights'].write(weights.tobytes())
+        for i in range(MAX_TRANSFORMS):
+            cs[f'u_colors[{i}]']  = float(colors[i])
+            cs[f'u_weights[{i}]'] = float(weights[i])
+
         cs['u_n_transforms'] = len(genome.transforms)
         cs['u_zoom']         = genome.zoom
         cs['u_rotation']     = genome.rotation
