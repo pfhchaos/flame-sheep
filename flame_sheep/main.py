@@ -83,13 +83,12 @@ class FlameSheepApp(mglw.WindowConfig):
         self.morph_t = min(1.0, self.morph_t + self.morph_speed)
         display_genome = self.current_genome.lerp(self.target_genome, self.morph_t)
 
-        # When morph completes, current becomes target, fetch next
+        # When morph completes, current becomes target.
+        # Don't swap — the next kick or drift timer will do that.
+        # This just cleans up so lerp(t=0) == current on the next beat.
         if self.morph_t >= 1.0:
             self.current_genome = self.target_genome
             self.morph_t        = 0.0
-            self._swap_next_genome()
-            dist = self.current_genome.distance(self.target_genome)
-            print(f'[morph complete]  dist={dist:.3f}')
 
         self.renderer.upload_genome(display_genome)
 
@@ -163,10 +162,14 @@ class FlameSheepApp(mglw.WindowConfig):
             self._last_beat_time[event.kind] = now
 
             if event.kind == 'kick':
-                # Major mutation: swap in prefetched genome instantly, speed up morph
+                # Snap current to wherever the morph is right now, then
+                # swap in a new target. This avoids a visual jump — we
+                # continue morphing from the current blended frame.
+                self.current_genome = self.current_genome.lerp(
+                    self.target_genome, self.morph_t)
                 self._swap_next_genome()
-                self.morph_t       = 0.0
-                self.morph_speed   = 0.05 + event.energy * 0.15
+                self.morph_t     = 0.0
+                self.morph_speed = 0.05 + event.energy * 0.15
                 dist = self.current_genome.distance(self.target_genome)
                 print(f'[kick]  +{since:.3f}s  energy={event.energy:.2f}  '
                       f'dist={dist:.3f}  spd={self.morph_speed:.3f}')
