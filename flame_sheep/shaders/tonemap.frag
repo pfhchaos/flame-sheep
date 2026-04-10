@@ -22,9 +22,11 @@ out vec4 frag_color;
 // Must match binding and layout exactly
 #define COLOR_SCALE 1000000u
 
+// Same packed layout as flame.comp:
+//   [0        .. n_pixels-1] = hit_count
+//   [n_pixels .. 2*n_pixels-1] = color_acc
 layout(std430, binding = 0) readonly buffer Histogram {
-    uint hit_count[];
-    uint color_acc[];
+    uint histogram[];
 };
 
 // Palette texture: 256x1 RGB — maps color index (0..1) to RGB
@@ -53,9 +55,10 @@ void main() {
 
     uint idx = uint(py * u_width + px);
 
-    // Read histogram
-    uint hits  = hit_count[idx];
-    uint color = color_acc[idx];
+    // Read histogram — packed array, color_acc offset by n_pixels
+    uint n_pixels = uint(u_width * u_height);
+    uint hits  = histogram[idx];
+    uint color = histogram[n_pixels + idx];
 
     // Nothing hit this pixel — output black
     if (hits == 0u) {

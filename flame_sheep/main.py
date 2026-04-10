@@ -17,6 +17,11 @@ from .audio import AudioProcessor, BeatEvent
 from .renderer import FlameRenderer
 
 
+# Set by main() before run_window_config — workaround for moderngl-window
+# not passing CLI args through to WindowConfig.__init__
+_AUDIO_DEVICE: int = 6
+
+
 class FlameSheepApp(mglw.WindowConfig):
     title       = 'flame-sheep'
     gl_version  = (4, 3)   # compute shaders need 4.3+
@@ -33,10 +38,10 @@ class FlameSheepApp(mglw.WindowConfig):
         self.current_genome = Genome.random(self.rng)
         self.target_genome  = Genome.random(self.rng)
         self.morph_t        = 0.0    # 0 = current, 1 = target
-        self.morph_speed    = 0.02   # per frame, slow baseline drift
+        self.morph_speed    = 0.003  # per frame, slow baseline drift
 
         # Audio
-        self.audio = AudioProcessor()  # TODO: allow device selection via CLI
+        self.audio = AudioProcessor(device=_AUDIO_DEVICE)
         self.audio.start()
 
         # Upload initial state
@@ -44,7 +49,7 @@ class FlameSheepApp(mglw.WindowConfig):
 
         print('flame-sheep started. Press Q to quit.')
 
-    def render(self, time_val: float, frame_time: float):
+    def on_render(self, time_val: float, frame_time: float):
         self.ctx.clear(0.0, 0.0, 0.0)
 
         # --- Audio ---
@@ -67,7 +72,7 @@ class FlameSheepApp(mglw.WindowConfig):
 
         # --- GPU render ---
         self.renderer.clear_histogram()
-        self.renderer.dispatch_chaos_game(n_iterations=200)
+        self.renderer.dispatch_chaos_game(n_iterations=500)
         self.ctx.memory_barrier()   # ensure compute writes are visible
         self.renderer.render_tonemap()
 
@@ -125,7 +130,11 @@ def main():
     parser.add_argument('--width',  type=int, default=1920)
     parser.add_argument('--height', type=int, default=1080)
     parser.add_argument('--list-audio', action='store_true', help='list audio devices and exit')
+    parser.add_argument('--audio-device', type=int, default=6, help='audio input device index (default: 6 pipewire)')
     args = parser.parse_args()
+
+    global _AUDIO_DEVICE
+    _AUDIO_DEVICE = args.audio_device
 
     if args.list_audio:
         from .audio import list_monitor_devices

@@ -115,17 +115,25 @@ class AudioProcessor:
         An onset fires when current energy exceeds local mean by threshold.
         """
         events = []
-        THRESHOLD = 1.5  # current must be > 1.5x local average
+        THRESHOLD  = 2.5   # current must be > 2.5x local average
+        # Minimum absolute energy floor — ignore noise below this level
+        MIN_ENERGY = {'kick': 0.02, 'snare': 0.01, 'hihat': 0.005}
+        # Don't fire same band twice within N frames
+        COOLDOWN   = 8
 
         for band, mask in self._bands.items():
             energy = float(spectrum[mask].mean())
             hist   = self._history[band]
 
-            if len(hist) >= 10:  # need some history first
+            if len(hist) >= 10 and energy > MIN_ENERGY[band]:
                 local_avg = float(np.mean(hist))
-                if local_avg > 0 and energy > local_avg * THRESHOLD:
-                    # normalize energy roughly 0..1
-                    normalized = min(1.0, energy / (local_avg * 3))
+                # cooldown: check recent history for a prior onset
+                recent     = list(hist)[-COOLDOWN:]
+                recent_max = float(np.max(recent)) if recent else 0.0
+                if (local_avg > 0
+                        and energy > local_avg  * THRESHOLD
+                        and energy > recent_max * 0.9):   # not still decaying from last hit
+                    normalized = min(1.0, (energy / local_avg - THRESHOLD) / THRESHOLD)
                     events.append(BeatEvent(kind=band, energy=normalized))
 
             hist.append(energy)
