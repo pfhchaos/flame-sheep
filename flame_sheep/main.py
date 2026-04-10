@@ -14,13 +14,13 @@ import moderngl_window as mglw
 from moderngl_window import settings
 
 from .genome import Genome
-from .audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent
+from .audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent, DEFAULT_DEVICE
 from .renderer import FlameRenderer
 
 
 # Set by main() before run_window_config — workaround for moderngl-window
 # not passing CLI args through to WindowConfig.__init__
-_AUDIO_DEVICE: int = 10
+_AUDIO_DEVICE: str | int = DEFAULT_DEVICE
 _TEST_AUDIO:   bool = False
 
 
@@ -59,6 +59,7 @@ class FlameSheepApp(mglw.WindowConfig):
             )
         else:
             self.audio = AudioProcessor(device=_AUDIO_DEVICE)
+            print(f'audio device: {_AUDIO_DEVICE!r}')
         self.audio.start()
 
         # Upload initial state
@@ -217,7 +218,8 @@ def main():
     parser.add_argument('--width',  type=int, default=1920)
     parser.add_argument('--height', type=int, default=1080)
     parser.add_argument('--list-audio', action='store_true', help='list audio devices and exit')
-    parser.add_argument('--audio-device', type=int, default=10, help='audio input device index (default: 10 Bose monitor)')
+    parser.add_argument('--audio-device', default=DEFAULT_DEVICE,
+                        help=f'audio input device name or index (default: {DEFAULT_DEVICE!r})')
     parser.add_argument('--test-audio', action='store_true',
                         help='use synthetic metronome instead of real audio (120bpm, predictable beats)')
 
