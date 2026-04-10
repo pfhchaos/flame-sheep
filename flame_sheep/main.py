@@ -72,7 +72,7 @@ class FlameSheepApp(mglw.WindowConfig):
 
         # --- GPU render ---
         self.renderer.clear_histogram()
-        self.renderer.dispatch_chaos_game(n_iterations=500)
+        self.renderer.dispatch_chaos_game(n_iterations=1000)
         self.ctx.memory_barrier()   # ensure compute writes are visible
         self.renderer.render_tonemap()
 

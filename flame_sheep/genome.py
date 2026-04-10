@@ -107,14 +107,49 @@ class Genome:
     def random(cls, rng: np.random.Generator | None = None, n_transforms: int | None = None) -> 'Genome':
         if rng is None:
             rng = np.random.default_rng()
-        g = cls()
-        n = n_transforms or int(rng.integers(2, MAX_TRANSFORMS + 1))
-        g.transforms = [Transform.random(rng) for _ in range(n)]
-        g.palette = _random_palette(rng)
-        g.zoom = float(rng.uniform(0.5, 2.0))
-        g.rotation = float(rng.uniform(0, 2 * np.pi))
-        g.center = rng.uniform(-0.5, 0.5, 2).astype(np.float32)
+        # Keep generating until we get a genome whose attractor fits in view
+        for _ in range(50):
+            g = cls()
+            n = n_transforms or int(rng.integers(2, MAX_TRANSFORMS + 1))
+            g.transforms = [Transform.random(rng) for _ in range(n)]
+            g.palette = _random_palette(rng)
+            g.zoom = float(rng.uniform(0.8, 1.5))
+            g.rotation = float(rng.uniform(0, 2 * np.pi))
+            g.center = rng.uniform(-0.5, 0.5, 2).astype(np.float32)
+            if g.is_viable():
+                return g
+        # Fallback: return last attempt anyway, better than hanging
         return g
+
+    def is_viable(self, n_test: int = 1000, bound: float = 3.0) -> bool:
+        """Quick CPU chaos game to check attractor stays within bounds.
+        Returns True if enough points land inside the viewport."""
+        rng  = np.random.default_rng()
+        x, y = 0.0, 0.0
+        hits = 0
+        weights = np.array([tr.weight for tr in self.transforms], dtype=np.float64)
+        weights /= weights.sum()
+        cumw = np.cumsum(weights)
+
+        for i in range(n_test):
+            # pick transform
+            r    = rng.random()
+            tidx = int(np.searchsorted(cumw, r))
+            tidx = min(tidx, len(self.transforms) - 1)
+            tr   = self.transforms[tidx]
+            a, b, c, d, e, f = tr.affine
+            nx = a*x + b*y + c
+            ny = d*x + e*y + f
+            x, y = nx, ny
+            # only check after warmup
+            if i > 20:
+                if abs(x) < bound and abs(y) < bound:
+                    hits += 1
+                elif abs(x) > 1e6 or abs(y) > 1e6:
+                    return False  # diverging, bail early
+
+        # require at least 50% of points in bounds
+        return hits > (n_test - 20) * 0.5
 
     def lerp(self, other: 'Genome', t: float) -> 'Genome':
         """Linear interpolation toward another genome. Used for smooth morphing."""
