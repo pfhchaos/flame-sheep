@@ -162,6 +162,88 @@ class AudioProcessor:
             return self._waveform.copy()
 
 
+class SyntheticAudioProcessor:
+    """
+    Drop-in replacement for AudioProcessor that generates a predictable
+    metronome signal instead of capturing real audio.
+
+    Useful for visual/integration testing: you know exactly when beats
+    should fire and can judge whether the app responds correctly.
+
+    Pattern (all timings in seconds, relative to start()):
+      kick  — every `kick_interval`  seconds  (default 0.5s = 120 bpm)
+      snare — every `snare_interval` seconds  (default 1.0s, on the 2 and 4)
+      hihat — every `hihat_interval` seconds  (default 0.25s = 8th notes)
+
+    A fake spectrum is synthesised so the audio visualiser on the GPU
+    (tonemap.frag pulse effect) still animates.
+    """
+
+    def __init__(
+        self,
+        kick_interval:  float = 0.5,
+        snare_interval: float = 1.0,
+        hihat_interval: float = 0.25,
+        bpm_label:      str   = '120 bpm',
+    ):
+        self.kick_interval  = kick_interval
+        self.snare_interval = snare_interval
+        self.hihat_interval = hihat_interval
+        self.bpm_label      = bpm_label
+
+        self._start_time: float | None = None
+        self._last: dict[str, float]   = {'kick': -1.0, 'snare': -1.0, 'hihat': -1.0}
+        self._spectrum = np.zeros(N_BINS, dtype=np.float32)
+
+    def start(self):
+        import time
+        self._start_time = time.perf_counter()
+        print(f'[synthetic audio] {self.bpm_label}  '
+              f'kick={self.kick_interval:.2f}s  '
+              f'snare={self.snare_interval:.2f}s  '
+              f'hihat={self.hihat_interval:.2f}s')
+
+    def stop(self):
+        pass  # nothing to close
+
+    def process(self) -> list[BeatEvent]:
+        import time
+        if self._start_time is None:
+            return []
+
+        now     = time.perf_counter() - self._start_time
+        events  = []
+        self._spectrum[:] = 0.0
+
+        for band, interval in [
+            ('kick',  self.kick_interval),
+            ('snare', self.snare_interval),
+            ('hihat', self.hihat_interval),
+        ]:
+            # Fire when we cross a beat boundary since last call
+            beat_num_now  = int(now / interval)
+            beat_num_last = int(self._last[band] / interval) if self._last[band] >= 0 else -1
+            if beat_num_now > beat_num_last:
+                events.append(BeatEvent(kind=band, energy=1.0))
+                self._last[band] = now
+                # Inject energy into the matching spectrum region so the
+                # GPU pulse effect fires visually too
+                freqs = np.fft.rfftfreq(FFT_SIZE, 1.0 / SAMPLE_RATE)
+                if band == 'kick':
+                    mask = (freqs >= 50) & (freqs < 100)
+                elif band == 'snare':
+                    mask = (freqs >= 150) & (freqs < 800)
+                else:
+                    mask = freqs >= 8000
+                self._spectrum[mask] = 1.0
+
+        return events
+
+    @property
+    def spectrum(self) -> np.ndarray:
+        return self._spectrum.copy()
+
+
 def list_monitor_devices() -> list[dict]:
     """Helper: list available input devices, highlighting monitor sinks."""
     devices = []

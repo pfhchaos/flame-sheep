@@ -12,13 +12,14 @@ import moderngl_window as mglw
 from moderngl_window import settings
 
 from .genome import Genome
-from .audio import AudioProcessor, BeatEvent
+from .audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent
 from .renderer import FlameRenderer
 
 
 # Set by main() before run_window_config — workaround for moderngl-window
 # not passing CLI args through to WindowConfig.__init__
 _AUDIO_DEVICE: int = 6
+_TEST_AUDIO:   bool = False
 
 
 class FlameSheepApp(mglw.WindowConfig):
@@ -44,8 +45,15 @@ class FlameSheepApp(mglw.WindowConfig):
         self._genome_lock = threading.Lock()
         self._prefetch_genome()
 
-        # Audio
-        self.audio = AudioProcessor(device=_AUDIO_DEVICE)
+        # Audio — real or synthetic metronome for integration testing
+        if _TEST_AUDIO:
+            self.audio = SyntheticAudioProcessor(
+                kick_interval=0.5,    # 120 bpm kicks
+                snare_interval=1.0,   # on the 2 and 4
+                hihat_interval=0.25,  # 8th-note hihats
+            )
+        else:
+            self.audio = AudioProcessor(device=_AUDIO_DEVICE)
         self.audio.start()
 
         # Upload initial state
@@ -124,7 +132,9 @@ class FlameSheepApp(mglw.WindowConfig):
                 self._swap_next_genome()
                 self.morph_t       = 0.0
                 self.morph_speed   = 0.05 + event.energy * 0.15
-                print(f'[kick]  energy={event.energy:.2f}  new target genome')
+                dist = self.current_genome.distance(self.target_genome)
+                print(f'[kick]  energy={event.energy:.2f}  '
+                      f'genome distance={dist:.3f}  morph_speed={self.morph_speed:.3f}')
 
             elif event.kind == 'snare':
                 # Shift palette of target genome
@@ -169,10 +179,13 @@ def main():
     parser.add_argument('--height', type=int, default=1080)
     parser.add_argument('--list-audio', action='store_true', help='list audio devices and exit')
     parser.add_argument('--audio-device', type=int, default=6, help='audio input device index (default: 6 pipewire)')
+    parser.add_argument('--test-audio', action='store_true',
+                        help='use synthetic metronome instead of real audio (120bpm, predictable beats)')
     args = parser.parse_args()
 
-    global _AUDIO_DEVICE
+    global _AUDIO_DEVICE, _TEST_AUDIO
     _AUDIO_DEVICE = args.audio_device
+    _TEST_AUDIO   = args.test_audio
 
     if args.list_audio:
         from .audio import list_monitor_devices
