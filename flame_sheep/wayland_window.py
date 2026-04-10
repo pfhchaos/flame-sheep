@@ -18,11 +18,18 @@ Usage:
 
 import ctypes
 import ctypes.util
+import os
 import time
 import signal
+from collections import deque
+
+# Force glcontext to use EGL backend (not X11/GLX) before moderngl is imported.
+# Must happen before any moderngl import.
+os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
 
 import cffi
 import moderngl
+import moderngl.mgl as _mgl
 import numpy as np
 
 from pywayland.client import Display
@@ -199,9 +206,22 @@ class WallpaperWindow:
         self._make_current()
         _libegl.eglSwapInterval(self._egl_display, 1)  # vsync on
 
-        # Create moderngl context from the current EGL context
-        self.ctx = moderngl.create_context(require=430)
-        print(f'[wallpaper] GL renderer: {self.ctx.info["GL_RENDERER"]}')
+        # Create a fresh moderngl Context wrapping the current EGL context.
+        # We use 'standalone' mode to bypass moderngl's context cache and
+        # avoid the X11/GLX fallback in 'detect' mode. FBO setup is skipped
+        # (standalone=True semantics) which is fine — our renderer manages
+        # its own FBOs.
+        self.ctx = moderngl.Context.__new__(moderngl.Context)
+        self.ctx.mglo, self.ctx.version_code = _mgl.create_context(
+            glversion=430, mode='standalone')
+        self.ctx._info       = None
+        self.ctx._extensions = None
+        self.ctx.extra       = None
+        self.ctx._gc_mode    = None
+        self.ctx._objects    = deque()
+        self.ctx._screen     = None
+        self.ctx.fbo         = None
+        print(f'[wallpaper] GL {self.ctx.version_code} renderer: {self.ctx.info["GL_RENDERER"]}')
 
         # Install SIGINT handler so Ctrl-C closes cleanly
         signal.signal(signal.SIGINT, lambda *_: self._signal_close())
