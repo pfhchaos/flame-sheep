@@ -121,8 +121,8 @@ class Genome:
         # Fallback: return last attempt anyway, better than hanging
         return g
 
-    def is_viable(self, n_test: int = 1000, bound: float = 3.0) -> bool:
-        """Quick CPU chaos game to check attractor stays within bounds.
+    def is_viable(self, n_test: int = 2000, bound: float = 4.0) -> bool:
+        """Quick CPU chaos game including variations to check attractor stays in bounds.
         Returns True if enough points land inside the viewport."""
         rng  = np.random.default_rng()
         x, y = 0.0, 0.0
@@ -132,7 +132,6 @@ class Genome:
         cumw = np.cumsum(weights)
 
         for i in range(n_test):
-            # pick transform
             r    = rng.random()
             tidx = int(np.searchsorted(cumw, r))
             tidx = min(tidx, len(self.transforms) - 1)
@@ -140,15 +139,26 @@ class Genome:
             a, b, c, d, e, f = tr.affine
             nx = a*x + b*y + c
             ny = d*x + e*y + f
+
+            # Apply dominant variation (highest weight) — approximates GPU behavior
+            # without reimplementing all 30 variations in Python
+            best_var = int(np.argmax(tr.variations))
+            w = float(tr.variations[best_var])
+            if w > 0.0:
+                nx, ny = _apply_variation_cpu(best_var, nx, ny, w)
+
             x, y = nx, ny
-            # only check after warmup
+
+            # bail on NaN/Inf immediately
+            if not (np.isfinite(x) and np.isfinite(y)):
+                return False
+
             if i > 20:
                 if abs(x) < bound and abs(y) < bound:
                     hits += 1
                 elif abs(x) > 1e6 or abs(y) > 1e6:
-                    return False  # diverging, bail early
+                    return False
 
-        # require at least 50% of points in bounds
         return hits > (n_test - 20) * 0.5
 
     def lerp(self, other: 'Genome', t: float) -> 'Genome':
@@ -198,6 +208,42 @@ class Genome:
             weights[:n] /= w_sum
 
         return affines, variations, colors, weights
+
+
+def _apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[float, float]:
+    """CPU approximation of key variation functions for viability testing.
+    Only implements variations that can blow up or produce large excursions.
+    Safe/bounded variations fall through to linear (identity * w)."""
+    r = np.sqrt(x*x + y*y) + 1e-10
+    th = np.arctan2(x, y)  # flam3 convention
+
+    if var_idx == 0:   # linear
+        return w*x, w*y
+    elif var_idx == 1: # sinusoidal
+        return w*np.sin(x), w*np.sin(y)
+    elif var_idx == 2: # spherical — 1/r², can blow up near origin
+        r2 = x*x + y*y + 1e-10
+        return w*x/r2, w*y/r2
+    elif var_idx == 3: # swirl
+        rr = x*x + y*y
+        return w*(x*np.sin(rr) - y*np.cos(rr)), w*(x*np.cos(rr) + y*np.sin(rr))
+    elif var_idx == 9: # spiral — w/r, blows up near origin
+        return (w/r)*(np.cos(th) + np.sin(r)), (w/r)*(np.sin(th) - np.cos(r))
+    elif var_idx == 10: # hyperbolic — sin/r, can be large
+        return w*np.sin(th)/r, w*np.cos(th)*r
+    elif var_idx == 13: # julia
+        sqr = w * np.sqrt(r)
+        t2  = th * 0.5
+        return sqr*np.cos(t2), sqr*np.sin(t2)
+    elif var_idx == 18: # exponential — exp(x), very dangerous
+        scale = w * np.exp(min(x - 1.0, 10.0))  # clamp to avoid overflow
+        return scale * np.cos(np.pi * y), scale * np.sin(np.pi * y)
+    elif var_idx == 19: # power
+        rp = np.power(max(r, 1e-10), np.sin(th))
+        return w*rp*np.cos(th), w*rp*np.sin(th)
+    else:
+        # treat unknown/safe variations as linear for viability purposes
+        return w*x, w*y
 
 
 def _lerp_arr(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:

@@ -45,6 +45,9 @@ class FlameRenderer:
         self.compute_shader = self.ctx.compute_shader(
             (SHADER_DIR / 'flame.comp').read_text()
         )
+        self.clear_shader = self.ctx.compute_shader(
+            (SHADER_DIR / 'clear.comp').read_text()
+        )
         self.tonemap_program = self.ctx.program(
             vertex_shader   = (SHADER_DIR / 'tonemap.vert').read_text(),
             fragment_shader = (SHADER_DIR / 'tonemap.frag').read_text(),
@@ -133,9 +136,13 @@ class FlameRenderer:
         self.audio_tex.write(spectrum.astype(np.float32).tobytes())
 
     def clear_histogram(self):
-        """Zero the histogram SSBO between frames."""
-        zeros = np.zeros(self.width * self.height * 2, dtype=np.uint32)
-        self.histogram_buf.write(zeros.tobytes())
+        """Zero the histogram SSBO on the GPU — avoids slow CPU→GPU transfer."""
+        size = self.width * self.height * 2
+        self.clear_shader['u_size'] = size
+        # ceil(size / 64) workgroups
+        groups = (size + 63) // 64
+        self.clear_shader.run(group_x=groups)
+        self.ctx.memory_barrier()
 
     def dispatch_chaos_game(self, n_iterations: int = 100):
         """
