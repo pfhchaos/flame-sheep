@@ -23,13 +23,10 @@ import time
 import signal
 from collections import deque
 
-# Force glcontext to use EGL backend (not X11/GLX) before moderngl is imported.
-# Must happen before any moderngl import.
-os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
-
 import cffi
 import moderngl
 import moderngl.mgl as _mgl
+from glcontext import egl as _glcontext_egl
 import numpy as np
 
 from pywayland.client import Display
@@ -206,14 +203,19 @@ class WallpaperWindow:
         self._make_current()
         _libegl.eglSwapInterval(self._egl_display, 1)  # vsync on
 
-        # Create a fresh moderngl Context wrapping the current EGL context.
-        # We use 'standalone' mode to bypass moderngl's context cache and
-        # avoid the X11/GLX fallback in 'detect' mode. FBO setup is skipped
-        # (standalone=True semantics) which is fine — our renderer manages
-        # its own FBOs.
+        # Wrap the already-current EGL context into a moderngl Context.
+        #
+        # Strategy: glcontext.egl.create_context(mode='share') detects the
+        # currently-bound EGL context (our Wayland surface context) and wraps
+        # it. We then pass that glcontext object to mgl.create_context so that
+        # the mgl C extension also uses EGL instead of defaulting to X11/GLX.
+        #
+        # This avoids the "glXGetCurrentContext: cannot detect" error that
+        # occurs when mgl tries to use the x11 glcontext backend on Linux.
+        _gc = _glcontext_egl.create_context(mode='share', glversion=430)
         self.ctx = moderngl.Context.__new__(moderngl.Context)
         self.ctx.mglo, self.ctx.version_code = _mgl.create_context(
-            glversion=430, mode='standalone')
+            glversion=430, mode='share', context=_gc)
         self.ctx._info       = None
         self.ctx._extensions = None
         self.ctx.extra       = None
