@@ -83,12 +83,14 @@ class FlameSheepApp(mglw.WindowConfig):
         self.morph_t = min(1.0, self.morph_t + self.morph_speed)
         display_genome = self.current_genome.lerp(self.target_genome, self.morph_t)
 
-        # When morph completes, current becomes target.
-        # Don't swap — the next kick or drift timer will do that.
-        # This just cleans up so lerp(t=0) == current on the next beat.
+        # When morph completes, current becomes target, then immediately
+        # swap in a new target at drift speed so the image keeps moving.
+        # The next kick will snap current and set a fast morph speed.
         if self.morph_t >= 1.0:
             self.current_genome = self.target_genome
             self.morph_t        = 0.0
+            self._swap_next_genome()
+            self.morph_speed    = self.DRIFT_MORPH_SPEED
 
         self.renderer.upload_genome(display_genome)
 
