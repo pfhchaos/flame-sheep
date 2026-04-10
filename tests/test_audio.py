@@ -46,16 +46,18 @@ def make_processor() -> AudioProcessor:
         'kick':  deque(maxlen=43),
         'snare': deque(maxlen=43),
         'hihat': deque(maxlen=43),
+        '_snare_confirm': deque(maxlen=43),
     }
     proc._cooldown_frames = {'kick': 0, 'snare': 0, 'hihat': 0}
     proc._frame_count     = {'kick': 0, 'snare': 0, 'hihat': 0}
     proc._window = scipy_windows.hann(FFT_SIZE, sym=False).astype(np.float32)
     freqs = np.fft.rfftfreq(FFT_SIZE, 1.0 / SAMPLE_RATE)
     proc._bands = {
-        'kick':  (freqs >= 50)  & (freqs <  100),
-        'snare': (freqs >= 150) & (freqs <  800),
+        'kick':  (freqs >= 50)   & (freqs <  100),
+        'snare': (freqs >= 300)  & (freqs <  1000),
         'hihat': (freqs >= 8000),
     }
+    proc._snare_confirm = (freqs >= 1000) & (freqs < 3000)
     return proc
 
 

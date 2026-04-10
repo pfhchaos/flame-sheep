@@ -54,6 +54,7 @@ class AudioProcessor:
             'kick':  deque(maxlen=HISTORY_LEN),
             'snare': deque(maxlen=HISTORY_LEN),
             'hihat': deque(maxlen=HISTORY_LEN),
+            '_snare_confirm': deque(maxlen=HISTORY_LEN),
         }
 
         self._window = windows.hann(FFT_SIZE, sym=False).astype(np.float32)
@@ -62,9 +63,11 @@ class AudioProcessor:
         freqs = np.fft.rfftfreq(FFT_SIZE, 1.0 / SAMPLE_RATE)
         self._bands = {
             'kick':  (freqs >= 50)   & (freqs <  100),
-            'snare': (freqs >= 150)  & (freqs <  800),
+            'snare': (freqs >= 300)  & (freqs <  1000),  # avoid kick harmonics in 150-300Hz
             'hihat': (freqs >= 8000),
         }
+        # Snare transients spike here too; both bands must agree to fire
+        self._snare_confirm = (freqs >= 1000) & (freqs < 3000)
 
         # Per-band cooldown: frame counter since last onset
         self._cooldown_frames = {'kick': 0, 'snare': 0, 'hihat': 0}
@@ -135,6 +138,19 @@ class AudioProcessor:
 
             if len(hist) >= 10 and energy > MIN_ENERGY[band] and not in_cooldown:
                 local_avg = float(np.mean(hist))
+
+                # Snare requires a corroborating spike in 1k-3kHz to reject
+                # kick harmonics and sustained bass bleed in 300-1000Hz.
+                if band == 'snare':
+                    confirm_energy = float(spectrum[self._snare_confirm].mean())
+                    confirm_hist   = self._history['_snare_confirm']
+                    confirm_avg    = float(np.mean(confirm_hist)) if len(confirm_hist) >= 5 else 0
+                    self._history['_snare_confirm'].append(confirm_energy)
+                    # Reject if 1k-3k isn't also spiking above its own baseline
+                    if confirm_avg > 0 and confirm_energy < confirm_avg * THRESHOLD:
+                        hist.append(energy)
+                        continue
+
                 # If local average is near-zero (e.g. silence warmup), treat any
                 # energy above floor as an onset at max strength.
                 if local_avg < MIN_ENERGY[band]:
