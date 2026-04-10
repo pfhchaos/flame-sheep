@@ -47,6 +47,9 @@ class FlameSheepApp(mglw.WindowConfig):
         self._genome_lock = threading.Lock()
         self._prefetch_genome()
 
+        # Autonomous drift state
+        self._quiet_frames: int = 0
+
         # Audio — real or synthetic metronome for integration testing
         if _TEST_AUDIO:
             self.audio = SyntheticAudioProcessor(
@@ -93,12 +96,30 @@ class FlameSheepApp(mglw.WindowConfig):
         self.ctx.memory_barrier()   # ensure compute writes are visible
         self.renderer.render_tonemap()
 
-        # Decay morph speed back toward baseline after a beat spike
-        self.morph_speed = max(0.005, self.morph_speed * 0.98)
+        # Autonomous drift: when quiet, morph slowly and swap genomes on a timer.
+        # When audio is present, beat events take over and reset the timer.
+        rms = self.audio.rms
+        if rms < self.DRIFT_RMS_THRESHOLD:
+            self._quiet_frames += 1
+            # Swap genome every DRIFT_SWAP_FRAMES of quiet
+            if self._quiet_frames >= self.DRIFT_SWAP_FRAMES:
+                self._quiet_frames = 0
+                self._swap_next_genome()
+                self.morph_t     = 0.0
+                self.morph_speed = self.DRIFT_MORPH_SPEED
+        else:
+            self._quiet_frames = 0
+
+        # Decay beat-triggered morph speed back toward drift baseline
+        self.morph_speed = max(self.DRIFT_MORPH_SPEED, self.morph_speed * 0.98)
 
     # Minimum genome distance before accepting a prefetched candidate.
-    # Range [0, 1]. Below this the transition would look nearly invisible.
-    MIN_GENOME_DISTANCE = 0.15
+    MIN_GENOME_DISTANCE  = 0.15
+
+    # Autonomous drift mode — active when RMS is below threshold
+    DRIFT_RMS_THRESHOLD  = 0.002   # below this = "effectively silent"
+    DRIFT_SWAP_FRAMES    = 60 * 8  # swap genome every ~8s at 60fps when quiet
+    DRIFT_MORPH_SPEED    = 0.003   # slow baseline morph speed
 
     def _prefetch_genome(self):
         """Generate next genome in background thread with its own RNG.

@@ -37,15 +37,16 @@ def make_processor() -> AudioProcessor:
     import threading
     from collections import deque
     from scipy.signal import windows as scipy_windows
-    proc._lock     = threading.Lock()
-    proc._buffer   = deque(maxlen=FFT_SIZE)
-    proc._spectrum = np.zeros(N_BINS, dtype=np.float32)
-    proc._waveform = np.zeros(FFT_SIZE, dtype=np.float32)
-    proc._events   = []
-    proc._history  = {
-        'kick':  deque(maxlen=43),
-        'snare': deque(maxlen=43),
-        'hihat': deque(maxlen=43),
+    proc._lock          = threading.Lock()
+    proc._buffer        = deque(maxlen=FFT_SIZE)
+    proc._spectrum      = np.zeros(N_BINS, dtype=np.float32)
+    proc._waveform      = np.zeros(FFT_SIZE, dtype=np.float32)
+    proc._rms           = 0.0
+    proc._prev_spectrum = None
+    proc._flux_history  = {
+        'kick':           deque(maxlen=43),
+        'snare':          deque(maxlen=43),
+        'hihat':          deque(maxlen=43),
         '_snare_confirm': deque(maxlen=43),
     }
     proc._cooldown_frames = {'kick': 0, 'snare': 0, 'hihat': 0}
@@ -164,13 +165,15 @@ class TestBeatDetection:
         for e in events:
             assert 0.0 <= e.energy <= 1.0, f"energy {e.energy} out of range"
 
-    def test_minimum_energy_floor_blocks_noise(self):
-        """Very quiet signal below energy floor should not trigger beats."""
-        proc  = make_processor()
-        # amplitude=0.000001 gives kick band energy ~2e-7, well below floor of 0.0002
-        quiet = make_sine(80, FFT_SIZE, amplitude=0.000001)
-        self._warm_up(proc, quiet)
-        feed_audio(proc, quiet * 3)  # 3x but still sub-floor
-        events = proc.process()
-        assert len(events) == 0, \
-            f"sub-floor signal should not trigger beats, got {events}"
+    def test_silence_no_flux(self):
+        """Constant signal (zero flux) should never trigger beats."""
+        proc = make_processor()
+        # A sustained constant tone has zero frame-to-frame flux after warmup
+        tone = make_sine(80, FFT_SIZE, amplitude=0.5)
+        self._warm_up(proc, tone)  # fills flux history with near-zero flux
+        # Feed the identical tone — flux is ~0, should not trigger
+        for _ in range(10):
+            feed_audio(proc, tone)
+            events = proc.process()
+            assert len(events) == 0, \
+                f"constant tone should have zero flux, got {events}"

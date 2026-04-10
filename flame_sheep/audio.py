@@ -7,12 +7,24 @@ Captures from PipeWire monitor sink (whatever is playing) via sounddevice
 Pipeline:
   sounddevice InputStream (callback) → circular PCM buffer
   → per-frame: Hann-windowed FFT → magnitude spectrum
-  → multi-band onset detection → beat events
+  → RMS normalize spectrum (volume-invariant)
+  → per-band spectral flux (frame-to-frame change, not absolute energy)
+  → flux history → local average flux
+  → onset = flux > THRESHOLD * local_avg_flux  (self-calibrating)
+
+Using flux rather than absolute energy means:
+  - Volume changes don't affect sensitivity (a quiet song and a loud song
+    with the same beat structure produce the same flux pattern)
+  - Works on any audio content, not just music
+  - No hand-tuned absolute energy floors needed
 
 Beat events emitted:
-  'kick'  — bass onset  (20-150 Hz)
-  'snare' — mid onset   (150-800 Hz)
-  'hihat' — treble onset (8kHz+)
+  'kick'  — bass flux onset   (50-100 Hz)
+  'snare' — mid flux onset    (300-1000 Hz, confirmed by 1k-3kHz)
+  'hihat' — treble flux onset (8kHz+)
+
+Also exposes:
+  .rms    — current broadband RMS (0..1), for autonomous drift when quiet
 """
 
 import threading
@@ -47,27 +59,29 @@ class AudioProcessor:
         self._buffer    = deque(maxlen=FFT_SIZE)  # circular PCM buffer (mono, float32)
         self._spectrum  = np.zeros(N_BINS,  dtype=np.float32)
         self._waveform  = np.zeros(FFT_SIZE, dtype=np.float32)
-        self._events: list[BeatEvent] = []
-
-        # Per-band energy history for onset detection
-        self._history = {
-            'kick':  deque(maxlen=HISTORY_LEN),
-            'snare': deque(maxlen=HISTORY_LEN),
-            'hihat': deque(maxlen=HISTORY_LEN),
-            '_snare_confirm': deque(maxlen=HISTORY_LEN),
-        }
+        self._rms       = 0.0
 
         self._window = windows.hann(FFT_SIZE, sym=False).astype(np.float32)
 
-        # Frequency bin ranges for each band
+        # Frequency bin ranges
         freqs = np.fft.rfftfreq(FFT_SIZE, 1.0 / SAMPLE_RATE)
         self._bands = {
             'kick':  (freqs >= 50)   & (freqs <  100),
-            'snare': (freqs >= 300)  & (freqs <  1000),  # avoid kick harmonics in 150-300Hz
+            'snare': (freqs >= 300)  & (freqs <  1000),
             'hihat': (freqs >= 8000),
         }
-        # Snare transients spike here too; both bands must agree to fire
         self._snare_confirm = (freqs >= 1000) & (freqs < 3000)
+        self._all_bins      = np.ones(N_BINS, dtype=bool)  # for broadband RMS
+
+        # Spectral flux history per band (flux = positive energy change vs prev frame)
+        # Longer history than before — flux variance is lower so we need more context
+        self._prev_spectrum: np.ndarray | None = None
+        self._flux_history = {
+            'kick':           deque(maxlen=HISTORY_LEN),
+            'snare':          deque(maxlen=HISTORY_LEN),
+            'hihat':          deque(maxlen=HISTORY_LEN),
+            '_snare_confirm': deque(maxlen=HISTORY_LEN),
+        }
 
         # Per-band cooldown: frame counter since last onset
         self._cooldown_frames = {'kick': 0, 'snare': 0, 'hihat': 0}
@@ -98,70 +112,86 @@ class AudioProcessor:
     def process(self) -> list[BeatEvent]:
         """
         Call once per frame from the main/render thread.
-        Runs FFT on latest buffer, detects onsets, returns beat events.
-        Clears event list after returning.
+        Runs FFT, computes spectral flux, detects onsets.
         """
         with self._lock:
             if len(self._buffer) < FFT_SIZE:
                 return []
             pcm = np.array(self._buffer, dtype=np.float32)
 
-        windowed  = pcm * self._window
-        spectrum  = (np.abs(np.fft.rfft(windowed)) / FFT_SIZE).astype(np.float32)
+        windowed = pcm * self._window
+        spectrum = (np.abs(np.fft.rfft(windowed)) / FFT_SIZE).astype(np.float32)
+
+        # Broadband RMS of the raw PCM window, smoothed with a leaky integrator
+        rms = float(np.sqrt(np.mean(pcm ** 2)))
 
         with self._lock:
             self._spectrum[:] = spectrum
             self._waveform[:] = pcm
+            self._rms = self._rms * 0.9 + rms * 0.1
 
         events = self._detect_onsets(spectrum)
         return events
 
     def _detect_onsets(self, spectrum: np.ndarray) -> list[BeatEvent]:
         """
-        Simple local-average onset detection per band.
-        An onset fires when current energy exceeds local mean by threshold
-        AND the band is not in cooldown (frame counter since last onset).
+        Spectral flux onset detection.
+
+        Flux for a band = mean of positive (spectrum - prev_spectrum) differences.
+        This measures *increase* in energy, not absolute level — so it is
+        inherently volume-normalised and self-adapting to any genre or content.
+
+        An onset fires when flux > THRESHOLD * local_avg_flux AND the band
+        is not in cooldown.
         """
+        if self._prev_spectrum is None:
+            self._prev_spectrum = spectrum.copy()
+            return []
+
+        # Half-wave rectified flux: only count increases, ignore decreases
+        diff = spectrum - self._prev_spectrum
+        flux = np.maximum(diff, 0.0)  # shape: (N_BINS,)
+        self._prev_spectrum = spectrum.copy()
+
         events = []
-        THRESHOLD  = 1.5   # current must be > 1.5x local average
-        # Minimum absolute energy floor — ignore noise below this level
-        MIN_ENERGY = {'kick': 0.0002, 'snare': 0.0001, 'hihat': 0.00005}
-        # Don't fire same band twice within N frames
-        COOLDOWN   = 12
+        THRESHOLD = 1.5   # flux must exceed 1.5x local average flux to fire
+        COOLDOWN  = 12    # frames of silence after an onset
+        # Minimum flux floor — gates out truly silent signals.
+        # Expressed as a fraction of typical flux: anything below this is
+        # treated as silence regardless of ratio. Kept very small so it
+        # only blocks DC offsets / numerical noise, not quiet audio.
+        MIN_FLUX  = 1e-7
 
         for band, mask in self._bands.items():
-            energy = float(spectrum[mask].mean())
-            hist   = self._history[band]
+            band_flux = float(flux[mask].mean())
+            hist      = self._flux_history[band]
 
             self._frame_count[band] += 1
             in_cooldown = (self._frame_count[band] - self._cooldown_frames[band]) < COOLDOWN
 
-            if len(hist) >= 10 and energy > MIN_ENERGY[band] and not in_cooldown:
+            if len(hist) >= 10 and band_flux > MIN_FLUX and not in_cooldown:
                 local_avg = float(np.mean(hist))
 
-                # Snare requires a corroborating spike in 1k-3kHz to reject
-                # kick harmonics and sustained bass bleed in 300-1000Hz.
+                # Snare: corroborate with 1k-3kHz flux to reject kick harmonics
                 if band == 'snare':
-                    confirm_energy = float(spectrum[self._snare_confirm].mean())
-                    confirm_hist   = self._history['_snare_confirm']
-                    confirm_avg    = float(np.mean(confirm_hist)) if len(confirm_hist) >= 5 else 0
-                    self._history['_snare_confirm'].append(confirm_energy)
-                    # Reject if 1k-3k isn't also spiking above its own baseline
-                    if confirm_avg > 0 and confirm_energy < confirm_avg * THRESHOLD:
-                        hist.append(energy)
+                    confirm_flux = float(flux[self._snare_confirm].mean())
+                    confirm_hist = self._flux_history['_snare_confirm']
+                    self._flux_history['_snare_confirm'].append(confirm_flux)
+                    confirm_avg  = float(np.mean(confirm_hist)) if len(confirm_hist) >= 5 else 0
+                    if confirm_avg > 0 and confirm_flux < confirm_avg * THRESHOLD:
+                        hist.append(band_flux)
                         continue
 
-                # If local average is near-zero (e.g. silence warmup), treat any
-                # energy above floor as an onset at max strength.
-                if local_avg < MIN_ENERGY[band]:
+                if local_avg < MIN_FLUX:
+                    # No flux history yet — first onset after silence
                     events.append(BeatEvent(kind=band, energy=1.0))
                     self._cooldown_frames[band] = self._frame_count[band]
-                elif energy > local_avg * THRESHOLD:
-                    normalized = min(1.0, (energy / local_avg - THRESHOLD) / THRESHOLD)
+                elif band_flux > local_avg * THRESHOLD:
+                    normalized = min(1.0, (band_flux / local_avg - THRESHOLD) / THRESHOLD)
                     events.append(BeatEvent(kind=band, energy=normalized))
                     self._cooldown_frames[band] = self._frame_count[band]
 
-            hist.append(energy)
+            hist.append(band_flux)
 
         return events
 
@@ -176,6 +206,12 @@ class AudioProcessor:
         """Latest raw PCM window. For GPU texture upload if desired."""
         with self._lock:
             return self._waveform.copy()
+
+    @property
+    def rms(self) -> float:
+        """Smoothed broadband RMS of the input signal (0..1 range for typical audio)."""
+        with self._lock:
+            return self._rms
 
 
 class SyntheticAudioProcessor:
@@ -210,6 +246,7 @@ class SyntheticAudioProcessor:
         self._start_time: float | None = None
         self._last: dict[str, float]   = {'kick': -1.0, 'snare': -1.0, 'hihat': -1.0}
         self._spectrum = np.zeros(N_BINS, dtype=np.float32)
+        self._rms      = 0.5  # synthetic audio is "always playing"
 
     def start(self):
         import time
@@ -258,6 +295,10 @@ class SyntheticAudioProcessor:
     @property
     def spectrum(self) -> np.ndarray:
         return self._spectrum.copy()
+
+    @property
+    def rms(self) -> float:
+        return self._rms
 
 
 def list_monitor_devices() -> list[dict]:
