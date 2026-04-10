@@ -161,6 +161,54 @@ class Genome:
 
         return hits > (n_test - 20) * 0.5
 
+    def distance(self, other: 'Genome') -> float:
+        """
+        Perceptual distance between two genomes, in [0, 1].
+
+        Combines:
+          - weighted affine+variation distance (how different the IFS shapes are)
+          - palette distance (how different the colours look)
+
+        The affine/variation feature vector is built by sorting transforms by
+        their normalised selection weight (heaviest first) then concatenating
+        [weight, affine×6, variations×30] per slot, zero-padded to MAX_TRANSFORMS.
+        Sorting by weight makes the comparison order-independent: the most
+        influential transforms are aligned regardless of list order.
+        """
+        def _feature_vec(g: 'Genome') -> np.ndarray:
+            affines, variations, _, weights = g.to_gpu_arrays()
+            n = len(g.transforms)
+            # sort slots by descending weight so dominant transforms align
+            order = np.argsort(-weights[:n])
+            rows = []
+            for i in range(MAX_TRANSFORMS):
+                if i < n:
+                    s = order[i]
+                else:
+                    s = i  # zero slot
+                w   = weights[s] if i < n else 0.0
+                aff = affines[s]            # (6,)  already in [-1,1] ish
+                var = variations[s]         # (30,) already sum-to-1
+                rows.append(np.concatenate([[w], aff, var]))
+            return np.concatenate(rows).astype(np.float64)
+
+        va = _feature_vec(self)
+        vb = _feature_vec(other)
+
+        # L2 distance, normalised by the max possible range
+        # affine values are ~[-1,1], weight ~[0,1], variations ~[0,1]
+        # vector length = MAX_TRANSFORMS * (1 + 6 + 30) = 6*37 = 222
+        vec_len = MAX_TRANSFORMS * (1 + 6 + NUM_VARIATIONS)
+        iff_dist = float(np.linalg.norm(va - vb)) / np.sqrt(vec_len * 4.0)  # 4≈max sq diff
+        iff_dist = min(1.0, iff_dist)
+
+        # Mean absolute palette difference (already in [0,1])
+        pal_dist = float(np.mean(np.abs(self.palette.astype(np.float64)
+                                        - other.palette.astype(np.float64))))
+
+        # Weighted combination — IFS shape matters more than colour
+        return float(0.7 * iff_dist + 0.3 * pal_dist)
+
     def lerp(self, other: 'Genome', t: float) -> 'Genome':
         """Linear interpolation toward another genome. Used for smooth morphing."""
         # TODO: handle differing transform counts (pad shorter with identity)

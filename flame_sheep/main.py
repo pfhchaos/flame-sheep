@@ -83,12 +83,25 @@ class FlameSheepApp(mglw.WindowConfig):
         # Decay morph speed back toward baseline after a beat spike
         self.morph_speed = max(0.005, self.morph_speed * 0.98)
 
+    # Minimum genome distance before accepting a prefetched candidate.
+    # Range [0, 1]. Below this the transition would look nearly invisible.
+    MIN_GENOME_DISTANCE = 0.15
+
     def _prefetch_genome(self):
-        """Generate next genome in background thread with its own RNG."""
+        """Generate next genome in background thread with its own RNG.
+        Keeps generating until the candidate is visually distinct enough
+        from the current genome (distance >= MIN_GENOME_DISTANCE).
+        """
+        # Snapshot current genome for the distance check inside the thread
+        current_snapshot = self.current_genome
+
         def _gen():
-            # Use a fresh RNG per thread — numpy generators aren't thread-safe
             rng = np.random.default_rng()
-            g = Genome.random(rng)
+            for attempt in range(20):
+                g = Genome.random(rng)
+                if g.distance(current_snapshot) >= FlameSheepApp.MIN_GENOME_DISTANCE:
+                    break
+            # After 20 attempts just use whatever we have — better than hanging
             with self._genome_lock:
                 self._next_genome = g
         threading.Thread(target=_gen, daemon=True).start()

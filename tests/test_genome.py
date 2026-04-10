@@ -219,6 +219,57 @@ class TestToGpuArrays:
 
 
 # ----------------------------------------------------------------
+# Genome distance
+# ----------------------------------------------------------------
+
+class TestGenomeDistance:
+
+    def test_distance_self_is_zero(self):
+        """Distance from a genome to itself must be 0."""
+        rng = np.random.default_rng(50)
+        g = Genome.random(rng)
+        assert g.distance(g) == 0.0
+
+    def test_distance_is_symmetric(self):
+        rng = np.random.default_rng(51)
+        g1 = Genome.random(rng)
+        g2 = Genome.random(rng)
+        assert abs(g1.distance(g2) - g2.distance(g1)) < 1e-9
+
+    def test_distance_in_range(self):
+        """Distance must always be in [0, 1]."""
+        rng = np.random.default_rng(52)
+        genomes = [Genome.random(rng) for _ in range(10)]
+        for i in range(len(genomes)):
+            for j in range(i + 1, len(genomes)):
+                d = genomes[i].distance(genomes[j])
+                assert 0.0 <= d <= 1.0, f"distance {d} out of [0,1]"
+
+    def test_random_genomes_exceed_min_threshold(self):
+        """Random genome pairs should nearly always be visually distinct."""
+        rng = np.random.default_rng(53)
+        MIN = 0.15
+        above = sum(
+            Genome.random(rng).distance(Genome.random(rng)) >= MIN
+            for _ in range(20)
+        )
+        # Allow a couple of near-duplicates by chance, but most must differ
+        assert above >= 16, f"only {above}/20 pairs exceeded min distance {MIN}"
+
+    def test_lerp_midpoint_closer_to_both_endpoints(self):
+        """A lerp midpoint should be closer to each endpoint than they are to each other."""
+        rng = np.random.default_rng(54)
+        g1 = Genome.random(rng)
+        g2 = Genome.random(rng)
+        mid = g1.lerp(g2, 0.5)
+        d12  = g1.distance(g2)
+        d1m  = g1.distance(mid)
+        d2m  = g2.distance(mid)
+        assert d1m < d12, f"midpoint not closer to g1: d1m={d1m:.3f} d12={d12:.3f}"
+        assert d2m < d12, f"midpoint not closer to g2: d2m={d2m:.3f} d12={d12:.3f}"
+
+
+# ----------------------------------------------------------------
 # Variation CPU implementations
 # ----------------------------------------------------------------
 
