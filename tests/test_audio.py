@@ -165,10 +165,10 @@ class TestBeatDetection:
     def test_minimum_energy_floor_blocks_noise(self):
         """Very quiet signal below energy floor should not trigger beats."""
         proc  = make_processor()
-        # Generate a very quiet kick-frequency signal
-        quiet = make_sine(80, FFT_SIZE, amplitude=0.001)
+        # amplitude=0.000001 gives kick band energy ~2e-7, well below floor of 0.0002
+        quiet = make_sine(80, FFT_SIZE, amplitude=0.000001)
         self._warm_up(proc, quiet)
-        feed_audio(proc, quiet * 3)  # 3x but still tiny
+        feed_audio(proc, quiet * 3)  # 3x but still sub-floor
         events = proc.process()
         assert len(events) == 0, \
             f"sub-floor signal should not trigger beats, got {events}"

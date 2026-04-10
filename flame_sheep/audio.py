@@ -23,7 +23,7 @@ from scipy.signal import windows
 from dataclasses import dataclass
 
 
-SAMPLE_RATE   = 44100
+SAMPLE_RATE   = 48000
 BLOCK_SIZE    = 1024   # frames per callback
 FFT_SIZE      = 2048   # FFT window (zero-padded if > BLOCK_SIZE)
 N_BINS        = FFT_SIZE // 2 + 1
@@ -122,7 +122,7 @@ class AudioProcessor:
         events = []
         THRESHOLD  = 2.5   # current must be > 2.5x local average
         # Minimum absolute energy floor — ignore noise below this level
-        MIN_ENERGY = {'kick': 0.02, 'snare': 0.01, 'hihat': 0.005}
+        MIN_ENERGY = {'kick': 0.0002, 'snare': 0.0001, 'hihat': 0.00005}
         # Don't fire same band twice within N frames
         COOLDOWN   = 20
 

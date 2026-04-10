@@ -19,7 +19,7 @@ from .renderer import FlameRenderer
 
 # Set by main() before run_window_config — workaround for moderngl-window
 # not passing CLI args through to WindowConfig.__init__
-_AUDIO_DEVICE: int = 6
+_AUDIO_DEVICE: int = 10
 _TEST_AUDIO:   bool = False
 
 
@@ -185,7 +185,7 @@ def main():
     parser.add_argument('--width',  type=int, default=1920)
     parser.add_argument('--height', type=int, default=1080)
     parser.add_argument('--list-audio', action='store_true', help='list audio devices and exit')
-    parser.add_argument('--audio-device', type=int, default=6, help='audio input device index (default: 6 pipewire)')
+    parser.add_argument('--audio-device', type=int, default=10, help='audio input device index (default: 10 Bose monitor)')
     parser.add_argument('--test-audio', action='store_true',
                         help='use synthetic metronome instead of real audio (120bpm, predictable beats)')
 
