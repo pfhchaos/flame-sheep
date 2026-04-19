@@ -5,61 +5,9 @@ Uses synthetic audio — no hardware or PipeWire required.
 
 import numpy as np
 import pytest
-from flame_sheep.audio import AudioProcessor, SAMPLE_RATE, FFT_SIZE, N_BINS
+from flame_sheep.audio import SAMPLE_RATE, FFT_SIZE, N_BINS
 
-
-def make_sine(freq: float, duration_samples: int, amplitude: float = 0.5) -> np.ndarray:
-    """Generate a pure sine wave at given frequency."""
-    t = np.arange(duration_samples) / SAMPLE_RATE
-    return (amplitude * np.sin(2 * np.pi * freq * t)).astype(np.float32)
-
-
-def make_impulse(duration_samples: int, amplitude: float = 1.0) -> np.ndarray:
-    """Single-sample impulse — broadband onset."""
-    sig = np.zeros(duration_samples, dtype=np.float32)
-    sig[duration_samples // 2] = amplitude
-    return sig
-
-
-def make_silence(duration_samples: int) -> np.ndarray:
-    return np.zeros(duration_samples, dtype=np.float32)
-
-
-def feed_audio(processor: AudioProcessor, signal: np.ndarray):
-    """Feed signal directly into processor buffer, bypassing sounddevice."""
-    with processor._lock:
-        processor._buffer.extend(signal)
-
-
-def make_processor() -> AudioProcessor:
-    """Create an AudioProcessor without starting the audio stream."""
-    proc = AudioProcessor.__new__(AudioProcessor)
-    import threading
-    from collections import deque
-    from scipy.signal import windows as scipy_windows
-    proc._lock          = threading.Lock()
-    proc._buffer        = deque(maxlen=FFT_SIZE)
-    proc._spectrum      = np.zeros(N_BINS, dtype=np.float32)
-    proc._waveform      = np.zeros(FFT_SIZE, dtype=np.float32)
-    proc._rms           = 0.0
-    proc._prev_spectrum = None
-    proc._flux_history  = {
-        'kick':           deque(maxlen=43),
-        'snare':          deque(maxlen=43),
-        'hihat':          deque(maxlen=43),
-        '_snare_confirm': deque(maxlen=43),
-    }
-    proc._cooldown_frames = {'kick': 0, 'snare': 0, 'hihat': 0}
-    proc._frame_count     = {'kick': 0, 'snare': 0, 'hihat': 0}
-    proc._window = scipy_windows.hann(FFT_SIZE, sym=False).astype(np.float32)
-    freqs = np.fft.rfftfreq(FFT_SIZE, 1.0 / SAMPLE_RATE)
-    proc._bands = {
-        'kick':  (freqs >= 50)   & (freqs <  100),
-        'snare': (freqs >= 300)  & (freqs <  1000),
-        'hihat': (freqs >= 8000),
-    }
-    proc._snare_confirm = (freqs >= 1000) & (freqs < 3000)
-    return proc
+from .conftest import make_processor, make_sine, make_silence, feed_audio
 
 
 # ----------------------------------------------------------------
@@ -130,10 +78,8 @@ class TestBeatDetection:
         proc  = make_processor()
         tone  = make_sine(80, FFT_SIZE, amplitude=0.8)
         self._warm_up(proc, make_silence(FFT_SIZE))
-        # First hit on the tone
         feed_audio(proc, tone)
         first = proc.process()
-        # Subsequent frames with same tone should not re-fire
         subsequent_hits = 0
         for _ in range(10):
             feed_audio(proc, tone)
@@ -168,10 +114,8 @@ class TestBeatDetection:
     def test_silence_no_flux(self):
         """Constant signal (zero flux) should never trigger beats."""
         proc = make_processor()
-        # A sustained constant tone has zero frame-to-frame flux after warmup
         tone = make_sine(80, FFT_SIZE, amplitude=0.5)
-        self._warm_up(proc, tone)  # fills flux history with near-zero flux
-        # Feed the identical tone — flux is ~0, should not trigger
+        self._warm_up(proc, tone)
         for _ in range(10):
             feed_audio(proc, tone)
             events = proc.process()

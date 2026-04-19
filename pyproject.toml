@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=61"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "flame-sheep"
@@ -16,8 +16,17 @@ dependencies = [
     "sounddevice>=0.5.1",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+eval = ["musdb>=0.4", "stempeg>=0.2"]
+
 [project.scripts]
 flame-sheep = "flame_sheep.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short"

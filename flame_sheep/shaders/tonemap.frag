@@ -35,8 +35,14 @@ uniform sampler2D u_palette;
 // Audio spectrum texture: N_BINS x 1 R — for reactive effects
 uniform sampler2D u_audio;
 
-uniform int u_width;
-uniform int u_height;
+uniform int u_width;          // full virtual canvas render width
+uniform int u_height;         // full virtual canvas render height
+uniform int u_viewport_x;     // this window's left edge in canvas pixels
+uniform int u_viewport_y;     // this window's top edge in canvas pixels
+uniform int u_viewport_w;     // this window's width in canvas pixels
+uniform int u_viewport_h;     // this window's height in canvas pixels
+uniform int u_surface_w;      // actual EGL surface width (physical pixels)
+uniform int u_surface_h;      // actual EGL surface height (physical pixels)
 
 // Tone mapping parameters — tweak these to taste
 uniform float u_gamma     = 1.8;    // gamma correction (lower = brighter midtones)
@@ -44,12 +50,16 @@ uniform float u_brightness= 6.0;    // overall brightness multiplier
 uniform float u_vibrancy  = 1.0;    // 0=desaturated, 1=full color
 
 void main() {
-    // Convert UV to pixel index
-    // v_uv is 0..1, flip Y because OpenGL origin is bottom-left
-    int px = int(v_uv.x * float(u_width));
-    int py = int((1.0 - v_uv.y) * float(u_height));
+    // Convert UV to canvas pixel index.
+    // v_uv is 0..1 over this window's quad (physical surface).
+    // Map into the canvas slice, accounting for resolution scaling.
+    // Flip Y because OpenGL origin is bottom-left.
+    float scale_x = float(u_viewport_w) / float(u_surface_w);
+    float scale_y = float(u_viewport_h) / float(u_surface_h);
+    int px = u_viewport_x + int(v_uv.x * float(u_surface_w) * scale_x);
+    int py = u_viewport_y + int((1.0 - v_uv.y) * float(u_surface_h) * scale_y);
 
-    // Clamp to valid range
+    // Clamp to canvas bounds
     px = clamp(px, 0, u_width  - 1);
     py = clamp(py, 0, u_height - 1);
 

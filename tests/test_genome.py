@@ -6,8 +6,8 @@ No GPU required — pure CPU/numpy.
 import numpy as np
 import pytest
 from flame_sheep.genome import (
-    Genome, Transform, _apply_variation_cpu,
-    MAX_TRANSFORMS, NUM_VARIATIONS
+    Genome, Transform, _apply_variation_cpu, _score_from_histogram,
+    MAX_TRANSFORMS, MAX_ACTIVE_VARS, NUM_VARIATIONS
 )
 
 
@@ -206,8 +206,8 @@ class TestToGpuArrays:
     def test_variations_shape(self):
         rng = np.random.default_rng(42)
         g = Genome.random(rng)
-        _, variations, _, _ = g.to_gpu_arrays()
-        assert variations.shape == (MAX_TRANSFORMS, NUM_VARIATIONS)
+        _, active_vars, _, _ = g.to_gpu_arrays()
+        assert active_vars.shape == (MAX_TRANSFORMS, MAX_ACTIVE_VARS, 2)
 
     def test_unused_transform_slots_zero(self):
         """Transforms beyond n_transforms should be zero."""
@@ -267,6 +267,107 @@ class TestGenomeDistance:
         d2m  = g2.distance(mid)
         assert d1m < d12, f"midpoint not closer to g1: d1m={d1m:.3f} d12={d12:.3f}"
         assert d2m < d12, f"midpoint not closer to g2: d2m={d2m:.3f} d12={d12:.3f}"
+
+
+# ----------------------------------------------------------------
+# Aesthetic scoring
+# ----------------------------------------------------------------
+
+class TestScoreFromHistogram:
+    """Property tests for _score_from_histogram — no GPU needed."""
+
+    def test_empty_histogram_all_zeros(self):
+        hits = np.zeros((64, 64))
+        colors = np.zeros((64, 64))
+        scores = _score_from_histogram(hits, colors)
+        for k, v in scores.items():
+            assert v == 0.0, f"{k} should be 0 for empty histogram, got {v}"
+
+    def test_single_pixel(self):
+        hits = np.zeros((64, 64))
+        colors = np.zeros((64, 64))
+        hits[32, 32] = 100.0
+        colors[32, 32] = 0.5
+        scores = _score_from_histogram(hits, colors)
+        assert scores['coverage'] == pytest.approx(1 / (64 * 64))
+        assert scores['entropy'] < 0.01
+        assert scores['complexity'] < 0.01
+
+    def test_uniform_histogram(self):
+        hits = np.ones((64, 64))
+        colors = np.linspace(0, 1, 64 * 64).reshape(64, 64)
+        scores = _score_from_histogram(hits, colors)
+        assert scores['coverage'] == pytest.approx(1.0)
+        assert scores['entropy'] > 0.99
+        assert scores['complexity'] < 0.1  # uniform = no structure
+
+    def test_all_scores_in_range(self):
+        rng = np.random.default_rng(70)
+        for _ in range(10):
+            g = Genome.random(rng)
+            scores = g.aesthetic_score()
+            for k, v in scores.items():
+                assert 0.0 <= v <= 1.0, f"{k}={v} out of [0,1]"
+
+    def test_corner_cluster_low_balance(self):
+        hits = np.zeros((64, 64))
+        hits[0:4, 0:4] = 50.0  # top-left corner
+        colors = np.full((64, 64), 0.5)
+        scores = _score_from_histogram(hits, colors)
+        assert scores['balance'] < 0.7
+
+    def test_centered_cluster_high_balance(self):
+        hits = np.zeros((64, 64))
+        hits[30:34, 30:34] = 50.0  # near center
+        colors = np.full((64, 64), 0.5)
+        scores = _score_from_histogram(hits, colors)
+        assert scores['balance'] > 0.9
+
+    def test_monochrome_low_color_entropy(self):
+        hits = np.ones((64, 64))
+        colors = np.full((64, 64), 0.5)  # same color everywhere
+        scores = _score_from_histogram(hits, colors)
+        assert scores['color_entropy'] < 0.1
+
+    def test_diverse_colors_high_color_entropy(self):
+        hits = np.ones((64, 64))
+        colors = np.linspace(0, 1, 64 * 64).reshape(64, 64)
+        scores = _score_from_histogram(hits, colors)
+        assert scores['color_entropy'] > 0.8
+
+    def test_structured_beats_uniform_complexity(self):
+        """A fractal-like pattern should have higher complexity than uniform."""
+        # Uniform
+        uniform_hits = np.ones((64, 64))
+        uniform_scores = _score_from_histogram(uniform_hits, np.zeros((64, 64)))
+
+        # Structured: exponential falloff from center (like a real attractor)
+        y, x = np.mgrid[0:64, 0:64]
+        structured_hits = np.exp(-0.01 * ((x - 32)**2 + (y - 32)**2))
+        structured_hits *= 1000
+        structured_scores = _score_from_histogram(structured_hits, np.zeros((64, 64)))
+
+        assert structured_scores['complexity'] > uniform_scores['complexity']
+
+
+class TestAestheticScoreCpu:
+    """Integration tests for the full CPU scoring pipeline."""
+
+    def test_returns_all_keys(self):
+        rng = np.random.default_rng(80)
+        g = Genome.random(rng)
+        scores = g.aesthetic_score()
+        expected = {'coverage', 'entropy', 'color_entropy', 'balance', 'complexity'}
+        assert set(scores.keys()) == expected
+
+    def test_different_genomes_different_scores(self):
+        rng = np.random.default_rng(81)
+        scores = [Genome.random(rng).aesthetic_score() for _ in range(5)]
+        # At least one metric should vary across genomes
+        for key in scores[0]:
+            values = [s[key] for s in scores]
+            assert max(values) - min(values) > 0.01, \
+                f"{key} has no variation across 5 genomes"
 
 
 # ----------------------------------------------------------------

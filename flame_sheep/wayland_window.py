@@ -1,24 +1,25 @@
 """
-WallpaperWindow — wlr-layer-shell surface with an EGL/OpenGL context.
+WallpaperWindow — wlr-layer-shell surfaces with a shared EGL display/context.
 
-Replaces the moderngl-window GLFW window for wallpaper mode.
-Creates a BACKGROUND-layer surface that sits behind all windows,
-spans the full output, and has no keyboard/pointer interactivity.
+For single-output mode, use WallpaperWindow directly.
 
-Usage:
-    win = WallpaperWindow(width, height)
-    ctx = win.ctx          # moderngl.Context, use exactly like normal
-    while True:
-        # ... render into ctx ...
-        win.swap()         # eglSwapBuffers + wayland dispatch
-        if win.should_close:
-            break
-    win.destroy()
+For multi-output mode (continuous image across monitors), use WallpaperSession:
+  session = WallpaperSession()
+  wins = [session.add_output('DP-3'), session.add_output('DP-2'), ...]
+  session.make_current(wins[0])   # bind context + first surface
+  ctx = session.create_moderngl_context()  # one moderngl ctx for all
+  while True:
+      # compute pass ...
+      for win in wins:
+          session.make_current(win)   # switch surface, same context
+          # tonemap pass for win ...
+          session.swap(win)
 """
 
 import ctypes
 import ctypes.util
 import os
+import select
 import time
 import signal
 from collections import deque
@@ -44,32 +45,27 @@ from .protocol.wlr_layer_shell_unstable_v1.zwlr_layer_shell_v1 import ZwlrLayerS
 from .protocol.wlr_layer_shell_unstable_v1.zwlr_layer_surface_v1 import ZwlrLayerSurfaceV1
 
 # ---------------------------------------------------------------------------
-# EGL constants (enough to bootstrap a GLES3/GL context on a Wayland surface)
+# EGL constants
 # ---------------------------------------------------------------------------
-EGL_NONE                    = 0x3038
-EGL_OPENGL_BIT              = 0x0008
-EGL_OPENGL_ES3_BIT          = 0x0040
-EGL_OPENGL_API              = 0x30A2
-EGL_OPENGL_ES_API           = 0x30A0
-EGL_SURFACE_TYPE            = 0x3033
-EGL_WINDOW_BIT              = 0x0004
-EGL_RENDERABLE_TYPE         = 0x3040
-EGL_RED_SIZE                = 0x3024
-EGL_GREEN_SIZE              = 0x3023
-EGL_BLUE_SIZE               = 0x3022
-EGL_ALPHA_SIZE              = 0x3021
-EGL_DEPTH_SIZE              = 0x3025
-EGL_COLOR_BUFFER_TYPE       = 0x303F
-EGL_RGB_BUFFER              = 0x308E
-EGL_CONTEXT_MAJOR_VERSION   = 0x3098
-EGL_CONTEXT_MINOR_VERSION   = 0x30FB
-EGL_CONTEXT_OPENGL_PROFILE_MASK = 0x30FD
+EGL_NONE                         = 0x3038
+EGL_OPENGL_BIT                   = 0x0008
+EGL_OPENGL_API                   = 0x30A2
+EGL_SURFACE_TYPE                 = 0x3033
+EGL_WINDOW_BIT                   = 0x0004
+EGL_RENDERABLE_TYPE              = 0x3040
+EGL_RED_SIZE                     = 0x3024
+EGL_GREEN_SIZE                   = 0x3023
+EGL_BLUE_SIZE                    = 0x3022
+EGL_ALPHA_SIZE                   = 0x3021
+EGL_DEPTH_SIZE                   = 0x3025
+EGL_CONTEXT_MAJOR_VERSION        = 0x3098
+EGL_CONTEXT_MINOR_VERSION        = 0x30FB
+EGL_CONTEXT_OPENGL_PROFILE_MASK  = 0x30FD
 EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT = 0x00000001
-EGL_NO_DISPLAY              = ctypes.c_void_p(0)
-EGL_NO_CONTEXT              = ctypes.c_void_p(0)
-EGL_NO_SURFACE              = ctypes.c_void_p(0)
-EGL_DEFAULT_DISPLAY         = ctypes.c_void_p(0)
-EGL_PLATFORM_WAYLAND_KHR    = 0x31D8
+EGL_NO_DISPLAY                   = ctypes.c_void_p(0)
+EGL_NO_CONTEXT                   = ctypes.c_void_p(0)
+EGL_NO_SURFACE                   = ctypes.c_void_p(0)
+EGL_PLATFORM_WAYLAND_KHR         = 0x31D8
 
 # ---------------------------------------------------------------------------
 # Load libraries
@@ -77,8 +73,6 @@ EGL_PLATFORM_WAYLAND_KHR    = 0x31D8
 _libegl   = ctypes.CDLL('libEGL.so.1')
 _libwlegl = ctypes.CDLL('libwayland-egl.so.1')
 
-# eglGetPlatformDisplayEXT is an EGL extension — not always exported as a
-# direct symbol.  Look it up via eglGetProcAddress instead.
 _libegl.eglGetProcAddress.restype  = ctypes.c_void_p
 _libegl.eglGetProcAddress.argtypes = [ctypes.c_char_p]
 _proc_addr = _libegl.eglGetProcAddress(b'eglGetPlatformDisplayEXT')
@@ -90,7 +84,6 @@ if _proc_addr:
 else:
     _eglGetPlatformDisplayEXT = None
 
-# Regular EGL function signatures
 _libegl.eglGetDisplay.restype             = ctypes.c_void_p
 _libegl.eglGetDisplay.argtypes            = [ctypes.c_void_p]
 _libegl.eglInitialize.restype             = ctypes.c_bool
@@ -117,7 +110,6 @@ _libegl.eglDestroySurface.argtypes        = [ctypes.c_void_p, ctypes.c_void_p]
 _libegl.eglTerminate.restype              = ctypes.c_bool
 _libegl.eglTerminate.argtypes             = [ctypes.c_void_p]
 
-# wl_egl_window_create / destroy
 _libwlegl.wl_egl_window_create.restype    = ctypes.c_void_p
 _libwlegl.wl_egl_window_create.argtypes   = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
 _libwlegl.wl_egl_window_destroy.restype   = None
@@ -132,15 +124,56 @@ def _egl_check(label: str):
         raise RuntimeError(f'EGL error after {label}: 0x{err:04x}')
 
 
-class WallpaperWindow:
+# ---------------------------------------------------------------------------
+# Output surface — one per monitor
+# ---------------------------------------------------------------------------
+
+class OutputSurface:
     """
-    A wlr-layer-shell BACKGROUND surface with an OpenGL 4.3 core context.
+    One wlr-layer-shell BACKGROUND surface for a single output.
+    Does NOT own an EGL context — that lives in WallpaperSession.
+    """
+    def __init__(self):
+        self.width        = 0
+        self.height       = 0
+        self.should_close = False
+        self._configured  = False
+        self._frame_pending   = True   # start True so first frame renders
+        self._frame_callback  = None   # prevent GC of pending wl_callback
+        self._wl_surface      = None
+        self._layer_surface   = None
+        self._egl_window      = None  # wl_egl_window*
+        self.egl_surface      = None  # EGL surface handle (int)
+
+
+# ---------------------------------------------------------------------------
+# WallpaperSession — one Wayland connection + EGL display + context, N surfaces
+# ---------------------------------------------------------------------------
+
+class WallpaperSession:
+    """
+    Manages one wl_display, one EGL display, one GL context, and N output
+    surfaces. All surfaces share the same EGL display so we can freely
+    switch between them with eglMakeCurrent.
+
+    Usage:
+        session = WallpaperSession()
+        win_dp3 = session.add_output('DP-3')
+        win_dp2 = session.add_output('DP-2')
+        session.make_current(win_dp3)
+        ctx = session.create_moderngl_context()
+        while True:
+            # compute ...
+            for win in [win_dp3, win_dp2]:
+                session.make_current(win)
+                # render win's slice ...
+                session.swap(win)
+        session.destroy()
     """
 
     @staticmethod
     def list_outputs() -> list[str]:
-        """Return names of all active Wayland outputs (e.g. ['DP-2', 'DP-3'])."""
-        names = []
+        """Return names of all active Wayland outputs."""
         display = Display()
         display.connect()
         registry = display.get_registry()
@@ -154,7 +187,6 @@ class WallpaperWindow:
         registry.dispatcher['global'] = _on_global
         display.roundtrip()
 
-        # Collect output names via WlOutput.name event
         output_names: dict = {}
 
         def make_name_handler(out):
@@ -166,90 +198,37 @@ class WallpaperWindow:
             out.dispatcher['name'] = make_name_handler(out)
         display.roundtrip()
         display.disconnect()
-
         return list(output_names.values())
 
-    def __init__(self, width: int = 1920, height: int = 1080,
-                 output_name: str | None = None):
-        self.width        = width
-        self.height       = height
-        self.should_close = False
-        self._configured  = False   # True once compositor sends configure
-        self._target_output_name = output_name
-
-        # State gathered during registry enumeration
-        self._compositor  = None
-        self._layer_shell = None
-        self._output      = None    # matched output (or first if no name given)
-        self._seat        = None
-        self._outputs_by_name: dict[str, object] = {}
-
-        # Wayland objects
-        self._wl_display  = None
-        self._wl_surface  = None
-        self._layer_surface = None
-
-        # EGL handles
+    def __init__(self):
+        self.ctx: moderngl.Context | None = None
         self._egl_display  = None
         self._egl_config   = None
         self._egl_context  = None
-        self._egl_window   = None   # wl_egl_window*
-        self._egl_surface  = None
 
-        self._setup_wayland()
-        self._setup_egl()
-        self._setup_layer_surface()
-        self._wait_for_configure()
-        self._make_current()
-        _libegl.eglSwapInterval(self._egl_display, 1)  # vsync on
-
-        # Wrap the already-current EGL context into a moderngl Context.
-        #
-        # Strategy: glcontext.egl.create_context(mode='share') detects the
-        # currently-bound EGL context (our Wayland surface context) and wraps
-        # it. We then pass that glcontext object to mgl.create_context so that
-        # the mgl C extension also uses EGL instead of defaulting to X11/GLX.
-        #
-        # This avoids the "glXGetCurrentContext: cannot detect" error that
-        # occurs when mgl tries to use the x11 glcontext backend on Linux.
-        _gc = _glcontext_egl.create_context(mode='share', glversion=430)
-        self.ctx = moderngl.Context.__new__(moderngl.Context)
-        self.ctx.mglo, self.ctx.version_code = _mgl.create_context(
-            glversion=430, mode='share', context=_gc)
-        self.ctx._info       = None
-        self.ctx._extensions = None
-        self.ctx.extra       = None
-        self.ctx._gc_mode    = None
-        self.ctx._objects    = deque()
-        self.ctx._screen     = None
-        self.ctx.fbo         = None
-        print(f'[wallpaper] GL {self.ctx.version_code} renderer: {self.ctx.info["GL_RENDERER"]}')
-
-        # Install SIGINT handler so Ctrl-C closes cleanly
-        signal.signal(signal.SIGINT, lambda *_: self._signal_close())
-
-    # ------------------------------------------------------------------
-    # Setup
-    # ------------------------------------------------------------------
-
-    def _setup_wayland(self):
-        self._wl_display = Display()
+        # Wayland
+        self._wl_display   = Display()
         self._wl_display.connect()
+
+        self._compositor   = None
+        self._layer_shell  = None
+        self._wl_outputs: dict[str, object] = {}  # name -> WlOutput proxy
 
         registry = self._wl_display.get_registry()
         registry.dispatcher['global'] = self._on_global
-        self._wl_display.roundtrip()  # get globals
-        self._wl_display.roundtrip()  # get output name events
+        self._wl_display.roundtrip()
+        self._wl_display.roundtrip()  # collect output names
 
         if self._compositor is None:
-            raise RuntimeError('No wl_compositor in registry')
+            raise RuntimeError('No wl_compositor in Wayland registry')
         if self._layer_shell is None:
-            raise RuntimeError('No zwlr_layer_shell_v1 in registry — is this sway/wlroots?')
-        if self._output is None:
-            raise RuntimeError(f'Output {self._target_output_name!r} not found. '
-                               f'Available: {list(self._outputs_by_name.keys())}')
+            raise RuntimeError('No zwlr_layer_shell_v1 — is this sway/wlroots?')
 
-        self._wl_surface = self._compositor.create_surface()
+        # Initialise EGL on this wl_display
+        self._init_egl()
+
+        signal.signal(signal.SIGINT, lambda *_: self._signal_close())
+        self._surfaces: list[OutputSurface] = []
 
     def _on_global(self, registry, name: int, interface: str, version: int):
         if interface == WlCompositor.name:
@@ -258,41 +237,31 @@ class WallpaperWindow:
             self._layer_shell = registry.bind(name, ZwlrLayerShellV1, min(version, 4))
         elif interface == WlOutput.name:
             out = registry.bind(name, WlOutput, min(version, 4))
-            # Wire up name event to match target output
-            def _on_output_name(output, oname, _out=out):
-                self._outputs_by_name[oname] = _out
-                if self._target_output_name is None and self._output is None:
-                    self._output = _out
-                elif oname == self._target_output_name:
-                    self._output = _out
-            out.dispatcher['name'] = _on_output_name
-            if self._output is None and self._target_output_name is None:
-                self._output = out  # fallback: first output before name arrives
+            def _on_name(output, oname, _out=out):
+                self._wl_outputs[oname] = _out
+            out.dispatcher['name'] = _on_name
 
-    def _setup_egl(self):
-        # Get the raw wl_display* pointer from pywayland (cffi cdata -> ctypes)
-        wl_display_ptr = _cffi_to_void_p(self._wl_display._ptr)
+    def _init_egl(self):
+        wl_ptr = _cffi_to_void_p(self._wl_display._ptr)
 
         if _eglGetPlatformDisplayEXT is not None:
             self._egl_display = _eglGetPlatformDisplayEXT(
-                EGL_PLATFORM_WAYLAND_KHR, wl_display_ptr, None)
-        else:
-            self._egl_display = None
+                EGL_PLATFORM_WAYLAND_KHR, wl_ptr, None)
 
         if not self._egl_display:
-            # fallback: eglGetDisplay (works on most Mesa Wayland setups)
-            self._egl_display = _libegl.eglGetDisplay(wl_display_ptr)
+            self._egl_display = _libegl.eglGetDisplay(wl_ptr)
         _egl_check('eglGetDisplay')
 
         major, minor = ctypes.c_int(), ctypes.c_int()
-        _libegl.eglInitialize(self._egl_display, ctypes.byref(major), ctypes.byref(minor))
+        _libegl.eglInitialize(self._egl_display,
+                              ctypes.byref(major), ctypes.byref(minor))
         _egl_check('eglInitialize')
         print(f'[wallpaper] EGL {major.value}.{minor.value}')
 
         _libegl.eglBindAPI(EGL_OPENGL_API)
         _egl_check('eglBindAPI')
 
-        attribs = (ctypes.c_int * 17)(
+        attribs = (ctypes.c_int * 15)(
             EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
             EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
             EGL_RED_SIZE,   8,
@@ -304,12 +273,11 @@ class WallpaperWindow:
         )
         config    = ctypes.c_void_p()
         n_configs = ctypes.c_int()
-        _libegl.eglChooseConfig(
-            self._egl_display, attribs,
-            ctypes.byref(config), 1, ctypes.byref(n_configs))
+        _libegl.eglChooseConfig(self._egl_display, attribs,
+                                ctypes.byref(config), 1, ctypes.byref(n_configs))
         _egl_check('eglChooseConfig')
         if n_configs.value == 0:
-            raise RuntimeError('No suitable EGL config found')
+            raise RuntimeError('No suitable EGL config')
         self._egl_config = config
 
         ctx_attribs = (ctypes.c_int * 7)(
@@ -319,135 +287,213 @@ class WallpaperWindow:
             EGL_NONE,
         )
         self._egl_context = _libegl.eglCreateContext(
-            self._egl_display, self._egl_config,
-            EGL_NO_CONTEXT, ctx_attribs)
+            self._egl_display, self._egl_config, EGL_NO_CONTEXT, ctx_attribs)
         _egl_check('eglCreateContext')
 
-    def _setup_layer_surface(self):
-        # Create the wl_egl_window and EGL surface BEFORE the layer surface,
-        # so the compositor gets a buffer when we first commit.
-        self._egl_window = _libwlegl.wl_egl_window_create(
-            _cffi_to_void_p(self._wl_surface._ptr),
-            self.width, self.height)
-        if not self._egl_window:
+    def add_output(self, output_name: str) -> OutputSurface:
+        """
+        Create a BACKGROUND layer-shell surface on the named output.
+        Returns an OutputSurface; call make_current(surf) + swap(surf) per frame.
+        """
+        if output_name not in self._wl_outputs:
+            available = list(self._wl_outputs.keys())
+            raise RuntimeError(
+                f'Output {output_name!r} not found. Available: {available}')
+
+        wl_out = self._wl_outputs[output_name]
+        surf   = OutputSurface()
+
+        # Wayland surface + EGL window (size 1x1 initially; configure resizes)
+        surf._wl_surface = self._compositor.create_surface()
+        surf._egl_window = _libwlegl.wl_egl_window_create(
+            _cffi_to_void_p(surf._wl_surface._ptr), 1, 1)
+        if not surf._egl_window:
             raise RuntimeError('wl_egl_window_create failed')
 
-        self._egl_surface = _libegl.eglCreateWindowSurface(
+        surf.egl_surface = _libegl.eglCreateWindowSurface(
             self._egl_display, self._egl_config,
-            ctypes.c_void_p(self._egl_window), None)
+            ctypes.c_void_p(surf._egl_window), None)
         _egl_check('eglCreateWindowSurface')
 
-        # Create layer-shell surface
-        layer      = ZwlrLayerShellV1.layer.background.value
-        namespace  = 'flame-sheep'
+        # Layer-shell surface
+        layer = ZwlrLayerShellV1.layer.background.value
+        surf._layer_surface = self._layer_shell.get_layer_surface(
+            surf._wl_surface, wl_out, layer, 'flame-sheep')
 
-        self._layer_surface = self._layer_shell.get_layer_surface(
-            self._wl_surface,
-            self._output,
-            layer,
-            namespace,
-        )
-
-        # Anchor to all four edges so compositor gives us the full output
         anchor_all = (ZwlrLayerSurfaceV1.anchor.top.value    |
                       ZwlrLayerSurfaceV1.anchor.bottom.value |
                       ZwlrLayerSurfaceV1.anchor.left.value   |
                       ZwlrLayerSurfaceV1.anchor.right.value)
-        self._layer_surface.set_anchor(anchor_all)
-        self._layer_surface.set_size(0, 0)          # 0,0 = full output
-        self._layer_surface.set_exclusive_zone(-1)  # don't push other windows
-        self._layer_surface.set_keyboard_interactivity(0)
+        surf._layer_surface.set_anchor(anchor_all)
+        surf._layer_surface.set_size(0, 0)
+        surf._layer_surface.set_exclusive_zone(-1)
+        surf._layer_surface.set_keyboard_interactivity(0)
 
-        self._layer_surface.dispatcher['configure'] = self._on_configure
-        self._layer_surface.dispatcher['closed']    = self._on_closed
+        surf._layer_surface.dispatcher['configure'] = \
+            lambda ls, serial, w, h: self._on_configure(surf, ls, serial, w, h)
+        surf._layer_surface.dispatcher['closed'] = \
+            lambda ls: setattr(surf, 'should_close', True)
 
-        # commit() triggers sway to send a configure event back.
-        # roundtrip() flushes our request AND processes all incoming events
-        # (including configure) before returning.
-        self._wl_surface.commit()
+        surf._wl_surface.commit()
         self._wl_display.roundtrip()
 
-    def _wait_for_configure(self, timeout: float = 5.0):
-        # roundtrip() in _setup_layer_surface should have already delivered
-        # the configure event. This loop is a safety net for slow compositors.
-        deadline = time.monotonic() + timeout
-        while not self._configured:
+        # Wait for configure
+        deadline = time.monotonic() + 5.0
+        while not surf._configured:
             self._wl_display.roundtrip()
             if time.monotonic() > deadline:
-                raise RuntimeError('Timed out waiting for layer-surface configure')
+                raise RuntimeError(f'Timed out waiting for configure on {output_name}')
             time.sleep(0.005)
 
-    def _on_configure(self, layer_surface, serial: int, width: int, height: int):
-        if width > 0:
-            self.width = width
-        if height > 0:
-            self.height = height
+        self._surfaces.append(surf)
+        return surf
+
+    def _on_configure(self, surf: OutputSurface, layer_surface,
+                      serial: int, width: int, height: int):
+        if width  > 0: surf.width  = width
+        if height > 0: surf.height = height
         layer_surface.ack_configure(serial)
-        self._wl_surface.commit()
-        self._configured = True
-        print(f'[wallpaper] configured {self.width}x{self.height}')
-
-        # Resize the EGL window to match
-        if self._egl_window:
+        surf._wl_surface.commit()
+        surf._configured = True
+        print(f'[wallpaper] configured {surf.width}x{surf.height}')
+        if surf._egl_window:
             _libwlegl.wl_egl_window_resize(
-                ctypes.c_void_p(self._egl_window),
-                self.width, self.height, 0, 0)
+                ctypes.c_void_p(surf._egl_window),
+                surf.width, surf.height, 0, 0)
 
-    def _on_closed(self, layer_surface):
-        self.should_close = True
-
-    def make_current(self):
-        """Make this window's EGL context current on the calling thread."""
-        _libegl.eglMakeCurrent(
+    def make_current(self, surf: OutputSurface) -> bool:
+        """Bind the shared GL context to surf's EGL surface.
+        Returns False if the surface is dead (e.g. sway reloaded)."""
+        if surf.should_close or not surf.egl_surface:
+            return False
+        ok = _libegl.eglMakeCurrent(
             self._egl_display,
-            ctypes.c_void_p(self._egl_surface),
-            ctypes.c_void_p(self._egl_surface),
+            ctypes.c_void_p(surf.egl_surface),
+            ctypes.c_void_p(surf.egl_surface),
             ctypes.c_void_p(self._egl_context))
-        _egl_check('eglMakeCurrent')
+        if not ok:
+            err = _libegl.eglGetError()
+            print(f'[wallpaper] eglMakeCurrent failed (0x{err:04x}), marking surface dead')
+            surf.should_close = True
+            return False
+        return True
 
     def release_current(self):
-        """Release this EGL context from the calling thread."""
         _libegl.eglMakeCurrent(
             self._egl_display,
             EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)
 
-    # Keep _make_current as internal alias used during init
-    _make_current = make_current
+    def create_moderngl_context(self) -> moderngl.Context:
+        """
+        Wrap the current EGL context into a moderngl Context.
+        Must be called after make_current() with any surface.
+        """
+        _gc = _glcontext_egl.create_context(mode='share', glversion=430)
+        ctx = moderngl.Context.__new__(moderngl.Context)
+        ctx.mglo, ctx.version_code = _mgl.create_context(
+            glversion=430, mode='share', context=_gc)
+        ctx._info       = None
+        ctx._extensions = None
+        ctx.extra       = None
+        ctx._gc_mode    = None
+        ctx._objects    = deque()
+        ctx._screen     = None
+        ctx.fbo         = None
+        print(f'[wallpaper] GL {ctx.version_code} '
+              f'renderer: {ctx.info["GL_RENDERER"]}')
+        self.ctx = ctx
+        _libegl.eglSwapInterval(self._egl_display, 0)  # non-blocking — frame callbacks pace us
+        return ctx
 
-    # ------------------------------------------------------------------
-    # Per-frame interface
-    # ------------------------------------------------------------------
+    def swap(self, surf: OutputSurface) -> bool:
+        """Present surf and dispatch Wayland events.
+        Returns False if the connection is broken."""
+        if surf.should_close:
+            return False
 
-    def swap(self):
-        """Present the rendered frame and dispatch wayland events."""
-        _libegl.eglSwapBuffers(
+        # Request frame callback BEFORE swap — eglSwapBuffers implicitly
+        # commits the surface, so the callback request must be pending first.
+        # Hold a reference on the surface to prevent GC before delivery.
+        def _on_done(cb, ts, _s=surf):
+            _s._frame_pending = True
+            _s._frame_callback = None  # release after delivery
+        surf._frame_callback = surf._wl_surface.frame()
+        surf._frame_callback.dispatcher['done'] = _on_done
+        surf._frame_pending = False
+
+        ok = _libegl.eglSwapBuffers(
             self._egl_display,
-            ctypes.c_void_p(self._egl_surface))
-        self._wl_display.dispatch(block=False)
-        self._wl_display.flush()
+            ctypes.c_void_p(surf.egl_surface))
+        if not ok:
+            err = _libegl.eglGetError()
+            print(f'[wallpaper] eglSwapBuffers failed (0x{err:04x}), marking surface dead')
+            surf.should_close = True
+            return False
+        try:
+            self._wl_display.flush()
+        except Exception as e:
+            print(f'[wallpaper] flush failed: {e}')
+            self._signal_close()
+            return False
+        return True
 
-    def dispatch(self):
-        """Dispatch wayland events without swapping (call between frames if needed)."""
-        self._wl_display.dispatch(block=False)
-        self._wl_display.flush()
+    def dispatch(self) -> bool:
+        """Non-blocking read + dispatch of pending Wayland events.
+        Returns False if the connection is broken."""
+        try:
+            self._wl_display.flush()
+            fd = self._wl_display.get_fd()
+            r, _, err = select.select([fd], [], [fd], 0)
+            if err:
+                print('[wallpaper] wayland fd error')
+                self._signal_close()
+                return False
+            if r:
+                self._wl_display.read()
+            self._wl_display.dispatch(block=False)
+            return True
+        except Exception as e:
+            print(f'[wallpaper] dispatch failed: {e}')
+            self._signal_close()
+            return False
 
-    # ------------------------------------------------------------------
-    # Cleanup
-    # ------------------------------------------------------------------
+    def wait_for_events(self, timeout: float = 0.016) -> bool:
+        """Block until Wayland events arrive or timeout expires.
+        Use when all surfaces are occluded to avoid busy-spinning.
+        Returns False if the connection is broken."""
+        try:
+            self._wl_display.flush()
+            fd = self._wl_display.get_fd()
+            r, _, err = select.select([fd], [], [fd], timeout)
+            if err:
+                self._signal_close()
+                return False
+            if r:
+                self._wl_display.read()
+            self._wl_display.dispatch(block=False)
+            return True
+        except Exception as e:
+            print(f'[wallpaper] wait failed: {e}')
+            self._signal_close()
+            return False
 
     def _signal_close(self):
-        self.should_close = True
+        for s in self._surfaces:
+            s.should_close = True
 
     def destroy(self):
-        if self._layer_surface:
-            self._layer_surface.destroy()
-        if self._wl_surface:
-            self._wl_surface.destroy()
-        if self._egl_surface:
-            _libegl.eglDestroySurface(self._egl_display,
-                                      ctypes.c_void_p(self._egl_surface))
-        if self._egl_window:
-            _libwlegl.wl_egl_window_destroy(ctypes.c_void_p(self._egl_window))
+        self.release_current()
+        for surf in self._surfaces:
+            if surf._layer_surface:
+                surf._layer_surface.destroy()
+            if surf._wl_surface:
+                surf._wl_surface.destroy()
+            if surf.egl_surface:
+                _libegl.eglDestroySurface(self._egl_display,
+                                          ctypes.c_void_p(surf.egl_surface))
+            if surf._egl_window:
+                _libwlegl.wl_egl_window_destroy(
+                    ctypes.c_void_p(surf._egl_window))
         if self._egl_context:
             _libegl.eglDestroyContext(self._egl_display,
                                       ctypes.c_void_p(self._egl_context))
@@ -455,3 +501,45 @@ class WallpaperWindow:
             _libegl.eglTerminate(self._egl_display)
         if self._wl_display:
             self._wl_display.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# WallpaperWindow — single-output convenience wrapper (kept for compat)
+# ---------------------------------------------------------------------------
+
+class WallpaperWindow:
+    """Single-output wallpaper surface. Wraps WallpaperSession for one output."""
+
+    @staticmethod
+    def list_outputs() -> list[str]:
+        return WallpaperSession.list_outputs()
+
+    def __init__(self, output_name: str | None = None):
+        self._session = WallpaperSession()
+        names = self._session.list_outputs()
+        name  = output_name or (names[0] if names else None)
+        if name is None:
+            raise RuntimeError('No outputs available')
+        self._surf = self._session.add_output(name)
+        self.width  = self._surf.width
+        self.height = self._surf.height
+
+        self._session.make_current(self._surf)
+        self.ctx = self._session.create_moderngl_context()
+        signal.signal(signal.SIGINT, lambda *_: self._session._signal_close())
+
+    @property
+    def should_close(self):
+        return self._surf.should_close
+
+    def make_current(self):
+        self._session.make_current(self._surf)
+
+    def release_current(self):
+        self._session.release_current()
+
+    def swap(self):
+        self._session.swap(self._surf)
+
+    def destroy(self):
+        self._session.destroy()

@@ -24,6 +24,12 @@ from .audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent, DEFAULT_D
 from .renderer import FlameRenderer, Viewport
 from .control import ControlPipe, ControlEvent
 from .tempo import TempoTracker
+from .axes.zoom_axis import ZoomAxis
+from .axes.brightness_axis import BrightnessAxis
+from .axes.detail_axis import DetailAxis
+from .axes.genome_axis import GenomeAxis
+from .axes.palette_axis import PaletteAxis
+from .axes.drift_axis import DriftAxis
 
 
 # Set by main() before run_window_config — workaround for moderngl-window
@@ -45,57 +51,22 @@ class FlameSheepCore:
     Call .stop() on shutdown.
     """
 
-    MIN_GENOME_DISTANCE = 0.15
-    DRIFT_RMS_THRESHOLD = 0.002
-    DRIFT_SWAP_FRAMES   = 60 * 8
-    DRIFT_MORPH_SPEED   = 0.003
-    KICK_SWAP_EVERY     = 4     # swap genome every Nth kick (1 bar in 4/4)
-    KICK_MORPH_PULSE    = 0.03  # morph speed boost on non-swap kicks
-
-    # Zoom axis (hihat) — zoom pulse on hits, decays back
-    ZOOM_BOOST_MAX  = 0.3    # maximum zoom boost (30%)
-    ZOOM_DECAY      = 0.95   # per-frame decay back to baseline
-
     def __init__(self, audio_device=DEFAULT_DEVICE, test_audio: bool = False,
-                 lib=None):
+                 lib=None, clock=None, genome_factory=None):
+        self._clock = clock or time.perf_counter
         self.rng = np.random.default_rng()
-
-        # --- Kick axis: genome (transforms, zoom, rotation, center) ---
-        self.current_genome = Genome.random(self.rng)
-        self.target_genome  = Genome.random(self.rng)
-        self.morph_t        = 0.0
-        self.morph_speed    = self.DRIFT_MORPH_SPEED
-
-        self._next_genome: Genome | None = None
-        self._genome_lock = threading.Lock()
-
-        # --- Snare axis: palette graph traversal ---
-        self.palette_current = self.current_genome.palette.copy()
-        self.palette_target  = self.target_genome.palette.copy()
-        self.palette_t       = 0.0
-        self.palette_speed   = self.DRIFT_MORPH_SPEED
-        self._current_palette_id: int | None = None
-
-        # --- Hihat axis: zoom pulse ---
-        self.zoom_boost = 0.0  # additive zoom, decays back to 0
-
-        # Kick counting for swap-every-N
-        self._kick_count = 0
-        self._recent_kick_energy = 0.5  # running average for downbeat detection
-
-        # Loop playback state
         self._lib = lib
-        self._loop_genomes: list[Genome] = []   # genomes in the active loop
-        self._loop_pos: int = 0                  # current position in loop
-        self.active_loop_id: int | None = None   # for vote tracking
 
-        if lib is not None and lib.loop_count() > 0:
-            self._load_top_loop()
-        else:
-            self._prefetch_genome()
-
-        self.needs_walker_reset = False
-        self._quiet_frames: int = 0
+        # --- Visual axes ---
+        factory = genome_factory or (lambda: Genome.random(self.rng))
+        self._genome_axis = GenomeAxis(genome_factory=factory, lib=lib, rng=self.rng)
+        self._palette_axis = PaletteAxis(
+            initial_palette=self._genome_axis.current_genome.palette,
+            lib=lib, rng=self.rng)
+        self._zoom_axis = ZoomAxis()
+        self._brightness_axis = BrightnessAxis()
+        self._detail_axis = DetailAxis()
+        self._drift_axis = DriftAxis(self._genome_axis)
         self._last_beat_time: dict[str, float] = {'kick': 0.0, 'snare': 0.0, 'hihat': 0.0}
 
         # Tempo tracking for rhythm coherence gating
@@ -106,6 +77,7 @@ class FlameSheepCore:
                 kick_interval=0.5,
                 snare_interval=1.0,
                 hihat_interval=0.25,
+                clock=clock,
             )
         else:
             self.audio = AudioProcessor(device=audio_device)
@@ -119,6 +91,7 @@ class FlameSheepCore:
         palette: np.ndarray       # snare axis: 256x3 float32 color palette
         spectrum: np.ndarray      # raw FFT spectrum for audio-reactive tonemap
         brightness: float         # RMS-driven brightness for tonemap
+        iterations: int           # chaos game iterations — scales with bass energy
 
     def tick(self, frame_time: float) -> 'FlameSheepCore.FrameState':
         """Advance audio/genome state one frame.
@@ -126,258 +99,141 @@ class FlameSheepCore:
         """
         beat_events = self.audio.process()
         spectrum    = self.audio.spectrum
-        self._handle_beats(beat_events)
+        rms         = self.audio.rms
+        now         = self._clock()
+        filtered_events = self._handle_beats(beat_events)
 
-        # --- Kick axis: genome morph ---
-        self.morph_t = min(1.0, self.morph_t + self.morph_speed)
-        display_genome = self.current_genome.lerp(self.target_genome, self.morph_t)
+        # Tick visual axes (drift must tick before genome to trigger swaps)
+        self._drift_axis.tick(filtered_events, rms, frame_time, now)
+        self._genome_axis.tick(filtered_events, rms, frame_time, now)
+        self._palette_axis.tick(filtered_events, rms, frame_time, now)
+        self._zoom_axis.tick(filtered_events, rms, frame_time, now)
+        self._brightness_axis.tick(filtered_events, rms, frame_time, now)
+        self._detail_axis.tick(filtered_events, rms, frame_time, now)
 
-        if self.morph_t >= 1.0:
-            self.current_genome = self.target_genome
-            self.morph_t        = 0.0
-            self._swap_next_genome()
-            self.morph_speed    = self.DRIFT_MORPH_SPEED
-
-        # --- Snare axis: palette morph ---
-        self.palette_t = min(1.0, self.palette_t + self.palette_speed)
-        display_palette = _lerp_arr(self.palette_current, self.palette_target, self.palette_t)
-
-        if self.palette_t >= 1.0:
-            self.palette_current = self.palette_target.copy()
-            self.palette_t       = 0.0
-            self.palette_speed   = self.DRIFT_MORPH_SPEED
-
-        # --- Hihat axis: zoom pulse decay ---
-        self.zoom_boost *= self.ZOOM_DECAY
-        if self.zoom_boost < 0.001:
-            self.zoom_boost = 0.0
-        display_genome.zoom *= (1.0 + self.zoom_boost)
-
-        # --- Drift (quiet) ---
-        rms = self.audio.rms
-        if rms < self.DRIFT_RMS_THRESHOLD:
-            self._quiet_frames += 1
-            if self._quiet_frames >= self.DRIFT_SWAP_FRAMES:
-                self._quiet_frames = 0
-                self._swap_next_genome()
-                self.morph_t     = 0.0
-                self.morph_speed = self.DRIFT_MORPH_SPEED
-                dist = self.current_genome.distance(self.target_genome)
-                print(f'[drift] rms={rms:.5f}  dist={dist:.3f}')
-        else:
-            self._quiet_frames = 0
-
-        self.morph_speed = max(self.DRIFT_MORPH_SPEED, self.morph_speed * 0.98)
-        self.palette_speed = max(self.DRIFT_MORPH_SPEED, self.palette_speed * 0.98)
-
-        # Map RMS to brightness — quiet=3.0 (dim), loud=9.0 (vivid)
-        brightness = 3.0 + min(rms / 0.05, 1.0) * 6.0
-
-        return self.FrameState(
-            genome=display_genome,
-            palette=display_palette,
+        # Assemble frame state
+        frame = self.FrameState(
+            genome=self.current_genome,  # overwritten by contribute
+            palette=self._palette_axis.palette_current,  # overwritten by contribute
             spectrum=spectrum,
-            brightness=brightness,
+            brightness=self._brightness_axis.brightness,
+            iterations=self._detail_axis.iterations,
         )
+
+        # Axes contribute (order: genome first, then zoom modifies genome.zoom)
+        self._genome_axis.contribute(frame)
+        self._palette_axis.contribute(frame)
+        self._zoom_axis.contribute(frame)
+
+        return frame
+
+    # --- Backward-compat properties delegating to axes ---
+
+    @property
+    def palette_t(self):
+        return self._palette_axis.palette_t
+
+    @property
+    def palette_target(self):
+        return self._palette_axis.palette_target
+
+    @property
+    def zoom_boost(self):
+        return self._zoom_axis.zoom_boost
+
+    @zoom_boost.setter
+    def zoom_boost(self, value):
+        self._zoom_axis.zoom_boost = value
+
+    @property
+    def current_genome(self):
+        return self._genome_axis.current_genome
+
+    @current_genome.setter
+    def current_genome(self, value):
+        self._genome_axis.current_genome = value
+
+    @property
+    def target_genome(self):
+        return self._genome_axis.target_genome
+
+    @target_genome.setter
+    def target_genome(self, value):
+        self._genome_axis.target_genome = value
+
+    @property
+    def morph_t(self):
+        return self._genome_axis.morph_t
+
+    @morph_t.setter
+    def morph_t(self, value):
+        self._genome_axis.morph_t = value
+
+    @property
+    def morph_speed(self):
+        return self._genome_axis.morph_speed
+
+    @morph_speed.setter
+    def morph_speed(self, value):
+        self._genome_axis.morph_speed = value
+
+    @property
+    def needs_walker_reset(self):
+        return self._genome_axis.needs_walker_reset
+
+    @needs_walker_reset.setter
+    def needs_walker_reset(self, value):
+        self._genome_axis.needs_walker_reset = value
+
+    @property
+    def active_loop_id(self):
+        return self._genome_axis.active_loop_id
 
     def force_genome_swap(self):
         """Immediately swap to a new genome — call when image looks degenerate."""
-        self.current_genome = self.current_genome.lerp(self.target_genome, self.morph_t)
-        self._swap_next_genome()
-        self.morph_t     = 0.0
-        self.morph_speed = 0.15
-        self.needs_walker_reset = True
-        print('[force swap]')
+        self._genome_axis.force_swap()
 
     def stop(self):
         self.audio.stop()
 
-    def _load_top_loop(self):
-        """Load the highest-fitness loop from the library."""
-        top = self._lib.top_loops(n=1)
-        if not top:
-            self._loop_genomes = []
-            self.active_loop_id = None
-            self._prefetch_genome()
-            return
-        loop_id = top[0][0]
-        self._start_loop(loop_id)
-
     def load_loop(self, loop_id: int):
-        """Switch to a specific loop by ID."""
-        self._start_loop(loop_id)
-
-    def _start_loop(self, loop_id: int):
-        """Load a loop and start at a random position."""
-        items = self._lib.load_loop(loop_id)
-        self._loop_genomes = [genome for _, genome, _ in items]
-        n = len(self._loop_genomes)
-        start = int(self.rng.integers(0, n))
-        self._loop_pos = (start + 1) % n
-        self.active_loop_id = loop_id
-        self.current_genome = self._loop_genomes[start]
-        self.target_genome = self._loop_genomes[self._loop_pos]
-        self.morph_t = 0.0
-        self.morph_speed = 0.05
-        self.needs_walker_reset = True
-        print(f'[loop] loaded #{loop_id} ({n} genomes, start={start})')
+        self._genome_axis.load_loop(loop_id)
 
     def next_loop(self):
-        """Switch to the next best loop from the library."""
-        if self._lib is None or self._lib.loop_count() < 1:
-            return
-        top = self._lib.top_loops(n=10)
-        # Pick one we're not already playing
-        for lid, _ in top:
-            if lid != self.active_loop_id:
-                self.load_loop(lid)
-                return
-        # All the same — just reload current
-        if top:
-            self.load_loop(top[0][0])
-
-    def _prefetch_genome(self):
-        current_snapshot = self.current_genome
-        def _gen():
-            rng = np.random.default_rng()
-            for _ in range(20):
-                g = Genome.random(rng)
-                if g.distance(current_snapshot) >= FlameSheepCore.MIN_GENOME_DISTANCE:
-                    break
-            with self._genome_lock:
-                self._next_genome = g
-        threading.Thread(target=_gen, daemon=True).start()
-
-    def _swap_next_genome(self):
-        if self._loop_genomes:
-            # Advance through the loop
-            self._loop_pos = (self._loop_pos + 1) % len(self._loop_genomes)
-            self.target_genome = self._loop_genomes[self._loop_pos]
-        else:
-            # Fallback: random genomes
-            with self._genome_lock:
-                if self._next_genome is not None:
-                    self.target_genome = self._next_genome
-                    self._next_genome  = None
-                else:
-                    self.target_genome = Genome.random(self.rng)
-            self._prefetch_genome()
+        self._genome_axis.next_loop()
 
     def song_started(self):
-        """Signal new song started — resets tempo and enables trusted mode."""
+        """Signal new song started — resets tempo and adaptive bands."""
         self.tempo.song_started()
-        print('[tempo] song started (trusted mode)')
+        self.audio.reset_bands()
+        print('[tempo] song started (trusted mode, bands reset)')
         
     def hint_tempo(self, bpm: float):
         """Provide tempo hint from external source."""
         self.tempo.hint_tempo(bpm)
         print(f'[tempo] hint: {bpm:.1f} BPM')
 
-    def _handle_beats(self, events: list[BeatEvent]):
-        now = time.perf_counter()
+    def _handle_beats(self, events: list[BeatEvent]) -> list[BeatEvent]:
+        """Filter events through tempo gating, handle kick/snare.
+        Returns filtered events for axes to consume."""
+        now = self._clock()
+        filtered = []
         for event in events:
-            # Feed all onsets to tempo tracker, gate based on rhythm coherence
             if not self.tempo.process_onset(event.kind, now):
-                # Onset rejected as non-rhythmic (e.g., speech)
                 continue
+            filtered.append(event)
 
             since = now - self._last_beat_time[event.kind]
             self._last_beat_time[event.kind] = now
 
-            if event.kind == 'kick':
-                # Track average kick energy for downbeat detection
-                self._recent_kick_energy = (
-                    self._recent_kick_energy * 0.8 + event.energy * 0.2)
+            # Kick/snare events handled by GenomeAxis/PaletteAxis via tick()
 
-                # If this kick is significantly stronger than average,
-                # it's likely a downbeat — reset the counter
-                if (event.energy > self._recent_kick_energy * 1.5
-                        and self._kick_count > 1):
-                    self._kick_count = 0
-
-                self._kick_count += 1
-                if self._kick_count >= self.KICK_SWAP_EVERY:
-                    # Swap kick: advance to next genome in loop
-                    self._kick_count = 0
-                    self.current_genome = self.current_genome.lerp(
-                        self.target_genome, self.morph_t)
-                    self._swap_next_genome()
-                    self.morph_t = 0.0
-                    # Scale morph speed to fill the gap until next swap
-                    # Aim to complete ~80% of the morph before the next swap kick
-                    kick_period = since if since < 2.0 else 0.5
-                    frames_until_swap = (kick_period * self.KICK_SWAP_EVERY * 60) * 0.8
-                    self.morph_speed = max(0.01, 1.0 / frames_until_swap)
-                    dist = self.current_genome.distance(self.target_genome)
-                    print(f'[SWAP]  +{since:.3f}s  energy={event.energy:.2f}  '
-                          f'dist={dist:.3f}  spd={self.morph_speed:.3f}')
-                else:
-                    # Non-swap kick: pulse the morph speed forward
-                    self.morph_speed = min(0.15,
-                        self.morph_speed + event.energy * self.KICK_MORPH_PULSE)
-                    print(f'[kick]  +{since:.3f}s  energy={event.energy:.2f}  '
-                          f'beat={self._kick_count}/{self.KICK_SWAP_EVERY}')
-
-            elif event.kind == 'snare':
-                # Snare axis: walk the palette graph
-                # Energy controls jump distance — louder snares = bigger color shift
-                self.palette_current = _lerp_arr(
-                    self.palette_current, self.palette_target, self.palette_t)
-                next_palette = self._pick_next_palette(event.energy)
-                if next_palette is not None:
-                    self.palette_target = next_palette
-                self.palette_t     = 0.0
-                self.palette_speed = 0.03 + event.energy * 0.1
-                print(f'[snare] +{since:.3f}s  energy={event.energy:.2f}')
-
-            elif event.kind == 'hihat':
-                # Hihat axis: zoom pulse
-                self.zoom_boost = min(
-                    self.ZOOM_BOOST_MAX,
-                    self.zoom_boost + event.energy * 0.15)
+            if event.kind == 'hihat':
                 print(f'[hihat] +{since:.3f}s  energy={event.energy:.2f}  '
                       f'zoom_boost={self.zoom_boost:.3f}')
 
-    def _pick_next_palette(self, energy: float) -> np.ndarray | None:
-        """
-        Walk the palette graph. Energy controls jump distance:
-          low energy  → small step (nearby palette, subtle shift)
-          high energy → big step (distant palette, dramatic shift)
+        return filtered
 
-        Falls back to random palette if the library has no palettes.
-        """
-        if self._lib is None or self._lib.palette_count() < 2:
-            from .genome import _random_palette
-            return _random_palette(self.rng)
-
-        # Map energy [0,1] to distance range
-        # Low energy: stay close (0.02-0.15), high energy: jump far (0.15-0.6)
-        min_dist = 0.02 + energy * 0.13
-        max_dist = 0.15 + energy * 0.45
-
-        if self._current_palette_id is not None:
-            neighbors = self._lib.palette_neighbors(
-                self._current_palette_id, min_dist=min_dist, max_dist=max_dist,
-                min_fitness=0.5)
-            if neighbors:
-                # Pick randomly from neighbors, weighted toward closer ones
-                ids = [n[0] for n in neighbors]
-                dists = np.array([n[1] for n in neighbors])
-                weights = 1.0 / (dists + 0.01)
-                weights /= weights.sum()
-                choice = int(self.rng.choice(ids, p=weights))
-                self._current_palette_id = choice
-                return self._lib.load_palette(choice)
-
-        # No current position or no neighbors — pick a random palette
-        all_ids = self._lib.all_palette_ids()
-        if all_ids:
-            choice = int(self.rng.choice(all_ids))
-            self._current_palette_id = choice
-            return self._lib.load_palette(choice)
-
-        from .genome import _random_palette
-        return _random_palette(self.rng)
 
 
 class FlameSheepApp(mglw.WindowConfig):
@@ -405,7 +261,7 @@ class FlameSheepApp(mglw.WindowConfig):
             self._renderer.reset_walkers()
             self._core.needs_walker_reset = False
         self._renderer.clear_histogram()
-        self._renderer.dispatch_chaos_game()
+        self._renderer.dispatch_chaos_game(iterations=frame.iterations)
         self.ctx.memory_barrier()
         w, h = self.window_size
         self._renderer.render_tonemap(self._viewport, w, h, brightness=frame.brightness)
@@ -420,18 +276,6 @@ class FlameSheepApp(mglw.WindowConfig):
 
     def close(self):
         self._core.stop()
-
-
-def _shift_palette(palette: np.ndarray, amount: float, rng: np.random.Generator) -> np.ndarray:
-    """Rotate the palette hue slightly."""
-    shifted = np.roll(palette, int(amount * 64), axis=0)
-    return shifted
-
-
-def _perturb_genome(genome: Genome, scale: float, rng: np.random.Generator):
-    """Add small random noise to affine coefficients."""
-    for tr in genome.transforms:
-        tr.affine += rng.uniform(-scale, scale, tr.affine.shape).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -492,19 +336,44 @@ def _get_sway_layout() -> dict[str, dict]:
         return {}
 
 
+def _ensure_singleton():
+    """Kill any existing flame-sheep wallpaper instance.
+
+    Uses a pidfile at ~/.local/share/flame-sheep/pid. If a previous
+    instance is still running, SIGTERM it and wait briefly for cleanup.
+    """
+    import signal
+    pid_path = os.path.expanduser('~/.local/share/flame-sheep/pid')
+    os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+
+    # Check for existing instance
+    try:
+        with open(pid_path, 'r') as f:
+            old_pid = int(f.read().strip())
+        # Check if it's actually running
+        os.kill(old_pid, 0)
+        print(f'[wallpaper] killing previous instance (pid {old_pid})')
+        os.kill(old_pid, signal.SIGTERM)
+        # Wait briefly for it to die
+        for _ in range(20):
+            time.sleep(0.1)
+            try:
+                os.kill(old_pid, 0)
+            except ProcessLookupError:
+                break
+    except (FileNotFoundError, ValueError, ProcessLookupError):
+        pass  # no previous instance
+
+    # Write our PID
+    with open(pid_path, 'w') as f:
+        f.write(str(os.getpid()))
+
+
 def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
     """
     Wallpaper mode — one continuous flame fractal image across all monitors.
-
-    Architecture:
-      - Query sway for the logical layout of all outputs.
-      - Compute a virtual canvas in physical (mm) coordinates for correct
-        alignment across mixed-DPI displays.
-      - Render the flame at a fixed pixels-per-mm density.
-      - One WallpaperWindow per output, all sharing ONE EGL context.
-      - Each frame: compute once, then for each window switch EGL surface
-        and tonemap its viewport slice.
     """
+    _ensure_singleton()
     from .wayland_window import WallpaperSession
 
     # --- discover outputs and sway layout ---
@@ -697,9 +566,28 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             _frame += 1
             _watchdog_last = time.perf_counter()
             quit_requested = handle_control_events()
-            if not session.connection_alive():
+
+            # Dispatch pending Wayland events (delivers frame callbacks)
+            if not session.dispatch():
                 print('[wallpaper] wayland connection lost, exiting')
                 break
+
+            # Block until the compositor signals it wants a new frame.
+            # This replaces eglSwapInterval(1) as our frame pacer.
+            # Keep ticking audio while waiting so spectral flux stays smooth
+            # (stale _prev_spectrum causes a burst of false onsets).
+            while not quit_requested:
+                ready = {n: s for n, s in surfaces.items()
+                         if s._frame_pending and not s.should_close}
+                if ready or all(s.should_close for s in surfaces.values()):
+                    break
+                session.wait_for_events(timeout=0.016)
+                _watchdog_last = time.perf_counter()
+                core.audio.process()  # keep _prev_spectrum current, don't handle beats
+
+            if not ready:
+                continue
+
             now        = time.perf_counter()
             frame_time = now - last_time
             last_time  = now
@@ -716,11 +604,11 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                 renderer.reset_walkers()
                 core.needs_walker_reset = False
             renderer.clear_histogram()
-            renderer.dispatch_chaos_game()
+            renderer.dispatch_chaos_game(iterations=frame.iterations)
             ctx.memory_barrier()
 
-            # Tonemap pass — switch surface per output, same GL context
-            for name, surf in surfaces.items():
+            # Tonemap pass — only swap surfaces the compositor is ready for
+            for name, surf in ready.items():
                 if not session.make_current(surf):
                     continue  # this surface is dead, skip it
                 renderer.render_tonemap(viewports[name], surf.width, surf.height,

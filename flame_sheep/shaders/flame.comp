@@ -51,18 +51,19 @@ layout(std430, binding = 1) buffer Walkers {
 // Genome uniforms
 // ------------------------------------------------------------
 #define MAX_TRANSFORMS 6
-#define NUM_VARIATIONS 30
+#define MAX_ACTIVE_VARS 8   // max variations per transform (for tight loop)
 
-// Large arrays via SSBOs (bindings 2, 3) — more reliable than uniform arrays
-// in OpenGL for arbitrary sizes, and avoids driver uniform limits.
-//
 // Affines: [a,b,c,d,e,f] per transform, flat — index as [tidx*6 + coeff]
-// Variations: [w0..w29] per transform, flat — index as [tidx*NUM_VARIATIONS + var]
 layout(std430, binding = 2) readonly buffer Affines {
     float u_affines[];   // length = MAX_TRANSFORMS * 6
 };
-layout(std430, binding = 3) readonly buffer Variations {
-    float u_variations[];  // length = MAX_TRANSFORMS * NUM_VARIATIONS
+
+// Packed active variations: each transform has up to MAX_ACTIVE_VARS slots
+// Each slot is (index, weight) packed as two floats
+// index < 0 means slot is unused
+// Layout: [t0_idx0, t0_w0, t0_idx1, t0_w1, ..., t1_idx0, t1_w0, ...]
+layout(std430, binding = 3) readonly buffer ActiveVariations {
+    float u_active_vars[];  // length = MAX_TRANSFORMS * MAX_ACTIVE_VARS * 2
 };
 
 // Color index per transform (0..1)
@@ -114,8 +115,8 @@ float rng_float() {
 // ------------------------------------------------------------
 // Variation functions
 // Applied after affine transform to warp the point nonlinearly.
-// Each function takes (x,y) and r²=x²+y², returns warped (x,y).
-// 'w' is the variation weight.
+// Each function takes (x,y) and returns warped (x,y).
+// Weight is applied by caller.
 // ------------------------------------------------------------
 
 // Helper: r squared and r
@@ -125,182 +126,197 @@ float r(vec2 p)  { return length(p); }
 float theta(vec2 p) { return atan(p.x, p.y); }  // note: x/y intentional per flam3 spec
 float phi(vec2 p)   { return atan(p.y, p.x); }
 
-vec2 var_linear(vec2 p, float w)       { return w * p; }
-vec2 var_sinusoidal(vec2 p, float w)   { return w * sin(p); }
-vec2 var_spherical(vec2 p, float w)    { return w * p / max(r2(p), 1e-6); }
-vec2 var_swirl(vec2 p, float w) {
+vec2 var_linear(vec2 p)       { return p; }
+vec2 var_sinusoidal(vec2 p)   { return sin(p); }
+vec2 var_spherical(vec2 p)    { return p / max(r2(p), 1e-6); }
+vec2 var_swirl(vec2 p) {
     float rr = r2(p);
-    return w * vec2(p.x * sin(rr) - p.y * cos(rr),
-                    p.x * cos(rr) + p.y * sin(rr));
+    return vec2(p.x * sin(rr) - p.y * cos(rr),
+                p.x * cos(rr) + p.y * sin(rr));
 }
-vec2 var_horseshoe(vec2 p, float w) {
-    float ri = w / max(r(p), 1e-6);
+vec2 var_horseshoe(vec2 p) {
+    float ri = 1.0 / max(r(p), 1e-6);
     return ri * vec2((p.x - p.y) * (p.x + p.y), 2.0 * p.x * p.y);
 }
-vec2 var_polar(vec2 p, float w) {
-    return w * vec2(theta(p) / 3.14159265, r(p) - 1.0);
+vec2 var_polar(vec2 p) {
+    return vec2(theta(p) / 3.14159265, r(p) - 1.0);
 }
-vec2 var_handkerchief(vec2 p, float w) {
+vec2 var_handkerchief(vec2 p) {
     float th = theta(p); float ri = r(p);
-    return w * ri * vec2(sin(th + ri), cos(th - ri));
+    return ri * vec2(sin(th + ri), cos(th - ri));
 }
-vec2 var_heart(vec2 p, float w) {
+vec2 var_heart(vec2 p) {
     float th = theta(p); float ri = r(p);
-    return w * ri * vec2(sin(th * ri), -cos(th * ri));
+    return ri * vec2(sin(th * ri), -cos(th * ri));
 }
-vec2 var_disk(vec2 p, float w) {
+vec2 var_disk(vec2 p) {
     float th = theta(p); float ri = r(p);
     float piri = 3.14159265 * ri;
-    return w * (th / 3.14159265) * vec2(sin(piri), cos(piri));
+    return (th / 3.14159265) * vec2(sin(piri), cos(piri));
 }
-vec2 var_spiral(vec2 p, float w) {
+vec2 var_spiral(vec2 p) {
     float th = theta(p); float ri = r(p);
-    return (w / max(ri, 1e-6)) * vec2(cos(th) + sin(ri), sin(th) - cos(ri));
+    return (1.0 / max(ri, 1e-6)) * vec2(cos(th) + sin(ri), sin(th) - cos(ri));
 }
-vec2 var_hyperbolic(vec2 p, float w) {
+vec2 var_hyperbolic(vec2 p) {
     float th = theta(p); float ri = r(p);
-    return w * vec2(sin(th) / max(ri, 1e-6), cos(th) * ri);
+    return vec2(sin(th) / max(ri, 1e-6), cos(th) * ri);
 }
-vec2 var_diamond(vec2 p, float w) {
+vec2 var_diamond(vec2 p) {
     float th = theta(p); float ri = r(p);
-    return w * vec2(sin(th) * cos(ri), cos(th) * sin(ri));
+    return vec2(sin(th) * cos(ri), cos(th) * sin(ri));
 }
-vec2 var_ex(vec2 p, float w) {
+vec2 var_ex(vec2 p) {
     float th = theta(p); float ri = r(p);
     float p0 = sin(th + ri); float p1 = cos(th - ri);
-    return w * ri * vec2(p0*p0*p0 + p1*p1*p1, p0*p0*p0 - p1*p1*p1);
+    return ri * vec2(p0*p0*p0 + p1*p1*p1, p0*p0*p0 - p1*p1*p1);
 }
-vec2 var_julia(vec2 p, float w) {
-    float sqr = w * sqrt(r(p));
+vec2 var_julia(vec2 p) {
+    float sqr = sqrt(r(p));
     float th  = theta(p) * 0.5;
     // random sign flip — use rng for authentic julia behavior
     if (rng_next() % 2u == 0u) th += 3.14159265;
     return sqr * vec2(cos(th), sin(th));
 }
-vec2 var_bent(vec2 p, float w) {
+vec2 var_bent(vec2 p) {
     vec2 q = p;
     if (q.x < 0.0) q.x *= 2.0;
     if (q.y < 0.0) q.y *= 0.5;
-    return w * q;
+    return q;
 }
-vec2 var_waves(vec2 p, float w, int tidx) {
+vec2 var_waves(vec2 p, int tidx) {
     // uses affine b,c,e,f coefficients — reuse from transform
     float b = u_affines[tidx*6 + 1];
     float c = u_affines[tidx*6 + 2];
     float e = u_affines[tidx*6 + 4];
     float f = u_affines[tidx*6 + 5];
-    return w * vec2(p.x + b * sin(p.y / max(c*c, 1e-6)),
-                    p.y + e * sin(p.x / max(f*f, 1e-6)));
+    return vec2(p.x + b * sin(p.y / max(c*c, 1e-6)),
+                p.y + e * sin(p.x / max(f*f, 1e-6)));
 }
-vec2 var_fisheye(vec2 p, float w) {
+vec2 var_fisheye(vec2 p) {
     float ri = 2.0 / (r(p) + 1.0);
-    return w * ri * vec2(p.y, p.x);  // note x/y swap
+    return ri * vec2(p.y, p.x);  // note x/y swap
 }
-vec2 var_popcorn(vec2 p, float w, int tidx) {
+vec2 var_popcorn(vec2 p, int tidx) {
     float c = u_affines[tidx*6 + 2];
     float f = u_affines[tidx*6 + 5];
-    return w * vec2(p.x + c * sin(tan(3.0 * p.y)),
-                    p.y + f * sin(tan(3.0 * p.x)));
+    return vec2(p.x + c * sin(tan(3.0 * p.y)),
+                p.y + f * sin(tan(3.0 * p.x)));
 }
-vec2 var_exponential(vec2 p, float w) {
-    return w * exp(p.x - 1.0) * vec2(cos(3.14159265 * p.y), sin(3.14159265 * p.y));
+vec2 var_exponential(vec2 p) {
+    return exp(p.x - 1.0) * vec2(cos(3.14159265 * p.y), sin(3.14159265 * p.y));
 }
-vec2 var_power(vec2 p, float w) {
-    return w * pow(r(p), sin(theta(p))) * vec2(cos(theta(p)), sin(theta(p)));
+vec2 var_power(vec2 p) {
+    float th = theta(p);
+    return pow(r(p), sin(th)) * vec2(cos(th), sin(th));
 }
-vec2 var_cosine(vec2 p, float w) {
-    return w * vec2(cos(3.14159265 * p.x) * cosh(p.y),
-                   -sin(3.14159265 * p.x) * sinh(p.y));
+vec2 var_cosine(vec2 p) {
+    return vec2(cos(3.14159265 * p.x) * cosh(p.y),
+               -sin(3.14159265 * p.x) * sinh(p.y));
 }
-// Remaining variations — simpler implementations
-vec2 var_rings(vec2 p, float w, int tidx) {
+vec2 var_rings(vec2 p, int tidx) {
     float c = u_affines[tidx*6 + 2];
     float cc = c * c + 1e-6;
     float ri = r(p);
     float th = theta(p);
     float rr = mod(ri + cc, 2.0 * cc) - cc + ri * (1.0 - cc);
-    return w * rr * vec2(cos(th), sin(th));
+    return rr * vec2(cos(th), sin(th));
 }
-vec2 var_fan(vec2 p, float w, int tidx) {
+vec2 var_fan(vec2 p, int tidx) {
     float c = u_affines[tidx*6 + 2];
     float f = u_affines[tidx*6 + 5];
     float th = theta(p); float ri = r(p);
     float t = 3.14159265 * c * c + 1e-6;
     float th2 = (mod(th + f, 2.0*t) > t) ? th - t : th + t;
-    return w * ri * vec2(cos(th2), sin(th2));
+    return ri * vec2(cos(th2), sin(th2));
 }
-vec2 var_eyefish(vec2 p, float w)  { return w * 2.0 / (r(p) + 1.0) * p; }
-vec2 var_bubble(vec2 p, float w)   { return w * 4.0 / (r2(p) + 4.0) * p; }
-vec2 var_cylinder(vec2 p, float w) { return w * vec2(sin(p.x), p.y); }
+vec2 var_eyefish(vec2 p)  { return 2.0 / (r(p) + 1.0) * p; }
+vec2 var_bubble(vec2 p)   { return 4.0 / (r2(p) + 4.0) * p; }
+vec2 var_cylinder(vec2 p) { return vec2(sin(p.x), p.y); }
 
-// blob variation — has extra parameters but we approximate
-vec2 var_blob(vec2 p, float w) {
+vec2 var_blob(vec2 p) {
     float ri = r(p); float th = theta(p);
     // simplified blob (no extra params)
     float rr = ri * (0.5 + 0.5 * sin(5.0 * th));
-    return w * rr * vec2(cos(th), sin(th));
+    return rr * vec2(cos(th), sin(th));
 }
-vec2 var_pdj(vec2 p, float w) {
+vec2 var_pdj(vec2 p) {
     // PDJ params — use fixed values for now, TODO: add as uniforms
     float a=1.4, b=2.3, c=2.4, d=2.2;
-    return w * vec2(sin(a * p.y) - cos(b * p.x),
-                    sin(c * p.x) - cos(d * p.y));
+    return vec2(sin(a * p.y) - cos(b * p.x),
+                sin(c * p.x) - cos(d * p.y));
 }
-vec2 var_fan2(vec2 p, float w) {
+vec2 var_fan2(vec2 p) {
     float ri = r(p); float th = theta(p);
     float px=3.14159265*0.5, py=0.5;  // simplified
     float t = th + py - px * floor((th + py) / px);
-    float th2 = (t > px * 0.5) ? th - t + px*0.5 : th + t - px*0.5;  // simplified
-    return w * ri * vec2(sin(th2), cos(th2));
+    float th2 = (t > px * 0.5) ? th - t + px*0.5 : th + t - px*0.5;
+    return ri * vec2(sin(th2), cos(th2));
 }
-vec2 var_rings2(vec2 p, float w) {
+vec2 var_rings2(vec2 p) {
     float ri = r(p); float th = theta(p);
     float v = 0.5;  // simplified
     float rr = ri - 2.0*v * floor((ri + v) / (2.0*v)) + ri*(1.0-v);
-    return w * rr * vec2(cos(th), sin(th));
+    return rr * vec2(cos(th), sin(th));
 }
 
 // ------------------------------------------------------------
-// Apply all variations for transform tidx, blending by weight
+// Apply single variation by index (switch-based dispatch)
+// ------------------------------------------------------------
+vec2 apply_single_variation(int var_idx, vec2 p, int tidx) {
+    switch (var_idx) {
+        case  0: return var_linear(p);
+        case  1: return var_sinusoidal(p);
+        case  2: return var_spherical(p);
+        case  3: return var_swirl(p);
+        case  4: return var_horseshoe(p);
+        case  5: return var_polar(p);
+        case  6: return var_handkerchief(p);
+        case  7: return var_heart(p);
+        case  8: return var_disk(p);
+        case  9: return var_spiral(p);
+        case 10: return var_hyperbolic(p);
+        case 11: return var_diamond(p);
+        case 12: return var_ex(p);
+        case 13: return var_julia(p);
+        case 14: return var_bent(p);
+        case 15: return var_waves(p, tidx);
+        case 16: return var_fisheye(p);
+        case 17: return var_popcorn(p, tidx);
+        case 18: return var_exponential(p);
+        case 19: return var_power(p);
+        case 20: return var_cosine(p);
+        case 21: return var_rings(p, tidx);
+        case 22: return var_fan(p, tidx);
+        case 23: return var_blob(p);
+        case 24: return var_pdj(p);
+        case 25: return var_fan2(p);
+        case 26: return var_rings2(p);
+        case 27: return var_eyefish(p);
+        case 28: return var_bubble(p);
+        case 29: return var_cylinder(p);
+        default: return p;
+    }
+}
+
+// ------------------------------------------------------------
+// Apply active variations for transform tidx
+// Loops only over the packed active slots (up to MAX_ACTIVE_VARS)
 // ------------------------------------------------------------
 vec2 apply_variations(vec2 p, int tidx) {
     vec2 result = vec2(0.0);
-    int base = tidx * NUM_VARIATIONS;
+    int base = tidx * MAX_ACTIVE_VARS * 2;
 
-    // Each variation: if weight > 0, compute and add weighted result
-    // This is verbose but the compiler will eliminate zero-weight branches
-    float w;
+    for (int i = 0; i < MAX_ACTIVE_VARS; i++) {
+        int slot = base + i * 2;
+        int var_idx = int(u_active_vars[slot]);
+        float w = u_active_vars[slot + 1];
 
-    w = u_variations[base +  0]; if (w > 0.0) result += var_linear(p, w);
-    w = u_variations[base +  1]; if (w > 0.0) result += var_sinusoidal(p, w);
-    w = u_variations[base +  2]; if (w > 0.0) result += var_spherical(p, w);
-    w = u_variations[base +  3]; if (w > 0.0) result += var_swirl(p, w);
-    w = u_variations[base +  4]; if (w > 0.0) result += var_horseshoe(p, w);
-    w = u_variations[base +  5]; if (w > 0.0) result += var_polar(p, w);
-    w = u_variations[base +  6]; if (w > 0.0) result += var_handkerchief(p, w);
-    w = u_variations[base +  7]; if (w > 0.0) result += var_heart(p, w);
-    w = u_variations[base +  8]; if (w > 0.0) result += var_disk(p, w);
-    w = u_variations[base +  9]; if (w > 0.0) result += var_spiral(p, w);
-    w = u_variations[base + 10]; if (w > 0.0) result += var_hyperbolic(p, w);
-    w = u_variations[base + 11]; if (w > 0.0) result += var_diamond(p, w);
-    w = u_variations[base + 12]; if (w > 0.0) result += var_ex(p, w);
-    w = u_variations[base + 13]; if (w > 0.0) result += var_julia(p, w);
-    w = u_variations[base + 14]; if (w > 0.0) result += var_bent(p, w);
-    w = u_variations[base + 15]; if (w > 0.0) result += var_waves(p, w, tidx);
-    w = u_variations[base + 16]; if (w > 0.0) result += var_fisheye(p, w);
-    w = u_variations[base + 17]; if (w > 0.0) result += var_popcorn(p, w, tidx);
-    w = u_variations[base + 18]; if (w > 0.0) result += var_exponential(p, w);
-    w = u_variations[base + 19]; if (w > 0.0) result += var_power(p, w);
-    w = u_variations[base + 20]; if (w > 0.0) result += var_cosine(p, w);
-    w = u_variations[base + 21]; if (w > 0.0) result += var_rings(p, w, tidx);
-    w = u_variations[base + 22]; if (w > 0.0) result += var_fan(p, w, tidx);
-    w = u_variations[base + 23]; if (w > 0.0) result += var_blob(p, w);
-    w = u_variations[base + 24]; if (w > 0.0) result += var_pdj(p, w);
-    w = u_variations[base + 25]; if (w > 0.0) result += var_fan2(p, w);
-    w = u_variations[base + 26]; if (w > 0.0) result += var_rings2(p, w);
-    w = u_variations[base + 27]; if (w > 0.0) result += var_eyefish(p, w);
-    w = u_variations[base + 28]; if (w > 0.0) result += var_bubble(p, w);
-    w = u_variations[base + 29]; if (w > 0.0) result += var_cylinder(p, w);
+        // index < 0 marks end of active variations for this transform
+        if (var_idx < 0) break;
+
+        result += w * apply_single_variation(var_idx, p, tidx);
+    }
 
     return result;
 }
@@ -367,6 +383,15 @@ void main() {
         vec2 warped = apply_variations(vec2(nx, ny), tidx);
         px = warped.x;
         py = warped.y;
+
+        // Respawn walker if it escaped to infinity
+        if (isinf(px) || isinf(py) || isnan(px) || isnan(py) ||
+            abs(px) > 1e6 || abs(py) > 1e6) {
+            px = rng_float() * 2.0 - 1.0;
+            py = rng_float() * 2.0 - 1.0;
+            pc = rng_float();
+            continue;  // skip plotting this iteration (fuse)
+        }
 
         // 4. Blend color toward this transform's color
         pc = (pc + u_colors[tidx]) * 0.5;
