@@ -2,6 +2,7 @@
 
 import logging
 import threading
+from collections import deque
 import numpy as np
 
 log = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class GenomeAxis:
     DRIFT_MORPH_SPEED   = 0.003
     KICK_SWAP_EVERY     = 4
     KICK_MORPH_PULSE    = 0.03
+    LOOP_HISTORY_SIZE   = 8
 
     def __init__(self, genome_factory, lib=None, rng=None):
         self.enabled = True
@@ -48,6 +50,7 @@ class GenomeAxis:
         self._loop_genomes: list[Genome] = []
         self._loop_pos: int = 0
         self.active_loop_id: int | None = None
+        self._loop_history: deque[int] = deque(maxlen=self.LOOP_HISTORY_SIZE)
 
         # Walker reset flag (consumed by renderer)
         self.needs_walker_reset = False
@@ -131,7 +134,7 @@ class GenomeAxis:
             self.active_loop_id = None
             self._prefetch_genome()
             return
-        self._start_loop(top[0][0])
+        self._load_and_track(top[0][0])
 
     def load_loop(self, loop_id: int):
         self._start_loop(loop_id)
@@ -153,13 +156,29 @@ class GenomeAxis:
     def next_loop(self):
         if self._lib is None or self._lib.loop_count() < 1:
             return
-        top = self._lib.top_loops(n=10)
-        for lid, _ in top:
-            if lid != self.active_loop_id:
-                self.load_loop(lid)
-                return
-        if top:
-            self.load_loop(top[0][0])
+        top = self._lib.top_loops(n=20)
+        # Filter out recently played loops
+        candidates = [(lid, info) for lid, info in top
+                      if lid not in self._loop_history]
+        # Fall back to full list minus current if history excludes everything
+        if not candidates:
+            candidates = [(lid, info) for lid, info in top
+                          if lid != self.active_loop_id]
+        if not candidates:
+            candidates = top
+        # Weighted random selection by fitness
+        fitnesses = np.array([max(info['fitness'], 0.01)
+                              for _, info in candidates])
+        weights = fitnesses / fitnesses.sum()
+        idx = self.rng.choice(len(candidates), p=weights)
+        lid, info = candidates[idx]
+        self._load_and_track(lid, info['fitness'])
+
+    def _load_and_track(self, loop_id: int, fitness: float | None = None):
+        self._loop_history.append(loop_id)
+        self.load_loop(loop_id)
+        if fitness is not None:
+            log.info(f'[loop] fitness={fitness:.3f}')
 
     # --- Genome prefetch ---
 

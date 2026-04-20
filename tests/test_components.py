@@ -302,6 +302,100 @@ class TestGenomeAxisUnit:
         assert axis.needs_walker_reset
 
 
+class FakeLib:
+    """Minimal loop library stub for testing loop selection."""
+
+    def __init__(self, n_loops: int = 20):
+        self._loops = {}
+        for i in range(1, n_loops + 1):
+            self._loops[i] = {
+                'fitness': 1.0 / i,  # descending fitness
+                'mean_coherence': 0.5, 'min_coherence': 0.3,
+                'diversity': 0.5, 'palette_flow': 0.5, 'smoothness': 0.5,
+            }
+
+    def loop_count(self):
+        return len(self._loops)
+
+    def top_loops(self, n=10):
+        ranked = sorted(self._loops.items(), key=lambda x: -x[1]['fitness'])
+        return [(lid, info) for lid, info in ranked[:n]]
+
+    def load_loop(self, loop_id):
+        g = trivial_genome(loop_id)
+        return [(loop_id, g, 0)]
+
+
+class TestNextLoopSelection:
+
+    def _make_axis(self, n_loops=20, seed=42):
+        _genseed = iter(range(1000))
+        return GenomeAxis(
+            genome_factory=lambda: trivial_genome(next(_genseed)),
+            lib=FakeLib(n_loops),
+            rng=np.random.default_rng(seed),
+        )
+
+    def test_next_loop_avoids_current(self):
+        axis = self._make_axis()
+        for _ in range(50):
+            prev = axis.active_loop_id
+            axis.next_loop()
+            assert axis.active_loop_id != prev
+
+    def test_next_loop_avoids_recent_history(self):
+        axis = self._make_axis()
+        for _ in range(20):
+            axis.next_loop()
+            # Current loop should never be in history minus the just-added entry
+            history = list(axis._loop_history)
+            # No duplicates within the history window
+            assert len(history) == len(set(history)) or len(history) > axis.LOOP_HISTORY_SIZE
+
+    def test_next_loop_uses_variety(self):
+        """Over many calls, should visit more than 2 loops."""
+        axis = self._make_axis()
+        visited = set()
+        for _ in range(30):
+            axis.next_loop()
+            visited.add(axis.active_loop_id)
+        assert len(visited) >= 5
+
+    def test_next_loop_favors_high_fitness(self):
+        """Higher fitness loops should appear more often."""
+        axis = self._make_axis(seed=0)
+        counts = {}
+        for _ in range(200):
+            axis.next_loop()
+            lid = axis.active_loop_id
+            counts[lid] = counts.get(lid, 0) + 1
+        # Top loop (id=1, fitness=1.0) should appear more than bottom (id=20, fitness=0.05)
+        assert counts.get(1, 0) > counts.get(20, 0)
+
+    def test_next_loop_no_repeat_within_history_window(self):
+        """A loop should not reappear within LOOP_HISTORY_SIZE calls."""
+        axis = self._make_axis()
+        recent = []
+        for _ in range(40):
+            axis.next_loop()
+            lid = axis.active_loop_id
+            window = recent[-axis.LOOP_HISTORY_SIZE:]
+            assert lid not in window, f'Loop {lid} repeated within history window'
+            recent.append(lid)
+
+    def test_fallback_when_few_loops(self):
+        """With fewer loops than history size, should still work."""
+        axis = self._make_axis(n_loops=3)
+        for _ in range(10):
+            axis.next_loop()
+            assert axis.active_loop_id is not None
+
+    def test_history_tracks_initial_load(self):
+        """The initial loop loaded at startup should be in history."""
+        axis = self._make_axis()
+        assert axis.active_loop_id in axis._loop_history
+
+
 # -------------------------------------------------------------------
 # DriftAxis
 # -------------------------------------------------------------------
