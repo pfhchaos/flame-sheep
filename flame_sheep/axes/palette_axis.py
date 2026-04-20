@@ -1,5 +1,10 @@
 """Palette axis — snare events drive palette graph traversal."""
 
+import logging
+
+log = logging.getLogger(__name__)
+
+
 import numpy as np
 
 from flame_sheep.audio._types import BeatEvent
@@ -42,7 +47,7 @@ class PaletteAxis:
                     self.palette_target = next_palette
                 self.palette_t     = 0.0
                 self.palette_speed = 0.03 + event.energy * 0.1
-                print(f'[snare] energy={event.energy:.2f}')
+                log.debug(f'[snare] energy={event.energy:.2f}')
 
         # Decay speed toward drift
         self.palette_speed = max(self.DRIFT_MORPH_SPEED, self.palette_speed * 0.98)

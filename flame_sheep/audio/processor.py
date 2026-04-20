@@ -6,6 +6,11 @@ This module re-exports them for backward compatibility and contains the
 AudioProcessor and SyntheticAudioProcessor classes.
 """
 
+import logging
+
+log = logging.getLogger(__name__)
+
+
 import threading
 import time
 import numpy as np
@@ -157,7 +162,7 @@ class SyntheticAudioProcessor:
         else:
             import time
             self._start_time = time.perf_counter()
-        print(f'[synthetic audio] {self.bpm_label}  '
+        log.info(f'[synthetic audio] {self.bpm_label}  '
               f'kick={self.kick_interval:.2f}s  '
               f'snare={self.snare_interval:.2f}s  '
               f'hihat={self.hihat_interval:.2f}s')

@@ -1,7 +1,10 @@
 """Genome axis — kick events drive genome morphing and swapping."""
 
+import logging
 import threading
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 from flame_sheep.audio._types import BeatEvent
 from flame_sheep.genome import Genome
@@ -101,12 +104,12 @@ class GenomeAxis:
             frames_until_swap = (kick_period * self.KICK_SWAP_EVERY * 60) * 0.8
             self.morph_speed = max(0.01, 1.0 / frames_until_swap)
             dist = self.current_genome.distance(self.target_genome)
-            print(f'[SWAP]  +{since:.3f}s  energy={event.energy:.2f}  '
+            log.debug(f'[SWAP]  +{since:.3f}s  energy={event.energy:.2f}  '
                   f'dist={dist:.3f}  spd={self.morph_speed:.3f}')
         else:
             self.morph_speed = min(0.15,
                 self.morph_speed + event.energy * self.KICK_MORPH_PULSE)
-            print(f'[kick]  +{since:.3f}s  energy={event.energy:.2f}  '
+            log.debug(f'[kick]  +{since:.3f}s  energy={event.energy:.2f}  '
                   f'beat={self._kick_count}/{self.KICK_SWAP_EVERY}')
 
     def force_swap(self):
@@ -117,7 +120,7 @@ class GenomeAxis:
         self.morph_t     = 0.0
         self.morph_speed = 0.15
         self.needs_walker_reset = True
-        print('[force swap]')
+        log.info('force swap')
 
     # --- Loop management ---
 
@@ -145,7 +148,7 @@ class GenomeAxis:
         self.morph_t = 0.0
         self.morph_speed = 0.05
         self.needs_walker_reset = True
-        print(f'[loop] loaded #{loop_id} ({n} genomes, start={start})')
+        log.info(f'[loop] loaded #{loop_id} ({n} genomes, start={start})')
 
     def next_loop(self):
         if self._lib is None or self._lib.loop_count() < 1:

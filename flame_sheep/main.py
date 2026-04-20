@@ -9,6 +9,11 @@ Core rendering/audio/genome logic lives in FlameSheepCore so it can be
 shared between both modes.
 """
 
+import logging
+
+log = logging.getLogger(__name__)
+
+
 import argparse
 import sys
 import time
@@ -81,7 +86,7 @@ class FlameSheepCore:
             )
         else:
             self.audio = AudioProcessor(device=audio_device)
-            print(f'audio device: {audio_device!r}')
+            log.info(f'audio device: {audio_device!r}')
         self.audio.start()
 
     @dataclass
@@ -206,12 +211,12 @@ class FlameSheepCore:
         """Signal new song started — resets tempo and adaptive bands."""
         self.tempo.song_started()
         self.audio.reset_bands()
-        print('[tempo] song started (trusted mode, bands reset)')
+        log.info('[tempo] song started (trusted mode, bands reset)')
         
     def hint_tempo(self, bpm: float):
         """Provide tempo hint from external source."""
         self.tempo.hint_tempo(bpm)
-        print(f'[tempo] hint: {bpm:.1f} BPM')
+        log.info(f'[tempo] hint: {bpm:.1f} BPM')
 
     def _handle_beats(self, events: list[BeatEvent]) -> list[BeatEvent]:
         """Filter events through tempo gating, handle kick/snare.
@@ -229,7 +234,7 @@ class FlameSheepCore:
             # Kick/snare events handled by GenomeAxis/PaletteAxis via tick()
 
             if event.kind == 'hihat':
-                print(f'[hihat] +{since:.3f}s  energy={event.energy:.2f}  '
+                log.debug(f'[hihat] +{since:.3f}s  energy={event.energy:.2f}  '
                       f'zoom_boost={self.zoom_boost:.3f}')
 
         return filtered
@@ -249,7 +254,7 @@ class FlameSheepApp(mglw.WindowConfig):
         w, h = self.window_size
         self._renderer = FlameRenderer(self.ctx, w, h)
         self._viewport = Viewport(0, 0, w, h)
-        print('flame-sheep started. Press Q to quit, F to force genome swap.')
+        log.info('flame-sheep started. Press Q to quit, F to force genome swap.')
 
     def on_render(self, time_val: float, frame_time: float):
         self.ctx.clear(0.0, 0.0, 0.0)
@@ -332,7 +337,7 @@ def _get_sway_layout() -> dict[str, dict]:
             }
         return result
     except Exception as e:
-        print(f'[wallpaper] swaymsg failed: {e}')
+        log.error(f'swaymsg failed: {e}')
         return {}
 
 
@@ -352,7 +357,7 @@ def _ensure_singleton():
             old_pid = int(f.read().strip())
         # Check if it's actually running
         os.kill(old_pid, 0)
-        print(f'[wallpaper] killing previous instance (pid {old_pid})')
+        log.info(f'killing previous instance (pid {old_pid})')
         os.kill(old_pid, signal.SIGTERM)
         # Wait briefly for it to die
         for _ in range(20):
@@ -378,7 +383,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
 
     # --- discover outputs and sway layout ---
     output_names = WallpaperSession.list_outputs()
-    print(f'[wallpaper] outputs: {output_names}')
+    log.info(f'outputs: {output_names}')
 
     layout = _get_sway_layout()
     active = {n: layout[n] for n in output_names if n in layout}
@@ -392,7 +397,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
     
     # First, find physical dimensions and pixel positions
     for name, g in active.items():
-        print(f'[wallpaper] {name}: {g["w"]}x{g["h"]}px @ {g["ppi"]:.1f}ppi, '
+        log.info(f'{name}: {g["w"]}x{g["h"]}px @ {g["ppi"]:.1f}ppi, '
               f'physical {g["phys_w_mm"]:.0f}x{g["phys_h_mm"]:.0f}mm')
     
     # Sort outputs by x position (left to right)
@@ -422,7 +427,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
     
     canvas_w = int(total_phys_w_mm * canvas_ppmm)
     canvas_h = int(total_phys_h_mm * canvas_ppmm)
-    print(f'[wallpaper] physical canvas: {total_phys_w_mm:.0f}x{total_phys_h_mm:.0f}mm '
+    log.info(f'physical canvas: {total_phys_w_mm:.0f}x{total_phys_h_mm:.0f}mm '
           f'-> render {canvas_w}x{canvas_h}px @ {canvas_ppmm:.2f} px/mm')
 
     # --- compute viewport for each output (in canvas pixels) ---
@@ -433,7 +438,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
         vw = int(g['phys_w_mm'] * canvas_ppmm)
         vh = int(g['phys_h_mm'] * canvas_ppmm)
         viewports[name] = Viewport(vx, vy, vw, vh)
-        print(f'[wallpaper] {name}: viewport {vw}x{vh}+{vx},{vy} (canvas px)')
+        log.info(f'{name}: viewport {vw}x{vh}+{vx},{vy} (canvas px)')
 
     # --- one session: one wl_display, one EGL display, one GL context ---
     session = WallpaperSession()
@@ -470,20 +475,20 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
         nonlocal _vote_count, _votes_per_evolve, _evolve_count, _evolving
         _vote_count += 1
         if _evolving:
-            print(f'[evolve] already running, vote queued ({_vote_count})')
+            log.info(f'[evolve] already running, vote queued ({_vote_count})')
             return
         if _vote_count < _votes_per_evolve:
-            print(f'[evolve] {_vote_count}/{_votes_per_evolve} votes until next evolution')
+            log.info(f'[evolve] {_vote_count}/{_votes_per_evolve} votes until next evolution')
             return
         if lib.loop_count() < 2:
-            print('[evolve] not enough loops to evolve')
+            log.warning('not enough loops to evolve')
             return
         _vote_count = 0
         _evolve_count += 1
         if _evolve_count >= 3:
             _votes_per_evolve = 3
         _evolving = True
-        print(f'[evolve] starting evolution cycle {_evolve_count} in subprocess...')
+        log.info(f'[evolve] starting evolution cycle {_evolve_count} in subprocess...')
         import subprocess
         proc = subprocess.Popen(
             [sys.executable, '-m', 'flame_sheep', '--evolve', '--loop-length', str(6)],
@@ -494,19 +499,19 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             out, _ = proc.communicate()
             if out:
                 for line in out.decode().strip().split('\n'):
-                    print(f'[evolve] {line}')
+                    log.info(f'[evolve] {line}')
             _evolving = False
         threading.Thread(target=_wait_evolve, daemon=True).start()
 
     # --- control pipe for external commands ---
     control = ControlPipe()
     control.start()
-    print(f'flame-sheep wallpaper running. Control pipe: {control.pipe_path}')
+    log.info(f'wallpaper running. Control pipe: {control.pipe_path}')
 
     def handle_control_events() -> bool:
         """Process control events. Returns True if quit requested."""
         for event in control.poll_all():
-            print(f'[ctl] {event.command} {" ".join(event.args)}')
+            log.info(f'[ctl] {event.command} {" ".join(event.args)}')
 
             if event.command == 'quit':
                 return True
@@ -515,18 +520,21 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             elif event.command == 'like':
                 if core.active_loop_id is not None:
                     lib.rate('loop', core.active_loop_id, +1)
-                    print(f'[ctl] liked loop #{core.active_loop_id} '
+                    log.info(f'[ctl] liked loop #{core.active_loop_id} '
                           f'(net: {lib.net_rating("loop", core.active_loop_id):+d})')
                     _maybe_evolve()
                 else:
-                    print('[ctl] no active loop to rate')
+                    log.warning('no active loop to rate')
             elif event.command == 'dislike':
                 if core.active_loop_id is not None:
                     lib.rate('loop', core.active_loop_id, -1)
-                    print(f'[ctl] disliked loop #{core.active_loop_id} '
+                    log.info(f'[ctl] disliked loop #{core.active_loop_id} '
                           f'(net: {lib.net_rating("loop", core.active_loop_id):+d})')
                     _maybe_evolve()
                 core.next_loop()  # switch to a different loop
+            elif event.command == 'next':
+                core.next_loop()
+                log.info(f'[ctl] next loop #{core.active_loop_id}')
             elif event.command == 'song':
                 core.song_started()
                 core.force_genome_swap()  # fresh visual for new song
@@ -536,7 +544,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                         bpm = float(event.args[0])
                         core.hint_tempo(bpm)
                     except ValueError:
-                        print(f'[ctl] invalid tempo: {event.args[0]}')
+                        log.info(f'[ctl] invalid tempo: {event.args[0]}')
             elif event.command == 'pause':
                 # TODO: enter ambient/slow mode
                 pass
@@ -555,7 +563,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
         while not quit_requested:
             time.sleep(2.0)
             if time.perf_counter() - _watchdog_last > 3.0:
-                print('[wallpaper] watchdog: render loop stalled, forcing exit')
+                log.error('[watchdog] render loop stalled, forcing exit')
                 os._exit(1)
 
     _wd_thread = threading.Thread(target=_watchdog, daemon=True)
@@ -569,7 +577,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
 
             # Dispatch pending Wayland events (delivers frame callbacks)
             if not session.dispatch():
-                print('[wallpaper] wayland connection lost, exiting')
+                log.error('wayland connection lost, exiting')
                 break
 
             # Block until the compositor signals it wants a new frame.
@@ -738,6 +746,9 @@ def main():
                         help='print library statistics and exit')
     parser.add_argument('--blur-radius', type=float, default=1.0,
                         help='wallpaper blur strength (0=off, 1=light, 2+=heavy; default: 1.0)')
+    parser.add_argument('--log-level', default='INFO',
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                        help='logging verbosity (default: INFO)')
 
     # parse_known_args so moderngl-window's own flags don't cause errors here
     args, remaining = parser.parse_known_args()
@@ -745,6 +756,9 @@ def main():
     if args.help:
         parser.print_help()
         return
+
+    from .log import setup_logging
+    setup_logging(level=args.log_level)
 
     global _AUDIO_DEVICE, _TEST_AUDIO
     _AUDIO_DEVICE = args.audio_device

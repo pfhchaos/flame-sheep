@@ -16,6 +16,11 @@ For multi-output mode (continuous image across monitors), use WallpaperSession:
           session.swap(win)
 """
 
+import logging
+
+log = logging.getLogger(__name__)
+
+
 import ctypes
 import ctypes.util
 import os
@@ -256,7 +261,7 @@ class WallpaperSession:
         _libegl.eglInitialize(self._egl_display,
                               ctypes.byref(major), ctypes.byref(minor))
         _egl_check('eglInitialize')
-        print(f'[wallpaper] EGL {major.value}.{minor.value}')
+        log.info(f'EGL {major.value}.{minor.value}')
 
         _libegl.eglBindAPI(EGL_OPENGL_API)
         _egl_check('eglBindAPI')
@@ -355,7 +360,7 @@ class WallpaperSession:
         layer_surface.ack_configure(serial)
         surf._wl_surface.commit()
         surf._configured = True
-        print(f'[wallpaper] configured {surf.width}x{surf.height}')
+        log.info(f'configured {surf.width}x{surf.height}')
         if surf._egl_window:
             _libwlegl.wl_egl_window_resize(
                 ctypes.c_void_p(surf._egl_window),
@@ -373,7 +378,7 @@ class WallpaperSession:
             ctypes.c_void_p(self._egl_context))
         if not ok:
             err = _libegl.eglGetError()
-            print(f'[wallpaper] eglMakeCurrent failed (0x{err:04x}), marking surface dead')
+            log.error(f'eglMakeCurrent failed (0x{err:04x}), marking surface dead')
             surf.should_close = True
             return False
         return True
@@ -399,7 +404,7 @@ class WallpaperSession:
         ctx._objects    = deque()
         ctx._screen     = None
         ctx.fbo         = None
-        print(f'[wallpaper] GL {ctx.version_code} '
+        log.info(f'GL {ctx.version_code} '
               f'renderer: {ctx.info["GL_RENDERER"]}')
         self.ctx = ctx
         _libegl.eglSwapInterval(self._egl_display, 0)  # non-blocking — frame callbacks pace us
@@ -426,13 +431,13 @@ class WallpaperSession:
             ctypes.c_void_p(surf.egl_surface))
         if not ok:
             err = _libegl.eglGetError()
-            print(f'[wallpaper] eglSwapBuffers failed (0x{err:04x}), marking surface dead')
+            log.error(f'eglSwapBuffers failed (0x{err:04x}), marking surface dead')
             surf.should_close = True
             return False
         try:
             self._wl_display.flush()
         except Exception as e:
-            print(f'[wallpaper] flush failed: {e}')
+            log.error(f'flush failed: {e}')
             self._signal_close()
             return False
         return True
@@ -445,7 +450,7 @@ class WallpaperSession:
             fd = self._wl_display.get_fd()
             r, _, err = select.select([fd], [], [fd], 0)
             if err:
-                print('[wallpaper] wayland fd error')
+                log.error('wayland fd error')
                 self._signal_close()
                 return False
             if r:
@@ -453,7 +458,7 @@ class WallpaperSession:
             self._wl_display.dispatch(block=False)
             return True
         except Exception as e:
-            print(f'[wallpaper] dispatch failed: {e}')
+            log.error(f'dispatch failed: {e}')
             self._signal_close()
             return False
 
@@ -473,7 +478,7 @@ class WallpaperSession:
             self._wl_display.dispatch(block=False)
             return True
         except Exception as e:
-            print(f'[wallpaper] wait failed: {e}')
+            log.error(f'wait failed: {e}')
             self._signal_close()
             return False
 

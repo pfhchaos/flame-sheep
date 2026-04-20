@@ -1,5 +1,10 @@
 """Drift axis — enters slow morph mode when audio is quiet."""
 
+import logging
+
+log = logging.getLogger(__name__)
+
+
 from flame_sheep.audio._types import BeatEvent
 
 
@@ -33,7 +38,7 @@ class DriftAxis:
                 self._genome_axis.morph_speed = self.DRIFT_MORPH_SPEED
                 dist = self._genome_axis.current_genome.distance(
                     self._genome_axis.target_genome)
-                print(f'[drift] rms={rms:.5f}  dist={dist:.3f}')
+                log.debug(f'[drift] rms={rms:.5f}  dist={dist:.3f}')
 
                 # After full loop cycles, switch loops
                 if (self._genome_axis._loop_genomes
@@ -43,7 +48,7 @@ class DriftAxis:
                     if self._loop_cycles >= self.CYCLES_PER_LOOP:
                         self._loop_cycles = 0
                         self._genome_axis.next_loop()
-                        print(f'[drift] switched to loop '
+                        log.info(f'[drift] switched to loop '
                               f'#{self._genome_axis.active_loop_id}')
         else:
             self._quiet_frames = 0
