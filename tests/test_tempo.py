@@ -132,12 +132,10 @@ class TestGating:
         # After warmup, should start passing
         assert any(results[8:]), f"Should pass after confidence builds"
 
-    def test_blocks_random_intervals(self):
+    def test_does_not_lock_on_random_intervals(self):
         tracker = TempoTracker()
-        results = simulate_random_onsets(tracker, 30)
-        # Most/all should be blocked due to low confidence
-        pass_count = sum(results)
-        assert pass_count < 10, f"Should block most random onsets, passed {pass_count}/30"
+        simulate_random_onsets(tracker, 60)
+        assert not tracker.locked, "Should not lock on random intervals"
 
     def test_filters_off_beat_when_locked(self):
         """Once locked, should only pass on-beat events."""

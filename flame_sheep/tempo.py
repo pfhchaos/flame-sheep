@@ -31,7 +31,7 @@ import numpy as np
 # Tempo detection parameters
 MIN_BPM = 60      # slowest tempo we'll detect
 MAX_BPM = 300     # fastest tempo we'll detect (DnB hits can be very fast)
-IOI_HISTORY = 48  # number of inter-onset intervals to keep
+IOI_HISTORY = 128  # number of inter-onset intervals to keep
 LOCK_THRESHOLD = 0.75  # confidence needed to "lock" tempo (raised from 0.6)
 UNLOCK_THRESHOLD = 0.4 # confidence below which we "unlock"
 PHASE_TOLERANCE = 0.15 # fraction of beat period — events within this are "on beat"
@@ -184,10 +184,8 @@ class TempoTracker:
         bins = np.linspace(0.15, 1.1, 96)  # 95 bins, ~10ms each (covers up to ~400 BPM)
         hist, edges = np.histogram(iois, bins=bins)
         
-        # Use raw histogram for concentration calculation
-        # (half/double intervals just confuse things)
         combined = hist.astype(float)
-        
+
         # Apply tempo hint as a prior if available
         if self._hint_bpm is not None:
             hint_period = 60.0 / self._hint_bpm
@@ -198,38 +196,43 @@ class TempoTracker:
                     idx = hint_bin + offset
                     if 0 <= idx < len(combined):
                         combined[idx] *= 1.5
-        
+
         # Find peak
         if combined.max() == 0:
             self._confidence = 0.0
             return
-            
+
         peak_bin = np.argmax(combined)
         peak_period = (edges[peak_bin] + edges[peak_bin + 1]) / 2
-        peak_count = combined[peak_bin]
-        
-        # Confidence based on multiple factors:
-        # 1. Peak prominence (peak vs mean) - is there a clear winner?
-        # 2. Peak concentration - are IOIs tightly clustered around peak?
-        # 3. Total mass in peak region vs spread - rhythmic = concentrated
-        
+
+        # Count IOIs that are harmonically related to the peak.
+        # A drummer playing quarter + eighth notes produces IOIs at
+        # the beat period AND half/double — these all support the tempo.
         total_count = combined.sum()
         if total_count == 0:
             self._confidence = 0.0
             return
-            
-        # Mass in peak region (+/- 2 bins, ~40ms tolerance)
-        peak_region = slice(max(0, peak_bin - 2), min(len(combined), peak_bin + 3))
-        peak_mass = combined[peak_region].sum()
-        concentration = peak_mass / total_count  # what fraction is near peak?
-        
+
+        bin_width = edges[1] - edges[0]
+        harmonic_mass = 0.0
+        for ratio in [0.5, 1.0, 1.5, 2.0, 3.0]:
+            h_period = peak_period * ratio
+            h_bin = round((h_period - edges[0]) / bin_width)
+            # Wider tolerance for harmonics (+/- 3 bins ≈ 60ms)
+            hw = 3
+            region = slice(max(0, h_bin - hw), min(len(combined), h_bin + hw + 1))
+            harmonic_mass += combined[region].sum()
+
+        concentration = min(1.0, harmonic_mass / total_count)
+
         # Prominence: how much does peak stand out from background?
+        peak_count = combined[peak_bin]
         mean_count = combined.mean()
         if mean_count > 0:
             prominence = (peak_count - mean_count) / (mean_count + 1)
         else:
             prominence = 0.0
-            
+
         # Combined confidence: need both concentration AND prominence
         # Rhythmic music: high concentration (>0.5) AND high prominence (>2)
         # Speech: low concentration (<0.3) OR low prominence (<1)

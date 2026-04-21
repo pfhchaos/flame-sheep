@@ -59,10 +59,10 @@ class AudioProcessor:
     """
 
     def __init__(self, device: str | int | None = None, adaptive: bool = False,
-                 source=None):
+                 sharpness: bool = True, source=None):
         self._source = source or PipeWireSource(device=device)
         self._spectrum_engine = SpectrumEngine()
-        self._detector = FluxBeatDetector(adaptive=adaptive)
+        self._detector = FluxBeatDetector(adaptive=adaptive, sharpness=sharpness)
         self._energy = EnergyAnalyzer()
 
         # Cached outputs (thread-safe reads via properties)

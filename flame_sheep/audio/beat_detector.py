@@ -29,9 +29,11 @@ class FluxBeatDetector:
     THRESHOLD = 1.5   # flux must exceed this × local average to fire
     COOLDOWN  = 6     # audio frames between onsets in the same band
     MIN_FLUX  = 1e-7  # gates out DC/numerical noise
+    SHARPNESS = 3.0   # min flux ratio (current/previous) for snare/hihat
 
-    def __init__(self, adaptive: bool = False):
+    def __init__(self, adaptive: bool = False, sharpness: bool = True):
         self._adaptive = adaptive
+        self._sharpness = sharpness
 
         # Static band masks
         self._bands = {
@@ -65,6 +67,9 @@ class FluxBeatDetector:
         self._cooldown_frames = {'kick': 0, 'snare': 0, 'hihat': 0}
         self._frame_count     = {'kick': 0, 'snare': 0, 'hihat': 0}
 
+        # Per-band previous flux (for attack sharpness)
+        self._prev_flux = {'kick': 0.0, 'snare': 0.0, 'hihat': 0.0}
+
     @property
     def adaptive_bands(self):
         """Access adaptive band state (for tests/inspection)."""
@@ -97,6 +102,8 @@ class FluxBeatDetector:
         for band in self._bands:
             band_flux = self._band_flux(flux, band)
             hist = self._flux_history[band]
+            prev = self._prev_flux[band]
+            self._prev_flux[band] = band_flux
 
             self._frame_count[band] += 1
             in_cooldown = (self._frame_count[band]
@@ -104,6 +111,14 @@ class FluxBeatDetector:
 
             if len(hist) >= 10 and band_flux > self.MIN_FLUX and not in_cooldown:
                 local_avg = float(np.mean(hist))
+
+                # Attack sharpness gate for snare/hihat:
+                # require steep flux rise to reject gradual vocal onsets
+                if (self._sharpness and band in ('snare', 'hihat')
+                        and prev > self.MIN_FLUX):
+                    if band_flux / prev < self.SHARPNESS:
+                        hist.append(band_flux)
+                        continue
 
                 # Snare: corroborate with confirmation band
                 if band == 'snare':

@@ -14,9 +14,9 @@ from flame_sheep.genome import Genome, Transform, NUM_VARIATIONS, _random_palett
 # Audio processor factories
 # -------------------------------------------------------------------
 
-def make_processor(adaptive: bool = False) -> AudioProcessor:
+def make_processor(adaptive: bool = False, sharpness: bool = True) -> AudioProcessor:
     """Create an AudioProcessor with a FeedSource (no audio hardware)."""
-    return AudioProcessor(source=FeedSource(), adaptive=adaptive)
+    return AudioProcessor(source=FeedSource(), adaptive=adaptive, sharpness=sharpness)
 
 
 # -------------------------------------------------------------------
