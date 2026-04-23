@@ -21,9 +21,9 @@ from scipy.signal import windows
 # Import from sibling modules within audio package
 from ._constants import (
     SAMPLE_RATE, DEFAULT_DEVICE, BLOCK_SIZE, FFT_SIZE, N_BINS, HISTORY_LEN,
-    FREQS,
+    HOP_SIZE, FREQS,
 )
-from ._types import BeatEvent
+from ._types import BeatEvent, AudioSnapshot
 from ._spectrum import SpectrumEngine, SpectrumFrame
 from .beat_detector import FluxBeatDetector
 from .energy import EnergyAnalyzer
@@ -52,10 +52,12 @@ _FAST_ADAPT_FRAMES = FAST_ADAPT_FRAMES
 
 class AudioProcessor:
     """
-    Orchestrates audio analysis: signal source → spectrum → detection + energy.
+    Orchestrates audio analysis: signal source -> spectrum -> detection + energy.
 
-    For production: AudioProcessor(device='...') uses PipeWire via sounddevice.
-    For testing: AudioProcessor(source=FeedSource()) accepts manual PCM input.
+    Two modes determined by source type:
+      - Threaded (PipeWireSource): audio analysis runs in a daemon thread at
+        HOP_SIZE cadence. Render thread calls drain() to get accumulated state.
+      - Synchronous (FeedSource): process() works as before for deterministic tests.
     """
 
     def __init__(self, device: str | int | None = None, adaptive: bool = False,
@@ -65,11 +67,24 @@ class AudioProcessor:
         self._detector = FluxBeatDetector(adaptive=adaptive, sharpness=sharpness)
         self._energy = EnergyAnalyzer()
 
-        # Cached outputs (thread-safe reads via properties)
+        # Auto-detect: FeedSource is synchronous, everything else is threaded
+        self._threaded = not isinstance(self._source, FeedSource)
+
+        # Shared state (lock-protected, read by drain(), written by audio thread or process())
         self._lock     = threading.Lock()
         self._spectrum = np.zeros(N_BINS, dtype=np.float32)
         self._waveform = np.zeros(FFT_SIZE, dtype=np.float32)
         self._rms      = 0.0
+        self._centroid = 1000.0
+        self._centroid_delta = 0.0
+        self._centroid_rms = 0.0
+        self._percussiveness = 0.5
+        self._band_rms = {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0}
+        self._pending_events: list[BeatEvent] = []
+
+        # Thread state
+        self._thread: threading.Thread | None = None
+        self._running = False
 
     def reset_bands(self):
         """Reset adaptive bands to defaults. Call on song change."""
@@ -77,27 +92,110 @@ class AudioProcessor:
 
     def start(self):
         self._source.start()
+        if self._threaded:
+            self._running = True
+            self._thread = threading.Thread(
+                target=self._audio_loop, daemon=True, name='audio-analysis')
+            self._thread.start()
+            log.info('Audio thread started (hop=%d, %.1fms)', HOP_SIZE,
+                     HOP_SIZE / SAMPLE_RATE * 1000)
 
     def stop(self):
-        self._source.stop()
+        self._running = False
+        self._source.stop()  # unblocks read_hop via stop_event
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
 
     def feed(self, pcm: np.ndarray):
         """Feed PCM samples into the source buffer."""
         self._source.feed(pcm)
 
+    # ------------------------------------------------------------------
+    # Threaded mode: audio loop + drain
+    # ------------------------------------------------------------------
+
+    def _audio_loop(self):
+        """Runs in daemon thread. Reads hops, analyses, publishes."""
+        while self._running:
+            hop = self._source.read_hop(HOP_SIZE)
+            if hop is None:
+                break  # source stopped
+
+            frame = self._spectrum_engine.push_hop(hop)
+            self._energy.update(frame.magnitude, frame.flux)
+            events = self._detector.detect(frame)
+
+            with self._lock:
+                self._pending_events.extend(events)
+                self._spectrum[:] = frame.magnitude
+                self._waveform[:] = frame.waveform
+                self._rms = self._energy.rms
+                self._centroid = self._energy.centroid
+                self._centroid_delta = self._energy.centroid_delta
+                self._centroid_rms = self._energy.centroid_rms
+                self._percussiveness = self._energy.percussiveness
+                self._band_rms = self._energy.band_rms
+
+    def drain(self) -> AudioSnapshot:
+        """Atomically read and clear accumulated audio state.
+
+        In threaded mode: returns events accumulated since last drain.
+        In sync mode: calls process() once, wraps result in AudioSnapshot.
+        """
+        if not self._threaded:
+            events = self.process()
+            return AudioSnapshot(
+                events=events,
+                spectrum=self._spectrum.copy(),
+                rms=self._rms,
+                waveform=self._waveform.copy(),
+                centroid=self._centroid,
+                centroid_delta=self._centroid_delta,
+                centroid_rms=self._centroid_rms,
+                percussiveness=self._percussiveness,
+                band_rms=self._band_rms.copy(),
+            )
+
+        with self._lock:
+            snap = AudioSnapshot(
+                events=self._pending_events,
+                spectrum=self._spectrum.copy(),
+                rms=self._rms,
+                waveform=self._waveform.copy(),
+                centroid=self._centroid,
+                centroid_delta=self._centroid_delta,
+                centroid_rms=self._centroid_rms,
+                percussiveness=self._percussiveness,
+                band_rms=self._band_rms.copy(),
+            )
+            self._pending_events = []
+            return snap
+
+    # ------------------------------------------------------------------
+    # Synchronous mode: process (for FeedSource / tests)
+    # ------------------------------------------------------------------
+
     def process(self) -> list[BeatEvent]:
-        """Run one analysis frame. Returns beat events."""
+        """Run one analysis frame synchronously. Returns beat events.
+
+        For FeedSource/test use. In threaded mode, use drain() instead.
+        """
         pcm = self._source.read()
         if pcm is None:
             return []
 
         frame = self._spectrum_engine.compute(pcm)
-        self._energy.update(frame.magnitude)
+        self._energy.update(frame.magnitude, frame.flux)
 
         with self._lock:
             self._spectrum[:] = frame.magnitude
             self._waveform[:] = frame.waveform
             self._rms = self._energy.rms
+            self._centroid = self._energy.centroid
+            self._centroid_delta = self._energy.centroid_delta
+            self._centroid_rms = self._energy.centroid_rms
+            self._percussiveness = self._energy.percussiveness
 
         return self._detector.detect(frame)
 
@@ -152,7 +250,7 @@ class SyntheticAudioProcessor:
         self._clock         = clock  # callable returning seconds, or None for perf_counter
 
         self._start_time: float | None = None
-        self._last: dict[str, float]   = {'kick': -1.0, 'snare': -1.0, 'hihat': -1.0}
+        self._last: dict[str, float]   = {'kick': -1.0, 'snare': -1.0, 'clap': -1.0, 'hihat': -1.0}
         self._spectrum = np.zeros(N_BINS, dtype=np.float32)
         self._rms      = 0.5  # synthetic audio is "always playing"
 
@@ -205,6 +303,16 @@ class SyntheticAudioProcessor:
                 self._spectrum[mask] = 1.0
 
         return events
+
+    def drain(self) -> AudioSnapshot:
+        """Wrap process() into AudioSnapshot for uniform API with AudioProcessor."""
+        events = self.process()
+        return AudioSnapshot(
+            events=events,
+            spectrum=self._spectrum.copy(),
+            rms=self._rms,
+            waveform=np.zeros(FFT_SIZE, dtype=np.float32),
+        )
 
     @property
     def spectrum(self) -> np.ndarray:

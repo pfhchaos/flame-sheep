@@ -40,7 +40,7 @@ except ImportError:
     def _bind_default_framebuffer():
         _libGL.glBindFramebuffer(0x8D40, 0)  # GL_FRAMEBUFFER = 0x8D40
 
-from .genome import Genome, MAX_TRANSFORMS, NUM_VARIATIONS, MAX_ACTIVE_VARS
+from .genome import Genome, MAX_TRANSFORMS, NUM_VARIATIONS, MAX_ACTIVE_VARS, MAX_VAR_PARAMS
 
 SHADER_DIR = Path(__file__).parent / 'shaders'
 
@@ -127,14 +127,17 @@ class FlameRenderer:
         active_vars_data = np.zeros((MAX_TRANSFORMS, MAX_ACTIVE_VARS, 2), dtype=np.float32)
         colors_data      = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
         weights_data     = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
+        var_params_data  = np.zeros((MAX_TRANSFORMS, MAX_VAR_PARAMS), dtype=np.float32)
         self.affines_buf     = self.ctx.buffer(affines_data.tobytes())
         self.active_vars_buf = self.ctx.buffer(active_vars_data.tobytes())
         self.colors_buf      = self.ctx.buffer(colors_data.tobytes())
         self.weights_buf     = self.ctx.buffer(weights_data.tobytes())
+        self.var_params_buf  = self.ctx.buffer(var_params_data.tobytes())
         self.affines_buf.bind_to_storage_buffer(2)
         self.active_vars_buf.bind_to_storage_buffer(3)
         self.colors_buf.bind_to_storage_buffer(4)
         self.weights_buf.bind_to_storage_buffer(5)
+        self.var_params_buf.bind_to_storage_buffer(6)
 
         # Walker state SSBO (binding=1)
         walker_data = np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(np.float32)
@@ -171,11 +174,12 @@ class FlameRenderer:
     # ------------------------------------------------------------------
 
     def upload_genome(self, genome: Genome):
-        affines, active_vars, colors, weights = genome.to_gpu_arrays()
+        affines, active_vars, colors, weights, var_params = genome.to_gpu_arrays()
         self.affines_buf.write(affines.tobytes())
         self.active_vars_buf.write(active_vars.tobytes())
         self.colors_buf.write(colors.tobytes())
         self.weights_buf.write(weights.tobytes())
+        self.var_params_buf.write(var_params.tobytes())
 
         cs = self.compute_shader
         cs['u_n_transforms'] = len(genome.transforms)

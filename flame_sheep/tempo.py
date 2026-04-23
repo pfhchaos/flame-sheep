@@ -1,16 +1,17 @@
 """
-Tempo detection via onset strength autocorrelation + hypothesis testing.
+Tempo detection via onset IOI histogram.
 
 Algorithm:
-  1. Accumulate spectral flux into a rolling onset strength signal
-  2. Periodically autocorrelate to find dominant periodicity → BPM hypothesis
-  3. Each onset event is tested against the grid:
-     - on-grid → confidence rises
-     - off-grid → confidence falls
-  4. Above GATE_THRESHOLD, kick events are gated to the grid
-  5. Below UNLOCK_THRESHOLD, re-estimate from autocorrelation
+  1. Collect kick onset timestamps in a rolling window
+  2. Compute inter-onset intervals (IOIs)
+  3. Histogram IOIs to find dominant periodicity → BPM estimate
+  4. Track confidence via grid alignment testing
 
-External tempo hints seed the hypothesis directly.
+The BPM estimate and confidence are published for visualization use
+(e.g. drop freeze duration, morph speed calibration).
+No gating is performed — all events pass through unconditionally.
+
+External tempo hints seed the estimate directly.
 """
 
 import logging
@@ -25,21 +26,24 @@ log = logging.getLogger(__name__)
 
 # Tempo range
 MIN_BPM = 60
-MAX_BPM = 200
+MAX_BPM = 300
 
-# Audio buffer for tempo estimation
-AUDIO_BUFFER_SEC = 20   # seconds of audio to keep for tempo estimation
-ESTIMATE_INTERVAL = 50  # re-estimate every N frames (~2.1s)
-MIN_AUDIO_SEC = 4       # minimum audio before first estimate
+# IOI estimation
+MIN_ONSETS_FOR_ESTIMATE = 8
+ESTIMATE_EVERY_N_ONSETS = 4
+IOI_WINDOW = 32
+IOI_HIST_BINS = 200
+IOI_MIN = 60.0 / MAX_BPM
+IOI_MAX = 60.0 / MIN_BPM
 
-# Grid matching
-PHASE_TOLERANCE = 0.10  # fraction of beat period to count as "on grid"
+# Grid matching (for confidence, not gating)
+PHASE_TOLERANCE = 0.12
 
 # Confidence dynamics
-CONFIDENCE_UP = 0.10    # per on-grid onset
-CONFIDENCE_DOWN = 0.08  # per off-grid onset
-GATE_THRESHOLD = 0.5    # start gating kicks above this
-UNLOCK_THRESHOLD = 0.2  # re-estimate below this
+CONFIDENCE_UP = 0.08
+CONFIDENCE_DOWN = 0.06
+LOCK_THRESHOLD = 0.5
+UNLOCK_THRESHOLD = 0.2
 INITIAL_CONFIDENCE = 0.3
 
 
@@ -54,24 +58,17 @@ class TempoState:
 
 
 class TempoTracker:
+    """IOI-based tempo tracker.
+
+    Collects kick onset timestamps, estimates BPM from inter-onset
+    interval histograms, and tracks confidence via grid alignment.
+    Does NOT gate events — all onsets pass through.
     """
-    Autocorrelation-based tempo tracker with hypothesis testing.
 
-    Receives spectral flux each frame to build an onset strength signal.
-    Periodically autocorrelates to estimate tempo. Onset events are then
-    validated against the grid to build/decay confidence.
-    """
+    def __init__(self):
+        self._kick_times: deque[float] = deque(maxlen=IOI_WINDOW)
+        self._onset_count = 0
 
-    def __init__(self, sr: int = 48000, hop: int = 2048):
-        self._sr = sr
-        self._hop = hop
-
-        # Rolling audio buffer for librosa tempo estimation
-        self._audio_buffer: deque[np.ndarray] = deque(
-            maxlen=int(AUDIO_BUFFER_SEC * sr / hop))
-        self._frame_count = 0
-
-        # Hypothesis state
         self._bpm = 0.0
         self._beat_period = 0.0
         self._confidence = 0.0
@@ -79,18 +76,12 @@ class TempoTracker:
         self._last_beat_time = 0.0
         self._has_hypothesis = False
 
-        # Per-kind onset times (for phase alignment)
-        self._onset_times: deque[float] = deque(maxlen=256)
-
-        # External hints
         self._hint_bpm: float | None = None
-        self._trusted_source = False
 
     def reset(self):
         """Clear all state — call on song change."""
-        self._audio_buffer.clear()
-        self._frame_count = 0
-        self._onset_times.clear()
+        self._kick_times.clear()
+        self._onset_count = 0
         self._bpm = 0.0
         self._beat_period = 0.0
         self._confidence = 0.0
@@ -98,56 +89,46 @@ class TempoTracker:
         self._last_beat_time = 0.0
         self._has_hypothesis = False
         self._hint_bpm = None
-        self._trusted_source = False
 
     def hint_tempo(self, bpm: float):
         """Provide a tempo hint — seeds hypothesis directly."""
         if MIN_BPM <= bpm <= MAX_BPM:
             self._hint_bpm = bpm
-            self._trusted_source = True
             self._set_hypothesis(bpm, INITIAL_CONFIDENCE + 0.2)
 
     def song_started(self):
-        """Signal new song — resets and enables trusted mode."""
+        """Signal new song — resets state."""
         self.reset()
-        self._trusted_source = True
 
-    def feed_audio(self, pcm: np.ndarray):
-        """Feed one frame of raw PCM audio.
+    def process_onset(self, kind: str, timestamp: float):
+        """Process an onset event for tempo estimation.
 
-        Call once per audio frame, before process_onset().
+        Only kick onsets contribute to BPM estimation.
+        All onsets are tested against the grid for confidence tracking.
         """
-        self._audio_buffer.append(pcm.copy())
-        self._frame_count += 1
+        if kind == 'kick':
+            self._kick_times.append(timestamp)
+            self._onset_count += 1
 
-        min_frames = int(MIN_AUDIO_SEC * self._sr / self._hop)
-        if (self._frame_count >= min_frames
-                and self._frame_count % ESTIMATE_INTERVAL == 0):
-            bpm = self._estimate_bpm()
-            if bpm > 0:
-                if not self._has_hypothesis:
-                    self._set_hypothesis(bpm, INITIAL_CONFIDENCE)
-                elif not self._locked:
-                    self._bpm = bpm
-                    self._beat_period = 60.0 / bpm
-
-    def process_onset(self, kind: str, timestamp: float) -> bool:
-        """
-        Process an onset event. Returns True if it should be kept.
-
-        Call after feed_flux() for the current frame.
-        """
-        self._onset_times.append(timestamp)
+            # Periodically estimate BPM from IOIs
+            if (self._onset_count >= MIN_ONSETS_FOR_ESTIMATE
+                    and self._onset_count % ESTIMATE_EVERY_N_ONSETS == 0):
+                bpm = self._estimate_bpm_from_ioi()
+                if bpm > 0:
+                    if not self._has_hypothesis:
+                        self._set_hypothesis(bpm, INITIAL_CONFIDENCE)
+                    elif not self._locked:
+                        self._bpm = bpm
+                        self._beat_period = 60.0 / bpm
 
         if not self._has_hypothesis:
-            return True
+            return
 
         # Test onset against grid, update confidence
         on_grid = self._is_on_grid(timestamp)
 
         if on_grid:
             self._confidence = min(1.0, self._confidence + CONFIDENCE_UP)
-            # Advance last_beat_time to nearest beat
             if self._beat_period > 0:
                 elapsed = timestamp - self._last_beat_time
                 beats = round(elapsed / self._beat_period)
@@ -158,7 +139,7 @@ class TempoTracker:
 
         # Lock/unlock
         was_locked = self._locked
-        if self._confidence >= GATE_THRESHOLD:
+        if self._confidence >= LOCK_THRESHOLD:
             self._locked = True
         elif self._confidence < UNLOCK_THRESHOLD:
             if self._locked or self._has_hypothesis:
@@ -172,12 +153,6 @@ class TempoTracker:
         elif was_locked and not self._locked:
             log.info(f'tempo unlocked (confidence={self._confidence:.2f})')
 
-        # Gating: only gate kicks, and only when locked
-        if self._locked and kind == 'kick':
-            return self._is_on_grid(timestamp)
-
-        return True
-
     def _set_hypothesis(self, bpm: float, confidence: float):
         """Set a new tempo hypothesis with optimal phase alignment."""
         self._bpm = bpm
@@ -185,8 +160,7 @@ class TempoTracker:
         self._confidence = confidence
         self._has_hypothesis = True
 
-        # Find phase offset that maximizes grid alignment with recent onsets
-        recent = list(self._onset_times)[-32:]
+        recent = sorted(self._kick_times)[-16:]
         if len(recent) < 2:
             self._last_beat_time = recent[-1] if recent else 0.0
             return
@@ -199,7 +173,7 @@ class TempoTracker:
                 elapsed = t - candidate
                 for divisor in [1, 2]:
                     period = self._beat_period / divisor
-                    if period < 60.0 / MAX_BPM:
+                    if period < IOI_MIN:
                         continue
                     phase = (elapsed / period) % 1.0
                     if phase < PHASE_TOLERANCE or phase > (1.0 - PHASE_TOLERANCE):
@@ -211,22 +185,39 @@ class TempoTracker:
         self._last_beat_time = best_anchor
         log.debug(f'hypothesis: {bpm:.1f} BPM (confidence={confidence:.2f})')
 
-    def _estimate_bpm(self) -> float:
-        """Estimate BPM from accumulated audio using librosa."""
-        import librosa
-
-        if len(self._audio_buffer) < 2:
+    def _estimate_bpm_from_ioi(self) -> float:
+        """Estimate BPM from inter-onset intervals of recent kicks."""
+        times = sorted(self._kick_times)
+        if len(times) < MIN_ONSETS_FOR_ESTIMATE:
             return 0.0
 
-        # Concatenate audio buffer
-        audio = np.concatenate(list(self._audio_buffer))
+        iois = []
+        for i in range(len(times)):
+            for j in range(i + 1, min(i + 4, len(times))):
+                ioi = times[j] - times[i]
+                if IOI_MIN <= ioi <= IOI_MAX:
+                    iois.append(ioi)
+                half = ioi / 2
+                if IOI_MIN <= half <= IOI_MAX:
+                    iois.append(half)
 
-        tempo, _ = librosa.beat.beat_track(
-            y=audio, sr=self._sr,
-            start_bpm=self._hint_bpm or 120.0,
-        )
-        bpm = float(tempo[0]) if hasattr(tempo, '__len__') else float(tempo)
+        if len(iois) < 4:
+            return 0.0
 
+        ioi_arr = np.array(iois)
+        counts, edges = np.histogram(ioi_arr, bins=IOI_HIST_BINS,
+                                     range=(IOI_MIN, IOI_MAX))
+
+        kernel = np.array([0.1, 0.2, 0.4, 0.2, 0.1])
+        smoothed = np.convolve(counts, kernel, mode='same')
+
+        peak_bin = np.argmax(smoothed)
+        peak_ioi = (edges[peak_bin] + edges[peak_bin + 1]) / 2
+
+        if smoothed[peak_bin] < len(iois) * 0.1:
+            return 0.0
+
+        bpm = 60.0 / peak_ioi
         if MIN_BPM <= bpm <= MAX_BPM:
             return bpm
         return 0.0
@@ -239,7 +230,7 @@ class TempoTracker:
         elapsed = timestamp - self._last_beat_time
         for divisor in [1, 2]:
             period = self._beat_period / divisor
-            if period < 0.1:  # floor at 100ms (600 BPM) — always safe
+            if period < 0.1:
                 continue
             phase = (elapsed / period) % 1.0
             if phase < PHASE_TOLERANCE or phase > (1.0 - PHASE_TOLERANCE):

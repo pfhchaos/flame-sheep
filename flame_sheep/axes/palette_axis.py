@@ -7,12 +7,12 @@ log = logging.getLogger(__name__)
 
 import numpy as np
 
-from flame_sheep.audio._types import BeatEvent
+from flame_sheep.audio._types import AudioState
 from flame_sheep.genome import _lerp_arr
 
 
 class PaletteAxis:
-    """Snare → palette walk. Energy controls jump distance."""
+    """Snare -> palette walk. Energy controls jump distance."""
 
     DRIFT_MORPH_SPEED = 0.003
 
@@ -27,8 +27,7 @@ class PaletteAxis:
         self.palette_t       = 0.0
         self.palette_speed   = self.DRIFT_MORPH_SPEED
 
-    def tick(self, events: list[BeatEvent], rms: float,
-             dt: float, clock: float) -> None:
+    def tick(self, audio: AudioState, dt: float, clock: float) -> None:
         # Advance palette morph
         self.palette_t = min(1.0, self.palette_t + self.palette_speed)
 
@@ -38,7 +37,7 @@ class PaletteAxis:
             self.palette_speed   = self.DRIFT_MORPH_SPEED
 
         # Handle snare events
-        for event in events:
+        for event in audio.events:
             if event.kind == 'snare':
                 self.palette_current = _lerp_arr(
                     self.palette_current, self.palette_target, self.palette_t)

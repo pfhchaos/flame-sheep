@@ -51,8 +51,28 @@ class Variation:
     EYEFISH     = 27
     BUBBLE      = 28
     CYLINDER    = 29
+    # --- extended variations (JWildfire / flam3 inspired) ---
+    SPLITS      = 30
+    CLOVERLEAF  = 31
+    JULIAN      = 32
+    JULIASCOPE  = 33
+    TANGENT     = 34
+    CROSS       = 35
+    BUTTERFLY   = 36
+    CURL        = 37
 
-NUM_VARIATIONS = 30
+NUM_VARIATIONS = 38
+
+# Variations that require per-transform parameters (var_params dict)
+_PARAMETRIC_VARIATIONS = {
+    Variation.JULIAN, Variation.JULIASCOPE,
+    Variation.SPLITS, Variation.CURL,
+}
+
+# GPU var_params layout: 8 floats per transform
+# [0] julian_power  [1] julian_dist  [2] splits_x  [3] splits_y
+# [4] curl_c1       [5] curl_c2      [6..7] reserved
+MAX_VAR_PARAMS = 8
 MAX_TRANSFORMS = 6
 MAX_ACTIVE_VARS = 8  # max active variations per transform (for GPU loop)
 
@@ -68,6 +88,8 @@ class Transform:
     color: float = 0.0
     # Probability weight for this transform being chosen
     weight: float = 1.0
+    # Per-variation parameters (e.g. julian_power, splits_x)
+    var_params: dict = field(default_factory=dict)
 
     @classmethod
     def random(cls, rng: np.random.Generator) -> 'Transform':
@@ -89,6 +111,33 @@ class Transform:
         weights = rng.uniform(0.3, 1.0, n_vars)
         weights /= weights.sum()
         t.variations[chosen] = weights
+
+        # Initialize params for parametric variations
+        # Ranges derived from JWildfire's randomize() methods where available
+        for v in chosen:
+            if v in (Variation.JULIAN, Variation.JULIASCOPE):
+                # Power 2-12, 50% chance negative (inverts symmetry)
+                power = float(rng.integers(2, 13))
+                if rng.random() < 0.5:
+                    power = -power
+                # Dist is multi-modal: 40% conservative, 40% wild, 20% exactly 1.0
+                r = rng.random()
+                if r < 0.4:
+                    dist = float(rng.uniform(0.75, 1.25))
+                elif r < 0.8:
+                    dist = float(rng.uniform(0.2, 3.5))
+                else:
+                    dist = 1.0
+                if rng.random() < 0.4:
+                    dist = -dist
+                t.var_params['julian_power'] = power
+                t.var_params['julian_dist'] = dist
+            elif v == Variation.SPLITS:
+                t.var_params['splits_x'] = float(rng.uniform(-1.0, 1.0))
+                t.var_params['splits_y'] = float(rng.uniform(-1.0, 1.0))
+            elif v == Variation.CURL:
+                t.var_params['curl_c1'] = float(rng.uniform(-1.0, 1.0))
+                t.var_params['curl_c2'] = float(rng.uniform(-1.0, 1.0))
 
         t.color = float(rng.uniform(0, 1))
         t.weight = float(rng.uniform(0.5, 2.0))
@@ -269,6 +318,12 @@ class Genome:
             tr.variations = _lerp_arr(ta.variations, tb.variations, t)
             tr.color      = float(ta.color  * (1-t) + tb.color  * t)
             tr.weight     = float(ta.weight * (1-t) + tb.weight * t)
+            # Lerp var_params — union of keys, missing = 0
+            all_keys = set(ta.var_params) | set(tb.var_params)
+            tr.var_params = {
+                k: ta.var_params.get(k, 0.0) * (1-t) + tb.var_params.get(k, 0.0) * t
+                for k in all_keys
+            }
             result.transforms.append(tr)
         
         result.palette  = _lerp_arr(self.palette,  other.palette,  t)
@@ -277,7 +332,7 @@ class Genome:
         result.center   = _lerp_arr(self.center,   other.center,   t)
         return result
 
-    def to_gpu_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def to_gpu_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Pack genome into flat arrays for GPU upload.
 
@@ -287,6 +342,8 @@ class Genome:
                          Each slot is (var_index, weight). Index < 0 = unused.
             colors:      (MAX_TRANSFORMS,) float32 [color index per transform]
             weights:     (MAX_TRANSFORMS,) float32 [normalized probabilities]
+            var_params:  (MAX_TRANSFORMS, MAX_VAR_PARAMS) float32
+                         Per-transform variation parameters.
         """
         n = len(self.transforms)
         affines     = np.zeros((MAX_TRANSFORMS, 6), dtype=np.float32)
@@ -294,6 +351,7 @@ class Genome:
         active_vars = np.full((MAX_TRANSFORMS, MAX_ACTIVE_VARS, 2), -1.0, dtype=np.float32)
         colors      = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
         weights     = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
+        var_params  = np.zeros((MAX_TRANSFORMS, MAX_VAR_PARAMS), dtype=np.float32)
 
         for i, tr in enumerate(self.transforms[:MAX_TRANSFORMS]):
             affines[i] = tr.affine
@@ -306,12 +364,21 @@ class Genome:
                 active_vars[i, j, 0] = float(var_idx)
                 active_vars[i, j, 1] = tr.variations[var_idx]
 
+            # Pack variation parameters into fixed layout
+            vp = tr.var_params
+            var_params[i, 0] = vp.get('julian_power', 3.0)
+            var_params[i, 1] = vp.get('julian_dist', 1.0)
+            var_params[i, 2] = vp.get('splits_x', 0.5)
+            var_params[i, 3] = vp.get('splits_y', 0.5)
+            var_params[i, 4] = vp.get('curl_c1', 0.0)
+            var_params[i, 5] = vp.get('curl_c2', 0.0)
+
         # normalize weights to probabilities
         w_sum = weights[:n].sum()
         if w_sum > 0:
             weights[:n] /= w_sum
 
-        return affines, active_vars, colors, weights
+        return affines, active_vars, colors, weights, var_params
 
 
     def aesthetic_score(self, renderer=None, n_test: int = 5000) -> dict[str, float]:
@@ -534,6 +601,25 @@ def _apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[fl
     elif var_idx == 19: # power
         rp = np.power(max(r, 1e-10), np.sin(th))
         return w*rp*np.cos(th), w*rp*np.sin(th)
+    elif var_idx == 34: # tangent — tan(y) blows up at pi/2
+        cy = np.cos(y)
+        if abs(cy) < 1e-6:
+            return w*x, w*10.0  # clamp
+        return w*np.sin(x)/max(abs(cy), 1e-6), w*np.tan(y)
+    elif var_idx == 35: # cross — 1/(x²-y²)², blows up on diagonals
+        d = x*x - y*y
+        if abs(d) < 1e-6:
+            return w*x, w*y
+        s = 1.0 / (d*d + 1e-6)
+        return w*s*x, w*s*y
+    elif var_idx == 32: # julian — like julia but with nth root
+        sqr = w * np.sqrt(r)
+        t2 = th * 0.5  # simplified: power=2
+        return sqr*np.cos(t2), sqr*np.sin(t2)
+    elif var_idx == 33: # juliascope — same danger profile as julian
+        sqr = w * np.sqrt(r)
+        t2 = th * 0.5
+        return sqr*np.cos(t2), sqr*np.sin(t2)
     else:
         # treat unknown/safe variations as linear for viability purposes
         return w*x, w*y

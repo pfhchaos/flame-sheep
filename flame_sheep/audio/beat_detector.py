@@ -27,7 +27,7 @@ class FluxBeatDetector:
 
     # Detection constants
     THRESHOLD = 1.5   # flux must exceed this × local average to fire
-    COOLDOWN  = 6     # audio frames between onsets in the same band
+    COOLDOWN  = 12    # audio frames between onsets (~128ms at HOP_SIZE=512)
     MIN_FLUX  = 1e-7  # gates out DC/numerical noise
     SHARPNESS = 3.0   # min flux ratio (current/previous) for snare/hihat
 
@@ -39,6 +39,7 @@ class FluxBeatDetector:
         self._bands = {
             'kick':  make_mask(50, 100),
             'snare': make_mask(300, 1000),
+            'clap':  make_mask(1000, 8000),
             'hihat': make_mask(8000, SAMPLE_RATE / 2),
         }
         self._snare_confirm = make_mask(1000, 3000)
@@ -48,6 +49,7 @@ class FluxBeatDetector:
             self._adaptive_bands = {
                 'kick':           AdaptiveBand('kick'),
                 'snare':          AdaptiveBand('snare'),
+                'clap':           AdaptiveBand('clap'),
                 'hihat':          AdaptiveBand('hihat'),
                 '_snare_confirm': AdaptiveBand('_snare_confirm'),
             }
@@ -59,16 +61,17 @@ class FluxBeatDetector:
         self._flux_history = {
             'kick':           deque(maxlen=HISTORY_LEN),
             'snare':          deque(maxlen=HISTORY_LEN),
+            'clap':           deque(maxlen=HISTORY_LEN),
             'hihat':          deque(maxlen=HISTORY_LEN),
             '_snare_confirm': deque(maxlen=HISTORY_LEN),
         }
 
         # Per-band cooldown
-        self._cooldown_frames = {'kick': 0, 'snare': 0, 'hihat': 0}
-        self._frame_count     = {'kick': 0, 'snare': 0, 'hihat': 0}
+        self._cooldown_frames = {'kick': 0, 'snare': 0, 'clap': 0, 'hihat': 0}
+        self._frame_count     = {'kick': 0, 'snare': 0, 'clap': 0, 'hihat': 0}
 
         # Per-band previous flux (for attack sharpness)
-        self._prev_flux = {'kick': 0.0, 'snare': 0.0, 'hihat': 0.0}
+        self._prev_flux = {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0}
 
     @property
     def adaptive_bands(self):
@@ -114,7 +117,7 @@ class FluxBeatDetector:
 
                 # Attack sharpness gate for snare/hihat:
                 # require steep flux rise to reject gradual vocal onsets
-                if (self._sharpness and band in ('snare', 'hihat')
+                if (self._sharpness and band in ('snare', 'clap', 'hihat')
                         and prev > self.MIN_FLUX):
                     if band_flux / prev < self.SHARPNESS:
                         hist.append(band_flux)
@@ -182,7 +185,7 @@ class FluxBeatDetector:
             return
         self._adapt_frame = 0
 
-        for name in ('kick', 'snare', 'hihat'):
+        for name in ('kick', 'snare', 'clap', 'hihat'):
             ab = self._adaptive_bands[name]
             raw = ab.flux_accum * ab.allowed_mask
             peak = raw.max()

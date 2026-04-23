@@ -1,4 +1,4 @@
-"""Genome axis — kick events drive genome morphing and swapping."""
+"""Genome axis — kick/drop events drive genome morphing and swapping."""
 
 import logging
 import threading
@@ -7,12 +7,21 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-from flame_sheep.audio._types import BeatEvent
+from flame_sheep.audio._types import AudioState, BeatEvent
 from flame_sheep.genome import Genome
 
 
 class GenomeAxis:
-    """Kick → genome morph/swap. Manages genome lifecycle, loops, prefetch.
+    """Kick -> genome morph/swap. Manages genome lifecycle, loops, prefetch.
+
+    Responds to event types:
+      - kick: count toward swap, pulse morph speed
+      - drop: force swap + freeze morph for N bars
+      - song_start: reset drop/kick state
+
+    Continuous features:
+      - percussiveness: scales morph speed (low = slow drift, high = snappy)
+      - centroid_delta: triggers swaps in low-percussiveness mode
 
     State:
         current_genome, target_genome: endpoints of the current morph
@@ -25,6 +34,9 @@ class GenomeAxis:
     KICK_SWAP_EVERY     = 4
     KICK_MORPH_PULSE    = 0.03
     LOOP_HISTORY_SIZE   = 8
+
+    # Centroid delta threshold for triggering a swap in low-percussiveness mode
+    CENTROID_SWAP_THRESHOLD = 200.0
 
     def __init__(self, genome_factory, lib=None, rng=None):
         self.enabled = True
@@ -55,23 +67,48 @@ class GenomeAxis:
         # Walker reset flag (consumed by renderer)
         self.needs_walker_reset = False
 
-        # Last beat times for interval tracking
+        # Timing
         self._last_kick_time = 0.0
+        self._drop_freeze_remaining = 0.0
 
         if lib is not None and lib.loop_count() > 0:
             self._load_top_loop()
         else:
             self._prefetch_genome()
 
-    def tick(self, events: list[BeatEvent], rms: float,
-             dt: float, clock: float) -> None:
-        # Handle kick events
-        for event in events:
+    def tick(self, audio: AudioState, dt: float, clock: float) -> None:
+        # Handle discrete events
+        for event in audio.events:
             if event.kind == 'kick':
                 self._handle_kick(event, clock)
+            elif event.kind == 'drop':
+                self._handle_drop(event)
+            elif event.kind == 'song_start':
+                self._handle_song_start()
+
+        # In low-percussiveness mode, a large centroid shift triggers a swap
+        if (audio.percussiveness < 0.3
+                and audio.centroid_delta > self.CENTROID_SWAP_THRESHOLD
+                and self.morph_t > 0.3
+                and self._drop_freeze_remaining <= 0):
+            self.current_genome = self.current_genome.lerp(
+                self.target_genome, self.morph_t)
+            self._swap_next_genome()
+            self.morph_t = 0.0
+            self.morph_speed = 0.02
+            log.debug(f'[centroid swap] delta={audio.centroid_delta:.0f}Hz '
+                      f'perc={audio.percussiveness:.2f}')
+
+        # Drop freeze: hold the genome, don't morph
+        if self._drop_freeze_remaining > 0:
+            self._drop_freeze_remaining -= dt
+            return  # brightness/zoom still respond
+
+        # Scale morph speed by percussiveness
+        perc_scale = 0.2 + 0.8 * min(1.0, audio.percussiveness / 0.5)
 
         # Advance morph
-        self.morph_t = min(1.0, self.morph_t + self.morph_speed)
+        self.morph_t = min(1.0, self.morph_t + self.morph_speed * perc_scale)
 
         if self.morph_t >= 1.0:
             self.current_genome = self.target_genome
@@ -84,6 +121,8 @@ class GenomeAxis:
 
     def contribute(self, frame) -> None:
         frame.genome = self.current_genome.lerp(self.target_genome, self.morph_t)
+
+    # --- Event handlers ---
 
     def _handle_kick(self, event: BeatEvent, clock: float):
         since = clock - self._last_kick_time
@@ -115,6 +154,26 @@ class GenomeAxis:
             log.debug(f'[kick]  +{since:.3f}s  energy={event.energy:.2f}  '
                   f'beat={self._kick_count}/{self.KICK_SWAP_EVERY}')
 
+    def _handle_drop(self, event: BeatEvent):
+        """Drop event: force swap + freeze. energy field = freeze duration."""
+        self.current_genome = self.current_genome.lerp(
+            self.target_genome, self.morph_t)
+        self._swap_next_genome()
+        self.morph_t = 0.0
+        self._drop_freeze_remaining = event.energy  # encoded as freeze seconds
+        self.needs_walker_reset = True
+        log.info(f'[DROP] freeze {event.energy:.1f}s')
+
+    def _handle_song_start(self):
+        """Reset state for new song — swap loop + reset counters."""
+        self._kick_count = 0
+        self._last_kick_time = 0.0
+        self._drop_freeze_remaining = 0.0
+        # New song, new loop
+        if self._lib is not None and self._lib.loop_count() > 1:
+            self.next_loop()
+            log.info(f'[song_start] switched to loop #{self.active_loop_id}')
+
     def force_swap(self):
         """Immediately swap to a new genome."""
         self.current_genome = self.current_genome.lerp(
@@ -128,13 +187,12 @@ class GenomeAxis:
     # --- Loop management ---
 
     def _load_top_loop(self):
-        top = self._lib.top_loops(n=1)
-        if not top:
+        if self._lib is None or self._lib.loop_count() < 1:
             self._loop_genomes = []
             self.active_loop_id = None
             self._prefetch_genome()
             return
-        self._load_and_track(top[0][0])
+        self.next_loop()
 
     def load_loop(self, loop_id: int):
         self._start_loop(loop_id)
@@ -157,16 +215,13 @@ class GenomeAxis:
         if self._lib is None or self._lib.loop_count() < 1:
             return
         top = self._lib.top_loops(n=20)
-        # Filter out recently played loops
         candidates = [(lid, info) for lid, info in top
                       if lid not in self._loop_history]
-        # Fall back to full list minus current if history excludes everything
         if not candidates:
             candidates = [(lid, info) for lid, info in top
                           if lid != self.active_loop_id]
         if not candidates:
             candidates = top
-        # Weighted random selection by fitness
         fitnesses = np.array([max(info['fitness'], 0.01)
                               for _, info in candidates])
         weights = fitnesses / fitnesses.sum()

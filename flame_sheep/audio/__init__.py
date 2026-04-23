@@ -7,12 +7,12 @@ Re-exports all public symbols so existing imports like
 
 # Constants
 from ._constants import (
-    SAMPLE_RATE, DEFAULT_DEVICE, BLOCK_SIZE, FFT_SIZE, N_BINS, HISTORY_LEN,
-    FREQS,
+    SAMPLE_RATE, DEFAULT_DEVICE, BLOCK_SIZE, FFT_SIZE, HOP_SIZE, N_BINS,
+    HISTORY_LEN, FREQS,
 )
 
 # Types
-from ._types import BeatEvent
+from ._types import BeatEvent, AudioState, AudioSnapshot
 from ._spectrum import SpectrumEngine, SpectrumFrame
 
 # Band definitions and utilities
@@ -25,6 +25,7 @@ from ._bands import (
 
 # Beat detection
 from .beat_detector import FluxBeatDetector
+from .drop_detector import DropDetector
 
 # Energy analysis
 from .energy import EnergyAnalyzer

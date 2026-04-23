@@ -76,6 +76,13 @@ layout(std430, binding = 5) readonly buffer Weights {
     float u_weights[];
 };
 
+// Per-transform variation parameters (8 floats per transform)
+// Layout: [julian_power, julian_dist, splits_x, splits_y, curl_c1, curl_c2, reserved, reserved]
+#define MAX_VAR_PARAMS 8
+layout(std430, binding = 6) readonly buffer VarParams {
+    float u_var_params[];  // length = MAX_TRANSFORMS * MAX_VAR_PARAMS
+};
+
 uniform int   u_n_transforms;
 uniform float u_zoom;
 uniform float u_rotation;
@@ -260,6 +267,83 @@ vec2 var_rings2(vec2 p) {
     return rr * vec2(cos(th), sin(th));
 }
 
+// --- Extended variations (JWildfire / flam3 inspired) ---
+
+vec2 var_splits(vec2 p, int tidx) {
+    int vbase = tidx * MAX_VAR_PARAMS;
+    float sx = u_var_params[vbase + 2];
+    float sy = u_var_params[vbase + 3];
+    return vec2(p.x >= 0.0 ? p.x + sx : p.x - sx,
+                p.y >= 0.0 ? p.y + sy : p.y - sy);
+}
+
+vec2 var_cloverleaf(vec2 p) {
+    float a = phi(p);
+    float ri = r(p);
+    float rr = ri * (sin(2.0 * a) + 0.25 * sin(6.0 * a));
+    return rr * vec2(cos(a), sin(a));
+}
+
+vec2 var_julian(vec2 p, int tidx) {
+    int vbase = tidx * MAX_VAR_PARAMS;
+    float power = u_var_params[vbase + 0];
+    float dist  = u_var_params[vbase + 1];
+    float abs_n = abs(power);
+    float cn = dist / power * 0.5;
+    float t_rand = floor(abs_n * rng_float());
+    float a = (phi(p) + 6.28318530 * t_rand) / power;
+    float ri = pow(max(r(p), 1e-6), cn);
+    return ri * vec2(cos(a), sin(a));
+}
+
+vec2 var_juliascope(vec2 p, int tidx) {
+    int vbase = tidx * MAX_VAR_PARAMS;
+    float power = u_var_params[vbase + 0];
+    float dist  = u_var_params[vbase + 1];
+    float abs_n = abs(power);
+    float cn = dist / power * 0.5;
+    float t_rand = floor(abs_n * rng_float());
+    float ang = phi(p);
+    // "scope" part: randomly negate angle for reflective symmetry
+    if (rng_next() % 2u == 0u) ang = -ang;
+    float a = (ang + 6.28318530 * t_rand) / power;
+    float ri = pow(max(r(p), 1e-6), cn);
+    return ri * vec2(cos(a), sin(a));
+}
+
+vec2 var_tangent(vec2 p) {
+    return vec2(sin(p.x) / max(abs(cos(p.y)), 1e-6),
+                tan(p.y));
+}
+
+vec2 var_cross(vec2 p) {
+    float d = p.x * p.x - p.y * p.y;
+    float s = 1.0 / max(d * d, 1e-6);
+    return s * p;
+}
+
+vec2 var_butterfly(vec2 p) {
+    // weight factor from flam3 spec: 4 / (sqrt(3) * pi)
+    float w = 1.3029400;
+    float ri = r(p);
+    float y2 = p.y * 2.0;
+    return w * vec2(p.y * (2.0 * p.x / max(ri, 1e-6)), ri);
+}
+
+vec2 var_curl(vec2 p, int tidx) {
+    int vbase = tidx * MAX_VAR_PARAMS;
+    float c1 = u_var_params[vbase + 4];
+    float c2 = u_var_params[vbase + 5];
+    // Complex division: p / (1 + c1*p + c2*p²)
+    float x2 = p.x * p.x;
+    float y2 = p.y * p.y;
+    float re = 1.0 + c1 * p.x + c2 * (x2 - y2);
+    float im =       c1 * p.y + c2 * 2.0 * p.x * p.y;
+    float d = max(re * re + im * im, 1e-6);
+    return vec2((p.x * re + p.y * im) / d,
+                (p.y * re - p.x * im) / d);
+}
+
 // ------------------------------------------------------------
 // Apply single variation by index (switch-based dispatch)
 // ------------------------------------------------------------
@@ -295,6 +379,14 @@ vec2 apply_single_variation(int var_idx, vec2 p, int tidx) {
         case 27: return var_eyefish(p);
         case 28: return var_bubble(p);
         case 29: return var_cylinder(p);
+        case 30: return var_splits(p, tidx);
+        case 31: return var_cloverleaf(p);
+        case 32: return var_julian(p, tidx);
+        case 33: return var_juliascope(p, tidx);
+        case 34: return var_tangent(p);
+        case 35: return var_cross(p);
+        case 36: return var_butterfly(p);
+        case 37: return var_curl(p, tidx);
         default: return p;
     }
 }

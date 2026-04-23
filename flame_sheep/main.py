@@ -25,7 +25,8 @@ import moderngl_window as mglw
 from moderngl_window import settings
 
 from .genome import Genome, _lerp_arr
-from .audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent, DEFAULT_DEVICE
+from .audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent, AudioState, DEFAULT_DEVICE
+from .audio.drop_detector import DropDetector
 from .renderer import FlameRenderer, Viewport
 from .control import ControlPipe, ControlEvent
 from .tempo import TempoTracker
@@ -57,7 +58,8 @@ class FlameSheepCore:
     """
 
     def __init__(self, audio_device=DEFAULT_DEVICE, test_audio: bool = False,
-                 lib=None, clock=None, genome_factory=None):
+                 lib=None, clock=None, genome_factory=None,
+                 ):
         self._clock = clock or time.perf_counter
         self.rng = np.random.default_rng()
         self._lib = lib
@@ -72,10 +74,10 @@ class FlameSheepCore:
         self._brightness_axis = BrightnessAxis()
         self._detail_axis = DetailAxis()
         self._drift_axis = DriftAxis(self._genome_axis)
-        self._last_beat_time: dict[str, float] = {'kick': 0.0, 'snare': 0.0, 'hihat': 0.0}
-
-        # Tempo tracking for rhythm coherence gating
+        # Tempo tracking + drop detection
         self.tempo = TempoTracker()
+        self._drop_detector = DropDetector()
+        self._pending_song_start = False
 
         if test_audio:
             self.audio = SyntheticAudioProcessor(
@@ -102,25 +104,49 @@ class FlameSheepCore:
         """Advance audio/genome state one frame.
         Returns FrameState with three independent axes.
         """
-        beat_events = self.audio.process()
-        spectrum    = self.audio.spectrum
-        rms         = self.audio.rms
-        now         = self._clock()
-        filtered_events = self._handle_beats(beat_events)
+        snap = self.audio.drain()
+        now  = self._clock()
+
+        # Filter events through tempo gating
+        filtered_events = self._handle_beats(snap.events)
+
+        # Inject song_start event if pending
+        if self._pending_song_start:
+            filtered_events.insert(0, BeatEvent(kind='song_start', energy=0.0))
+            self._pending_song_start = False
+
+        # Run drop detector — may inject a 'drop' event
+        drop = self._drop_detector.detect(
+            filtered_events, snap.centroid_rms,
+            self.tempo.bpm, self._drift_axis.drifting, frame_time)
+        if drop is not None:
+            filtered_events.append(drop)
+
+        # Build AudioState for axes
+        audio = AudioState(
+            events=filtered_events,
+            rms=snap.rms,
+            percussiveness=snap.percussiveness,
+            centroid=snap.centroid,
+            centroid_delta=snap.centroid_delta,
+            centroid_rms=snap.centroid_rms,
+            bpm=self.tempo.bpm,
+            drifting=self._drift_axis.drifting,
+        )
 
         # Tick visual axes (drift must tick before genome to trigger swaps)
-        self._drift_axis.tick(filtered_events, rms, frame_time, now)
-        self._genome_axis.tick(filtered_events, rms, frame_time, now)
-        self._palette_axis.tick(filtered_events, rms, frame_time, now)
-        self._zoom_axis.tick(filtered_events, rms, frame_time, now)
-        self._brightness_axis.tick(filtered_events, rms, frame_time, now)
-        self._detail_axis.tick(filtered_events, rms, frame_time, now)
+        self._drift_axis.tick(audio, frame_time, now)
+        self._genome_axis.tick(audio, frame_time, now)
+        self._palette_axis.tick(audio, frame_time, now)
+        self._zoom_axis.tick(audio, frame_time, now)
+        self._brightness_axis.tick(audio, frame_time, now)
+        self._detail_axis.tick(audio, frame_time, now)
 
         # Assemble frame state
         frame = self.FrameState(
             genome=self.current_genome,  # overwritten by contribute
             palette=self._palette_axis.palette_current,  # overwritten by contribute
-            spectrum=spectrum,
+            spectrum=snap.spectrum,
             brightness=self._brightness_axis.brightness,
             iterations=self._detail_axis.iterations,
         )
@@ -208,10 +234,14 @@ class FlameSheepCore:
         self._genome_axis.next_loop()
 
     def song_started(self):
-        """Signal new song started — resets tempo and adaptive bands."""
+        """Signal new song started — resets tempo, bands, drop detector.
+        Injects a song_start event on the next tick via _pending_song_start.
+        """
         self.tempo.song_started()
         self.audio.reset_bands()
-        log.info('[tempo] song started (trusted mode, bands reset)')
+        self._drop_detector.reset()
+        self._pending_song_start = True
+        log.info('[song] reset tempo, bands, drop detector')
         
     def hint_tempo(self, bpm: float):
         """Provide tempo hint from external source."""
@@ -219,25 +249,13 @@ class FlameSheepCore:
         log.info(f'[tempo] hint: {bpm:.1f} BPM')
 
     def _handle_beats(self, events: list[BeatEvent]) -> list[BeatEvent]:
-        """Filter events through tempo gating, handle kick/snare.
-        Returns filtered events for axes to consume."""
+        """Feed events to tempo tracker and return them for axes.
+        All events pass through — no gating."""
         now = self._clock()
-        filtered = []
         for event in events:
-            if not self.tempo.process_onset(event.kind, now):
-                continue
-            filtered.append(event)
-
-            since = now - self._last_beat_time[event.kind]
-            self._last_beat_time[event.kind] = now
-
-            # Kick/snare events handled by GenomeAxis/PaletteAxis via tick()
-
-            if event.kind == 'hihat':
-                log.debug(f'[hihat] +{since:.3f}s  energy={event.energy:.2f}  '
-                      f'zoom_boost={self.zoom_boost:.3f}')
-
-        return filtered
+            if event.kind in ('kick', 'snare', 'clap', 'hihat'):
+                self.tempo.process_onset(event.kind, now)
+        return events
 
 
 
@@ -463,7 +481,8 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
     from .loops import evolve_loops
     lib = Library()
 
-    core = FlameSheepCore(audio_device=audio_device, test_audio=test_audio, lib=lib)
+    core = FlameSheepCore(audio_device=audio_device, test_audio=test_audio, lib=lib,
+                          )
 
     _vote_count = 0
     _votes_per_evolve = 5       # first few cycles need more votes
@@ -508,6 +527,11 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
     control.start()
     log.info(f'wallpaper running. Control pipe: {control.pipe_path}')
 
+    # --- MPRIS listener for song change detection ---
+    from .mpris import MprisListener
+    mpris = MprisListener(ctl_path=control.pipe_path)
+    mpris.start()
+
     def handle_control_events() -> bool:
         """Process control events. Returns True if quit requested."""
         for event in control.poll_all():
@@ -545,6 +569,10 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                         core.hint_tempo(bpm)
                     except ValueError:
                         log.info(f'[ctl] invalid tempo: {event.args[0]}')
+            elif event.command == 'seek':
+                core.tempo.reset()
+                core._drop_detector.reset()
+                log.info('[ctl] seek — reset tempo + drop state')
             elif event.command == 'pause':
                 # TODO: enter ambient/slow mode
                 pass
@@ -582,8 +610,8 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
 
             # Block until the compositor signals it wants a new frame.
             # This replaces eglSwapInterval(1) as our frame pacer.
-            # Keep ticking audio while waiting so spectral flux stays smooth
-            # (stale _prev_spectrum causes a burst of false onsets).
+            # Wait for compositor to signal a frame callback.
+            # Audio thread runs independently — no need to tick audio here.
             while not quit_requested:
                 ready = {n: s for n, s in surfaces.items()
                          if s._frame_pending and not s.should_close}
@@ -591,7 +619,6 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                     break
                 session.wait_for_events(timeout=0.016)
                 _watchdog_last = time.perf_counter()
-                core.audio.process()  # keep _prev_spectrum current, don't handle beats
 
             if not ready:
                 continue
@@ -625,9 +652,85 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                     break  # wayland connection lost
 
     finally:
+        mpris.stop()
         control.stop()
         core.stop()
         session.destroy()
+
+
+def _run_variation_benchmark():
+    """Benchmark each variation solo on the GPU."""
+    import time
+    import moderngl
+    from .genome import (Genome, Transform, Variation, NUM_VARIATIONS,
+                         MAX_TRANSFORMS, MAX_VAR_PARAMS)
+    from .renderer import FlameRenderer
+
+    # Variation names for display (skip dunder attrs like __firstlineno__)
+    var_names = {}
+    for name in dir(Variation):
+        if name.startswith('_'):
+            continue
+        val = getattr(Variation, name)
+        if isinstance(val, int) and 0 <= val < NUM_VARIATIONS:
+            var_names[val] = name
+
+    ctx = moderngl.create_context(standalone=True)
+    renderer = FlameRenderer(ctx, 1920, 1080)
+
+    n_warmup = 5
+    n_frames = 30
+    rng = np.random.default_rng(42)
+
+    # Build a base genome with 3 transforms
+    base = Genome.random(rng, n_transforms=3)
+
+    results = []
+    for var_idx in range(NUM_VARIATIONS):
+        # Set all transforms to use only this variation
+        g = Genome.random(rng, n_transforms=3)
+        for tr in g.transforms:
+            tr.variations[:] = 0.0
+            tr.variations[var_idx] = 1.0
+            # Set params for parametric variations
+            if var_idx in (Variation.JULIAN, Variation.JULIASCOPE):
+                tr.var_params = {'julian_power': 3.0, 'julian_dist': 1.0}
+            elif var_idx == Variation.SPLITS:
+                tr.var_params = {'splits_x': 0.5, 'splits_y': 0.5}
+            elif var_idx == Variation.CURL:
+                tr.var_params = {'curl_c1': 0.5, 'curl_c2': 0.0}
+
+        renderer.upload_genome(g)
+
+        # Warmup
+        for _ in range(n_warmup):
+            renderer.clear_histogram()
+            renderer.dispatch_chaos_game()
+            ctx.finish()
+
+        # Timed
+        t0 = time.perf_counter()
+        for _ in range(n_frames):
+            renderer.clear_histogram()
+            renderer.dispatch_chaos_game()
+            ctx.finish()
+        elapsed = time.perf_counter() - t0
+
+        ms_per_frame = (elapsed / n_frames) * 1000
+        name = var_names.get(var_idx, f'var_{var_idx}')
+        results.append((var_idx, name, ms_per_frame))
+
+    # Also time a baseline with linear only
+    print(f'\n{"idx":>3}  {"variation":<15}  {"ms/frame":>9}  {"rel":>6}')
+    print('-' * 42)
+
+    baseline = next(r[2] for r in results if r[0] == 0)  # LINEAR
+    for idx, name, ms in results:
+        rel = ms / baseline if baseline > 0 else 0
+        marker = ' **' if rel > 2.0 else ''
+        print(f'{idx:3d}  {name:<15}  {ms:9.3f}  {rel:5.2f}x{marker}')
+
+    ctx.release()
 
 
 def _run_library_commands(args):
@@ -746,6 +849,8 @@ def main():
                         help='print library statistics and exit')
     parser.add_argument('--blur-radius', type=float, default=1.0,
                         help='wallpaper blur strength (0=off, 1=light, 2+=heavy; default: 1.0)')
+    parser.add_argument('--benchmark-variations', action='store_true',
+                        help='benchmark each variation solo (GPU timing) and exit')
     parser.add_argument('--log-level', default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         help='logging verbosity (default: INFO)')
@@ -768,6 +873,10 @@ def main():
         from .audio import list_monitor_devices
         for d in list_monitor_devices():
             print(f"  [{d['index']:2d}] {d['name']}")
+        return
+
+    if args.benchmark_variations:
+        _run_variation_benchmark()
         return
 
     if args.generate_genomes or args.generate_palettes is not None or args.compose_loops is not None or args.evolve or args.stats:

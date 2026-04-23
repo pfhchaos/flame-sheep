@@ -1,7 +1,7 @@
 """Visual axis protocol — interface for composable beat-reactive state machines."""
 
 from typing import Protocol
-from flame_sheep.audio._types import BeatEvent
+from flame_sheep.audio._types import AudioState
 
 
 class VisualAxis(Protocol):
@@ -9,12 +9,13 @@ class VisualAxis(Protocol):
 
     Each axis:
     - Has an `enabled` flag (skip tick/contribute when False)
-    - `tick()` advances internal state from events + energy
+    - `tick()` advances internal state from audio state
     - `contribute()` writes results into the shared FrameState
+
+    Axes should ignore event kinds they don't recognize in audio.events.
     """
     enabled: bool
 
-    def tick(self, events: list[BeatEvent], rms: float,
-             dt: float, clock: float) -> None: ...
+    def tick(self, audio: AudioState, dt: float, clock: float) -> None: ...
 
     def contribute(self, frame) -> None: ...

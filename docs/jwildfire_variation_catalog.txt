@@ -1,0 +1,529 @@
+
+======================================================================
+  TILING (96 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  hyperbolicellipse              trivial         0    yes  yes      
+  macmillan                      trivial         0     NO           
+  post_point_symmetry_wf         trivial         4     NO  yes   yes
+  dc_carpet                      trivial         1    yes  yes   yes
+  hypertile                      trivial         3    yes  yes      
+  pointgrid_wf                   trivial         8     NO  yes   yes
+  stripes                        trivial         2    yes  yes      
+  blur_pixelize                  trivial         2    yes  yes   yes
+  checks                         trivial         4    yes  yes   yes [PLANNED]
+  splits                         trivial         6    yes  yes       [IMPLEMENTED]
+  pre_boarders2                  trivial         3    yes        yes
+  scrambly                       trivial         4    yes           
+  xtrb                           trivial         6    yes  yes   yes
+  boarders                       cheap           0    yes  yes   yes
+  boarders2                      cheap           3    yes  yes   yes
+  rectangles                     cheap           1    yes  yes       [PLANNED]
+  splitbrdr                      cheap           4    yes  yes   yes
+  waves23                        cheap           4    yes  yes      
+  cell                           cheap           1    yes  yes      
+  stripfit                       cheap           1    yes  yes      
+  tile_reverse                   cheap           4    yes  yes   yes
+  post_mirror_wf                 cheap          11     NO  yes   yes
+  cell2                          cheap          16    yes        yes
+  gridout                        cheap           0    yes  yes      
+  gridout2                       cheap           4    yes  yes      
+  tile_hlp                       cheap           1    yes  yes   yes
+  apocarpet_js                   cheap           0    yes  yes   yes
+  dc_triangle                    cheap           2    yes        yes
+  modulus                        cheap           2    yes  yes      
+  squish                         cheap           1    yes  yes   yes
+  circleTrans1                   cheap           5    yes  yes   yes
+  dc_linear                      cheap           3    yes  yes      
+  hypertile1                     cheap           2    yes  yes   yes
+  hypertile2                     cheap           2    yes  yes   yes
+  spligon                        cheap           6    yes  yes      
+  wedge                          cheap           4     NO  yes      
+  wedge_sph                      cheap           4     NO  yes      
+  de_stijl                       cheap           5    yes        yes
+  split                          cheap           2    yes  yes      
+  pixel_flow                     cheap           5    yes  yes   yes
+  post_bwraps2                   cheap           5     NO  yes      
+  pre_bwraps2                    cheap           5    yes           
+  circleLinear                   cheap           6    yes  yes      
+  hex_modulus                    cheap           1    yes  yes      
+  ngon                           cheap           4    yes  yes      
+  sphtiling3v2                   cheap           9    yes        yes
+  bsplit                         cheap           0    yes  yes      
+  bwraps7                        medium          5    yes  yes      
+  post_axis_symmetry_wf          medium         11     NO  yes   yes
+  waves4                         medium          6    yes  yes      
+  waves42                        medium          7    yes  yes      
+  bipolar                        medium          1    yes  yes      
+  bipolar2                       medium          9    yes  yes      
+  lazyTravis                     medium          3    yes  yes      
+  pow_block                      medium          5     NO        yes
+  wedge_julia                    medium          4     NO  yes   yes
+  circlesplit                    medium          2    yes  yes      
+  cpow                           medium          3     NO  yes   yes
+  dc_dmodulus                    medium         10    yes        yes
+  collideoscope                  medium          2    yes  yes      
+  intersection                   medium         10    yes  yes   yes
+  juliac                         medium          3    yes  yes   yes
+  parallel                       medium         12    yes  yes   yes
+  truchetflow                    medium          1     NO        yes
+  bwrands                        medium         12    yes  yes   yes
+  cpow2                          medium          4     NO  yes   yes
+  target                         heavy           3    yes  yes      
+  eRotate                        heavy           1    yes           
+  eJulia                         heavy           1    yes  yes   yes
+  eCollide                       heavy           2    yes  yes      
+  eMod                           heavy           2    yes  yes      
+  eScale                         heavy           2    yes           
+  circleRand                     heavy           5     NO  yes   yes
+  cpow3                          heavy           4     NO  yes   yes
+  sphericalN                     heavy           2    yes  yes   yes
+  voron                          heavy           5    yes  yes      
+  hexes                          heavy           4    yes  yes      
+  target_sp                      heavy           4    yes  yes      
+  bTransform                     heavy           4    yes  yes   yes
+  bCollide                       heavy           2    yes  yes      
+  bMod                           heavy           2    yes  yes      
+  mobiusN                        heavy           1    yes  yes   yes
+  truchet_hex_fill               expensive       6    yes  yes   yes
+  busybrad                       expensive      13    yes           
+  truchet_hex_crop               expensive       4    yes  yes   yes
+  lazyjess                       expensive       4    yes           
+  lace_js                        expensive       0    yes  yes   yes
+  x                              expensive      12    yes           
+  y                              expensive      12    yes           
+  z                              expensive      12    yes           
+  drunken_tiles                  expensive      15    yes           
+  truchet_fill                   expensive       1    yes  yes      
+  siercarpet_js                  expensive       0    yes  yes   yes
+  ortho                          expensive       2    yes  yes      
+  w                              expensive      13    yes           
+  dc_gnarly                      expensive      18    yes  yes   yes
+
+======================================================================
+  REFLECTIVE (36 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  pyramid                        trivial         0    yes  yes      
+  acoth                          trivial         0    yes  yes      
+  lozi                           trivial         3    yes  yes      
+  acosech                        trivial         0    yes  yes   yes
+  flipcircle                     trivial         0    yes  yes      
+  flipy                          trivial         0    yes  yes      
+  gdoffs                         trivial         8    yes  yes      
+  holesq                         cheap           0    yes  yes      
+  wallpaper_js                   cheap           0    yes        yes
+  auger                          cheap           4    yes  yes      
+  minkowskope                    cheap           6    yes  yes      
+  eclipse                        cheap           1    yes  yes      
+  twintrian                      cheap           0    yes  yes   yes
+  tqmirror                       cheap          22    yes  yes      
+  circlize                       cheap           1    yes  yes      
+  circlize2                      cheap           1    yes  yes      
+  butterfly                      cheap           0    yes  yes       [IMPLEMENTED]
+  linearT                        cheap           2    yes  yes      
+  glynnSShape                    medium         11    yes        yes
+  glynnlissa                     medium         11    yes        yes
+  oscilloscope                   medium          4    yes  yes      
+  sigmoid                        medium          2    yes  yes      
+  oscilloscope2                  medium          6    yes  yes      
+  asteria                        medium          1    yes  yes   yes
+  epispiral                      medium          3    yes  yes   yes
+  waves2b                        medium         10    yes  yes      
+  flower_db                      heavy           7     NO  yes      
+  glynnspiro                     heavy          13    yes        yes
+  quad                           heavy          29    yes        yes
+  log_db                         heavy           2     NO  yes   yes
+  scry2                          heavy           3    yes  yes      
+  elliptic                       heavy           1    yes  yes   yes
+  post_smartcrop                 heavy          10    yes  yes   yes
+  loonie2                        expensive       3    yes  yes      
+  rosoni                         expensive       7    yes           
+  hole2                          expensive       6     NO  yes      
+
+======================================================================
+  ROTATIONAL (16 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  post_curl                      trivial         2     NO  yes      
+  pre_curl                       trivial         2    yes  yes      
+  curl                           trivial         2    yes  yes       [IMPLEMENTED]
+  post_spin_z                    trivial         0     NO  yes      
+  pre_spin_z                     trivial         0    yes           
+  vortex                         cheap           0    yes  yes      
+  pre_rotate_y                   cheap           0    yes  yes      
+  layered_spiral                 cheap           1    yes  yes      
+  spiral                         cheap           0    yes  yes       [IMPLEMENTED]
+  swirl                          cheap           0    yes  yes       [IMPLEMENTED]
+  spiralwing                     cheap           0    yes  yes      
+  swirl3                         medium          1     NO  yes      
+  epispiral_wf                   medium          1    yes  yes      
+  atan2_spirals                  medium         14    yes  yes      
+  eSwirl                         heavy           2    yes           
+  bSwirl                         heavy           2    yes  yes      
+
+======================================================================
+  POLAR (58 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  sqrt_atanh                     trivial         0    yes  yes   yes
+  polar                          cheap           0    yes  yes       [IMPLEMENTED]
+  pre_disc                       cheap           0    yes  yes      
+  shredrad                       cheap           2    yes  yes      
+  whorl                          cheap           2     NO  yes      
+  idisc                          cheap           0    yes  yes      
+  scry_3D                        cheap           0    yes  yes      
+  wdisc                          cheap           0    yes  yes      
+  disc                           medium          0    yes  yes      
+  disc3                          medium          8    yes           
+  ex                             medium          0    yes  yes       [IMPLEMENTED]
+  handkerchief                   medium          0    yes  yes       [IMPLEMENTED]
+  heart                          medium          0    yes  yes       [IMPLEMENTED]
+  fan                            medium          0    yes  yes       [IMPLEMENTED]
+  squarize                       medium          0    yes  yes      
+  panorama1                      medium          0    yes  yes      
+  panorama2                      medium          0    yes  yes      
+  post_juliaq                    medium          2     NO           
+  c_symmetry                     medium          0    yes  yes      
+  julian                         medium          2    yes  yes   yes [IMPLEMENTED]
+  juliaq                         medium          2    yes  yes   yes
+  phoenix_julia                  medium          4    yes  yes   yes
+  post_c_symmetry                medium          0     NO           
+  pre_c_symmetry                 medium          0    yes           
+  circus                         medium          1    yes  yes      
+  julian2                        medium          8    yes  yes   yes
+  lazysusan                      medium          5    yes  yes      
+  murl                           medium          2    yes  yes      
+  deltaA                         medium          0    yes  yes      
+  fan2                           medium          2    yes  yes       [IMPLEMENTED]
+  julia                          medium          0    yes  yes   yes [IMPLEMENTED]
+  prepost_blob                   medium          3     NO           
+  blob                           medium          3    yes  yes       [IMPLEMENTED]
+  cardioid                       medium          1    yes  yes      
+  circular                       medium          2    yes  yes   yes
+  circular2                      medium          4    yes  yes   yes
+  fdisc                          medium          8    yes  yes      
+  pTransform                     medium          5    yes  yes      
+  julian3Dx                      medium          8    yes  yes   yes
+  post_julia3Dq                  medium          2     NO           
+  heart_wf                       medium          4    yes  yes      
+  hole                           medium          2    yes  yes      
+  inverted_julia                 medium          9    yes  yes   yes
+  bulge                          heavy           1    yes  yes      
+  elliptic2                      heavy          11    yes  yes   yes
+  flux                           heavy           1    yes  yes      
+  jac_elk                        heavy           1    yes  yes      
+  spliptic_bs                    heavy           2    yes  yes   yes
+  ringer                         heavy           9    yes        yes
+  synth                          heavy          35    yes           
+  inversion                      heavy           4    yes        yes
+  npolar                         heavy           2    yes  yes   yes
+  trade                          heavy           4    yes  yes      
+  blocky                         heavy           3    yes  yes      
+  fourth                         heavy           5    yes  yes      
+  cpow3_wf                       heavy           7     NO  yes   yes
+  murl2                          heavy           2    yes  yes      
+  post_trig                      heavy          17     NO  yes   yes
+
+======================================================================
+  CONFORMAL (2 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  mobius                         trivial         8    yes  yes      
+  prepost_mobius                 trivial         8     NO           
+
+======================================================================
+  FRACTAL (4 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  juliascopePlus                 trivial        16     NO           
+  juliascope                     trivial         2     NO  yes   yes [IMPLEMENTED]
+  julia_outside                  cheap           3    yes  yes   yes
+  mandelbox2D                    expensive      12    yes           
+
+======================================================================
+  WAVE (11 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  pressure_wave                  cheap           6    yes           
+  waves                          cheap           0    yes  yes       [IMPLEMENTED]
+  waves2                         cheap           4    yes  yes      
+  rippled                        cheap           0    yes  yes      
+  waves2_radial                  medium          6    yes  yes      
+  waves3                         medium          6    yes  yes      
+  ripple                         medium          8    yes  yes      
+  waves2_wf                      medium          8    yes  yes      
+  waves22                        heavy           8    yes  yes      
+  waves3_wf                      heavy           8    yes  yes      
+  waves4_wf                      heavy           8    yes  yes      
+
+======================================================================
+  TRIG (21 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  diamond                        cheap           0    yes  yes       [IMPLEMENTED]
+  disc2                          cheap           5    yes  yes      
+  invpolar                       cheap           0    yes  yes      
+  lissajous                      cheap           7     NO  yes   yes
+  pulse                          cheap           4    yes  yes      
+  rays2                          cheap           0    yes  yes      
+  shift                          cheap           3    yes  yes      
+  sintrange                      cheap           1    yes  yes      
+  sinusoidal                     cheap           0    yes  yes       [IMPLEMENTED]
+  rays                           cheap           0    yes  yes   yes
+  exponential                    medium          0    yes  yes       [IMPLEMENTED]
+  unpolar                        medium          0    yes  yes      
+  foci                           medium          0    yes  yes      
+  ztwister                       medium          2    yes  yes      
+  blade                          medium          0    yes  yes   yes
+  cosine                         medium          0    yes  yes       [IMPLEMENTED]
+  funnel                         medium          1    yes  yes      
+  ePush                          heavy           3    yes           
+  eMotion                        heavy           2    yes  yes      
+  log                            heavy           0     NO  yes      
+  edisc                          heavy           0    yes  yes      
+
+======================================================================
+  TRIG-HEAVY (45 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  pdj                            medium          4    yes  yes       [IMPLEMENTED]
+  popcorn2                       medium          3    yes  yes      
+  popcorn                        medium          0    yes  yes       [IMPLEMENTED]
+  csc_squared                    medium          7    yes  yes      
+  spirograph                     medium          9     NO  yes   yes
+  kaleidoscope                   medium          5    yes  yes       [PLANNED]
+  rays3                          medium          0    yes  yes      
+  atan                           medium          2    yes  yes      
+  escher                         heavy           1     NO  yes      
+  squirrel                       heavy           2    yes  yes      
+  mask                           heavy           0    yes  yes      
+  tangent                        heavy           0    yes  yes       [IMPLEMENTED]
+  clifford_js                    heavy           0    yes  yes      
+  svensson_js                    heavy           0    yes  yes      
+  fibonacci2                     heavy           2    yes  yes      
+  petal                          heavy           0    yes  yes      
+  exp                            heavy           0    yes  yes      
+  exp2_bs                        heavy           3    yes           
+  vibration2                     heavy          26    yes  yes      
+  cos                            expensive       0    yes  yes      
+  cos2_bs                        expensive       4    yes  yes      
+  cosh                           expensive       0    yes  yes      
+  cosh2_bs                       expensive       4    yes  yes      
+  cot                            expensive       0    yes  yes      
+  cot2_bs                        expensive       4    yes  yes      
+  sin                            expensive       0    yes  yes      
+  sin2_bs                        expensive       4    yes  yes      
+  sinh                           expensive       0    yes  yes      
+  sinh2_bs                       expensive       4    yes  yes      
+  coth                           expensive       0    yes  yes      
+  coth2_bs                       expensive       4    yes  yes      
+  tan                            expensive       0    yes  yes      
+  tan2_bs                        expensive       4    yes  yes      
+  tanh                           expensive       0    yes  yes      
+  tanh2_bs                       expensive       4    yes  yes      
+  csc                            expensive       0    yes  yes      
+  csc2_bs                        expensive       4    yes  yes      
+  csch                           expensive       0    yes  yes      
+  csch2_bs                       expensive       4    yes  yes      
+  sec                            expensive       0    yes  yes      
+  sec2_bs                        expensive       4    yes  yes      
+  sech                           expensive       0    yes  yes      
+  sech2_bs                       expensive       4    yes  yes      
+  jac_asn                        expensive       2    yes  yes      
+  complex                        expensive      64    yes  yes      
+
+======================================================================
+  HYPERBOLIC (5 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  arcsinh                        trivial         0    yes  yes      
+  acosh                          trivial         0    yes  yes   yes
+  sqrt_acosh                     trivial         0    yes  yes   yes
+  sqrt_asinh                     trivial         0    yes  yes   yes
+  tancos                         cheap           0    yes  yes      
+
+======================================================================
+  EXPONENTIAL (11 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  arctanh                        trivial         0    yes  yes      
+  arcsech2                       trivial         0    yes  yes      
+  c_var                          trivial         0    yes        yes
+  post_c_var                     trivial         0     NO        yes
+  pre_c_var                      trivial         0    yes        yes
+  exp_multi                      cheap           8    yes        yes
+  polar2                         cheap           0     NO  yes      
+  log_apo                        cheap           1    yes  yes      
+  curve                          cheap           4    yes  yes      
+  corners                        heavy           9    yes  yes      
+  polylogarithm                  expensive       2    yes  yes      
+
+======================================================================
+  ALGEBRAIC (41 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  anamorphcyl                    trivial         0    yes  yes      
+  displacemap_wf                 trivial         0    yes           
+  post_displacemap_wf            trivial         0     NO           
+  post_spherical                 trivial         0     NO  yes      
+  pre_spherical                  trivial         0    yes  yes      
+  bi_linear                      trivial         0    yes  yes      
+  csin                           trivial         1    yes  yes      
+  ennepers                       trivial         0    yes  yes      
+  erf                            trivial         0    yes           
+  gumowski_mira                  trivial         0     NO           
+  henon                          trivial         3    yes  yes      
+  horseshoe                      trivial         0    yes  yes       [IMPLEMENTED]
+  hyperbolic                     trivial         0    yes  yes       [IMPLEMENTED]
+  hypershift                     trivial         2    yes  yes      
+  jac_cn                         trivial         1    yes  yes      
+  jac_dn                         trivial         1    yes  yes      
+  jac_sn                         trivial         1    yes  yes      
+  linear                         trivial         0    yes  yes       [IMPLEMENTED]
+  mcarpet                        trivial         4    yes  yes      
+  ovoid                          trivial         2    yes  yes      
+  prepost_circlize               trivial         4     NO           
+  projective                     trivial         9    yes  yes      
+  q_ode                          trivial        12    yes  yes      
+  rational3                      trivial         8    yes  yes      
+  rings                          trivial         0    yes  yes       [IMPLEMENTED]
+  roundspher                     trivial         0    yes  yes      
+  shredlin                       trivial         4    yes  yes      
+  spherical                      trivial         0    yes  yes       [IMPLEMENTED]
+  joukowski                      trivial         0    yes  yes      
+  perspective                    trivial         2    yes  yes      
+  rings2                         trivial         1    yes  yes       [IMPLEMENTED]
+  rings3                         trivial         2    yes  yes      
+  twoface                        trivial         0    yes  yes      
+  bent                           trivial         0    yes  yes       [IMPLEMENTED]
+  bent2                          trivial         2    yes  yes      
+  xheart                         trivial         2    yes  yes      
+  chunk                          cheap           7    yes  yes      
+  triantruchet                   cheap           4     NO           
+  glitchy2                       cheap          53    yes           
+  minkQM                         cheap           6    yes  yes      
+  post_point_crop                cheap           8     NO  yes      
+
+======================================================================
+  SIMPLE-TRIG (19 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  cylinder                       cheap           0    yes  yes       [IMPLEMENTED]
+  gamma                          cheap           0    yes  yes      
+  stwin                          cheap           7    yes  yes      
+  cylinder2                      cheap           0    yes  yes      
+  eyefish                        cheap           0    yes  yes       [IMPLEMENTED]
+  fisheye                        cheap           0    yes  yes       [IMPLEMENTED]
+  power                          cheap           0    yes  yes       [IMPLEMENTED]
+  secant2                        cheap           0    yes  yes      
+  loonie                         cheap           0    yes  yes      
+  scry                           cheap           0    yes  yes      
+  loonie3                        cheap           0    yes  yes      
+  rays1                          cheap           0    yes  yes      
+  cross                          cheap           0    yes  yes       [IMPLEMENTED]
+  barycentroid                   cheap           4    yes  yes      
+  devil_warp                     medium          6    yes  yes      
+  plusrecip                      medium          2    yes  yes      
+  invsquircular                  medium          0    yes  yes      
+  squircular                     medium          0    yes  yes      
+  separation                     medium          4    yes  yes      
+
+======================================================================
+  STOCHASTIC (47 variations)
+======================================================================
+  name                           cost       params  input  gpu  rand
+  ------------------------------ ---------- ------  -----  ---  ----
+  conic                          trivial         2    yes  yes   yes
+  sym_bg1                        trivial         2    yes  yes   yes
+  sym_bg2                        trivial         2    yes  yes   yes
+  sym_bg3                        trivial         2    yes  yes   yes
+  sym_bg4                        trivial         2    yes  yes   yes
+  sym_bg5                        trivial         2    yes  yes   yes
+  sym_bg6                        trivial         2    yes  yes   yes
+  sym_bg7                        trivial         2    yes  yes   yes
+  sym_ng1                        trivial         2    yes  yes   yes
+  sym_ng10                       trivial         3    yes  yes   yes
+  sym_ng11                       trivial         5    yes  yes   yes
+  sym_ng12                       trivial         3    yes  yes   yes
+  sym_ng13                       trivial         5    yes  yes   yes
+  sym_ng14                       trivial         5    yes  yes   yes
+  sym_ng15                       trivial         5    yes  yes   yes
+  sym_ng16                       trivial         4    yes  yes   yes
+  sym_ng17                       trivial         4    yes  yes   yes
+  sym_ng2                        trivial         2    yes  yes   yes
+  sym_ng3                        trivial         3    yes  yes   yes
+  sym_ng4                        trivial         4    yes  yes   yes
+  sym_ng5                        trivial         3    yes  yes   yes
+  sym_ng6                        trivial         3    yes  yes   yes
+  sym_ng7                        trivial         2    yes  yes   yes
+  sym_ng8                        trivial         4    yes  yes   yes
+  sym_ng9                        trivial         2    yes  yes   yes
+  arch                           trivial         0     NO  yes   yes
+  sattractor_js                  trivial         0    yes  yes   yes
+  sqrt_acosech                   trivial         0    yes  yes   yes
+  sqrt_acoth                     trivial         0    yes  yes   yes
+  sqrt_asech                     trivial         0    yes  yes   yes
+  d_spherical                    trivial         1    yes  yes   yes
+  hadamard_js                    trivial         0    yes  yes   yes
+  invtree_js                     trivial         0    yes  yes   yes
+  threepoint_js                  trivial         0    yes  yes   yes
+  tree_js                        trivial         9     NO        yes
+  brownian_js                    trivial         7     NO        yes
+  vogel                          cheap           2    yes  yes   yes
+  glynnSim2                      medium          6    yes  yes   yes
+  glynnSim3                      medium          4    yes  yes   yes
+  multi_ifs                      medium          7    yes        yes
+  glynnSim1                      medium          6    yes  yes   yes
+  yin_yang                       medium          5    yes  yes   yes
+  apollony                       medium          0    yes  yes   yes
+  woggle_js                      medium          0    yes  yes   yes
+  glynnia                        heavy           0    yes  yes   yes
+  glynnia3                       heavy           4    yes  yes   yes
+  colordomain                    heavy           0     NO        yes
+
+======================================================================
+  SUMMARY
+======================================================================
+  Total compatible: 412
+  Implemented: 35
+  Planned: 3
+  Uses input point: 365
+  Has GPU code: 354
+
+  By cost:
+    trivial   : 111
+    cheap     : 98
+    medium    : 96
+    heavy     : 62
+    expensive : 45
+
+  By category:
+    tiling         : 96
+    reflective     : 73
+    rotational     : 18
+    polar          : 92
+    conformal      : 6
+    fractal        : 16
+    wave           : 17
+    trig           : 104
+    trig-heavy     : 92
+    hyperbolic     : 54
+    exponential    : 81
+    algebraic      : 41
+    simple-trig    : 19
+    stochastic     : 134
+    iterative      : 14

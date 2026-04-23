@@ -8,6 +8,7 @@ from ._constants import SAMPLE_RATE, N_BINS, FREQS
 ALLOWED_RANGES = {
     'kick':           (25, 150),
     'snare':          (150, 2000),
+    'clap':           (800, 8000),
     'hihat':          (5000, SAMPLE_RATE / 2),
     '_snare_confirm': (800, 5000),
 }
@@ -16,6 +17,7 @@ ALLOWED_RANGES = {
 DEFAULT_RANGES = {
     'kick':           (50, 100),
     'snare':          (300, 1000),
+    'clap':           (1000, 8000),
     'hihat':          (8000, SAMPLE_RATE / 2),
     '_snare_confirm': (1000, 3000),
 }

@@ -24,6 +24,10 @@ class SignalSource(Protocol):
         """Return FFT_SIZE samples if available, else None."""
         ...
 
+    def read_hop(self, n: int) -> np.ndarray | None:
+        """Return exactly n new samples. May block (PipeWire) or return None (Feed)."""
+        ...
+
     def feed(self, pcm: np.ndarray) -> None:
         """Push PCM samples (for test sources). May be a no-op."""
         ...
@@ -34,8 +38,10 @@ class PipeWireSource:
 
     def __init__(self, device: str | int | None = None):
         self._lock = threading.Lock()
-        self._buffer = deque(maxlen=FFT_SIZE)
-        self._new_audio = False
+        self._cond = threading.Condition(self._lock)
+        self._stop_event = threading.Event()
+        self._buffer = deque(maxlen=SAMPLE_RATE // 2)  # ~0.5s buffer
+        self._new_samples = 0
 
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -47,29 +53,51 @@ class PipeWireSource:
         )
 
     def _callback(self, indata: np.ndarray, frames: int, time, status):
-        with self._lock:
+        with self._cond:
             self._buffer.extend(indata[:, 0])
-            self._new_audio = True
+            self._new_samples += frames
+            self._cond.notify_all()
 
     def start(self):
         self._stream.start()
 
     def stop(self):
+        self._stop_event.set()
+        with self._cond:
+            self._cond.notify_all()  # unblock any waiting read_hop
         self._stream.stop()
         self._stream.close()
 
     def read(self) -> np.ndarray | None:
+        """Return FFT_SIZE samples if enough new audio has arrived."""
         with self._lock:
-            if len(self._buffer) < FFT_SIZE or not self._new_audio:
+            if len(self._buffer) < FFT_SIZE or self._new_samples < BLOCK_SIZE:
                 return None
-            self._new_audio = False
-            return np.array(self._buffer, dtype=np.float32)
+            self._new_samples = 0
+            return np.array(self._buffer, dtype=np.float32)[-FFT_SIZE:]
+
+    def read_hop(self, n: int) -> np.ndarray | None:
+        """Block until n new samples are available, return them.
+        Returns None if the source has been stopped."""
+        with self._cond:
+            while self._new_samples < n:
+                if self._stop_event.is_set():
+                    return None
+                self._cond.wait(timeout=0.1)
+            # Take the n most recent new samples from the buffer
+            buf_list = list(self._buffer)
+            # The new samples are at the tail of the buffer
+            start = len(buf_list) - self._new_samples
+            samples = np.array(buf_list[start:start + n], dtype=np.float32)
+            self._new_samples -= n
+            return samples
 
     def feed(self, pcm: np.ndarray):
         """Push PCM samples directly (bypass sounddevice)."""
-        with self._lock:
+        with self._cond:
             self._buffer.extend(pcm)
-            self._new_audio = True
+            self._new_samples += len(pcm)
+            self._cond.notify_all()
 
 
 class FeedSource:
@@ -77,20 +105,31 @@ class FeedSource:
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._buffer = deque(maxlen=FFT_SIZE)
-        self._new_audio = False
+        self._buffer = deque(maxlen=SAMPLE_RATE // 2)
+        self._new_samples = 0
 
     def start(self): pass
     def stop(self): pass
 
     def read(self) -> np.ndarray | None:
         with self._lock:
-            if len(self._buffer) < FFT_SIZE or not self._new_audio:
+            if len(self._buffer) < FFT_SIZE or self._new_samples < BLOCK_SIZE:
                 return None
-            self._new_audio = False
-            return np.array(self._buffer, dtype=np.float32)
+            self._new_samples = 0
+            return np.array(self._buffer, dtype=np.float32)[-FFT_SIZE:]
+
+    def read_hop(self, n: int) -> np.ndarray | None:
+        """Non-blocking: return n samples if available, else None."""
+        with self._lock:
+            if self._new_samples < n:
+                return None
+            buf_list = list(self._buffer)
+            start = len(buf_list) - self._new_samples
+            samples = np.array(buf_list[start:start + n], dtype=np.float32)
+            self._new_samples -= n
+            return samples
 
     def feed(self, pcm: np.ndarray):
         with self._lock:
             self._buffer.extend(pcm)
-            self._new_audio = True
+            self._new_samples += len(pcm)

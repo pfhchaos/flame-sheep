@@ -26,6 +26,7 @@ class SpectrumEngine:
     def __init__(self):
         self._window = windows.hann(FFT_SIZE, sym=False).astype(np.float32)
         self._prev_spectrum: np.ndarray | None = None
+        self._buffer = np.zeros(FFT_SIZE, dtype=np.float32)  # sliding window for push_hop
 
     def compute(self, pcm: np.ndarray) -> SpectrumFrame:
         """Compute spectrum and flux from a PCM window.
@@ -52,6 +53,18 @@ class SpectrumEngine:
             waveform=pcm.copy(),
         )
 
+    def push_hop(self, hop: np.ndarray) -> SpectrumFrame:
+        """Slide the internal window by len(hop) samples and compute spectrum.
+
+        Used by the audio thread for overlapping analysis (e.g., 512-sample
+        hops with 2048-sample FFT = 75% overlap).
+        """
+        n = len(hop)
+        self._buffer[:FFT_SIZE - n] = self._buffer[n:]
+        self._buffer[FFT_SIZE - n:] = hop
+        return self.compute(self._buffer)
+
     def reset(self):
         """Clear previous spectrum state."""
         self._prev_spectrum = None
+        self._buffer[:] = 0.0
