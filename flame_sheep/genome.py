@@ -19,60 +19,15 @@ Mutation is driven by beat detection from audio.py:
 import numpy as np
 from dataclasses import dataclass, field
 
-# Variation function indices — matches order in flame.comp
-class Variation:
-    LINEAR      = 0
-    SINUSOIDAL  = 1
-    SPHERICAL   = 2
-    SWIRL       = 3
-    HORSESHOE   = 4
-    POLAR       = 5
-    HANDKERCHIEF= 6
-    HEART       = 7
-    DISK        = 8
-    SPIRAL      = 9
-    HYPERBOLIC  = 10
-    DIAMOND     = 11
-    EX          = 12
-    JULIA       = 13
-    BENT        = 14
-    WAVES       = 15
-    FISHEYE     = 16
-    POPCORN     = 17
-    EXPONENTIAL = 18
-    POWER       = 19
-    COSINE      = 20
-    RINGS       = 21
-    FAN         = 22
-    BLOB        = 23
-    PDJ         = 24
-    FAN2        = 25
-    RINGS2      = 26
-    EYEFISH     = 27
-    BUBBLE      = 28
-    CYLINDER    = 29
-    # --- extended variations (JWildfire / flam3 inspired) ---
-    SPLITS      = 30
-    CLOVERLEAF  = 31
-    JULIAN      = 32
-    JULIASCOPE  = 33
-    TANGENT     = 34
-    CROSS       = 35
-    BUTTERFLY   = 36
-    CURL        = 37
+from .variations import (
+    Variation, NUM_VARIATIONS, MAX_VAR_PARAMS, PARAMETRIC_VARIATIONS,
+    random_var_params, apply_variation_cpu,
+)
 
-NUM_VARIATIONS = 38
+# Re-export for backwards compatibility
+_PARAMETRIC_VARIATIONS = PARAMETRIC_VARIATIONS
+_apply_variation_cpu = apply_variation_cpu
 
-# Variations that require per-transform parameters (var_params dict)
-_PARAMETRIC_VARIATIONS = {
-    Variation.JULIAN, Variation.JULIASCOPE,
-    Variation.SPLITS, Variation.CURL,
-}
-
-# GPU var_params layout: 8 floats per transform
-# [0] julian_power  [1] julian_dist  [2] splits_x  [3] splits_y
-# [4] curl_c1       [5] curl_c2      [6..7] reserved
-MAX_VAR_PARAMS = 8
 MAX_TRANSFORMS = 6
 MAX_ACTIVE_VARS = 8  # max active variations per transform (for GPU loop)
 
@@ -113,31 +68,9 @@ class Transform:
         t.variations[chosen] = weights
 
         # Initialize params for parametric variations
-        # Ranges derived from JWildfire's randomize() methods where available
         for v in chosen:
-            if v in (Variation.JULIAN, Variation.JULIASCOPE):
-                # Power 2-12, 50% chance negative (inverts symmetry)
-                power = float(rng.integers(2, 13))
-                if rng.random() < 0.5:
-                    power = -power
-                # Dist is multi-modal: 40% conservative, 40% wild, 20% exactly 1.0
-                r = rng.random()
-                if r < 0.4:
-                    dist = float(rng.uniform(0.75, 1.25))
-                elif r < 0.8:
-                    dist = float(rng.uniform(0.2, 3.5))
-                else:
-                    dist = 1.0
-                if rng.random() < 0.4:
-                    dist = -dist
-                t.var_params['julian_power'] = power
-                t.var_params['julian_dist'] = dist
-            elif v == Variation.SPLITS:
-                t.var_params['splits_x'] = float(rng.uniform(-1.0, 1.0))
-                t.var_params['splits_y'] = float(rng.uniform(-1.0, 1.0))
-            elif v == Variation.CURL:
-                t.var_params['curl_c1'] = float(rng.uniform(-1.0, 1.0))
-                t.var_params['curl_c2'] = float(rng.uniform(-1.0, 1.0))
+            params = random_var_params(int(v), rng)
+            t.var_params.update(params)
 
         t.color = float(rng.uniform(0, 1))
         t.weight = float(rng.uniform(0.5, 2.0))
@@ -592,59 +525,7 @@ def _score_symmetry(hit_grid: np.ndarray) -> dict[str, float]:
     )
 
 
-def _apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[float, float]:
-    """CPU approximation of key variation functions for viability testing.
-    Only implements variations that can blow up or produce large excursions.
-    Safe/bounded variations fall through to linear (identity * w)."""
-    r = np.sqrt(x*x + y*y) + 1e-10
-    th = np.arctan2(x, y)  # flam3 convention
-
-    if var_idx == 0:   # linear
-        return w*x, w*y
-    elif var_idx == 1: # sinusoidal
-        return w*np.sin(x), w*np.sin(y)
-    elif var_idx == 2: # spherical — 1/r², can blow up near origin
-        r2 = x*x + y*y + 1e-10
-        return w*x/r2, w*y/r2
-    elif var_idx == 3: # swirl
-        rr = x*x + y*y
-        return w*(x*np.sin(rr) - y*np.cos(rr)), w*(x*np.cos(rr) + y*np.sin(rr))
-    elif var_idx == 9: # spiral — w/r, blows up near origin
-        return (w/r)*(np.cos(th) + np.sin(r)), (w/r)*(np.sin(th) - np.cos(r))
-    elif var_idx == 10: # hyperbolic — sin/r, can be large
-        return w*np.sin(th)/r, w*np.cos(th)*r
-    elif var_idx == 13: # julia
-        sqr = w * np.sqrt(r)
-        t2  = th * 0.5
-        return sqr*np.cos(t2), sqr*np.sin(t2)
-    elif var_idx == 18: # exponential — exp(x), very dangerous
-        scale = w * np.exp(min(x - 1.0, 10.0))  # clamp to avoid overflow
-        return scale * np.cos(np.pi * y), scale * np.sin(np.pi * y)
-    elif var_idx == 19: # power
-        rp = np.power(max(r, 1e-10), np.sin(th))
-        return w*rp*np.cos(th), w*rp*np.sin(th)
-    elif var_idx == 34: # tangent — tan(y) blows up at pi/2
-        cy = np.cos(y)
-        if abs(cy) < 1e-6:
-            return w*x, w*10.0  # clamp
-        return w*np.sin(x)/max(abs(cy), 1e-6), w*np.tan(y)
-    elif var_idx == 35: # cross — 1/(x²-y²)², blows up on diagonals
-        d = x*x - y*y
-        if abs(d) < 1e-6:
-            return w*x, w*y
-        s = 1.0 / (d*d + 1e-6)
-        return w*s*x, w*s*y
-    elif var_idx == 32: # julian — like julia but with nth root
-        sqr = w * np.sqrt(r)
-        t2 = th * 0.5  # simplified: power=2
-        return sqr*np.cos(t2), sqr*np.sin(t2)
-    elif var_idx == 33: # juliascope — same danger profile as julian
-        sqr = w * np.sqrt(r)
-        t2 = th * 0.5
-        return sqr*np.cos(t2), sqr*np.sin(t2)
-    else:
-        # treat unknown/safe variations as linear for viability purposes
-        return w*x, w*y
+    # _apply_variation_cpu is re-exported from .variations for backwards compat
 
 
 def _lerp_arr(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
