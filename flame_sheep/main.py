@@ -522,6 +522,37 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             _evolving = False
         threading.Thread(target=_wait_evolve, daemon=True).start()
 
+    # --- opportunistic symmetry scoring ---
+    def _try_score_symmetry(core, renderer, lib):
+        """Score the currently displayed genome's symmetry if not yet computed."""
+        ga = core._genome_axis
+        if not ga._loop_genomes or ga._loop_pos >= len(ga._loop_genomes):
+            return
+        # Find genome ID for current loop position
+        gids = lib.loop_genome_ids(ga.active_loop_id) if ga.active_loop_id else []
+        if not gids:
+            return
+        gid = gids[ga._loop_pos % len(gids)]
+        # Check if already scored
+        row = lib.conn.execute(
+            'SELECT symmetry_max FROM genomes WHERE id = ?', (gid,)
+        ).fetchone()
+        if row and row[0] is not None:
+            return  # already scored
+        # Read histogram and compute symmetry
+        from .genome import _score_symmetry
+        hit_counts, _ = renderer.histogram_data()
+        sym = _score_symmetry(hit_counts.astype(np.float64))
+        lib.conn.execute(
+            '''UPDATE genomes SET symmetry_max=?, rotational=?, reflective=?,
+               radial=?, periodic=?, fractal_dim=? WHERE id=?''',
+            (sym['symmetry_max'], sym['rotational'], sym['reflective'],
+             sym['radial'], sym['periodic'], sym['fractal_dim'], gid),
+        )
+        lib.conn.commit()
+        log.debug(f'[symmetry] genome #{gid}: sym={sym["symmetry_max"]:.3f} '
+                  f'fd={sym["fractal_dim"]:.2f}')
+
     # --- control pipe for external commands ---
     control = ControlPipe()
     control.start()
@@ -544,16 +575,23 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             elif event.command == 'like':
                 if core.active_loop_id is not None:
                     lib.rate('loop', core.active_loop_id, +1)
+                    # Propagate to recent palettes
+                    for pid in core._palette_axis.palette_history:
+                        lib.rate('palette', pid, +1)
+                    lib.update_loop_fitness(core.active_loop_id)
                     log.info(f'[ctl] liked loop #{core.active_loop_id} '
-                          f'(net: {lib.net_rating("loop", core.active_loop_id):+d})')
+                          f'(+{len(core._palette_axis.palette_history)} palettes)')
                     _maybe_evolve()
                 else:
                     log.warning('no active loop to rate')
             elif event.command == 'dislike':
                 if core.active_loop_id is not None:
                     lib.rate('loop', core.active_loop_id, -1)
+                    for pid in core._palette_axis.palette_history:
+                        lib.rate('palette', pid, -1)
+                    lib.update_loop_fitness(core.active_loop_id)
                     log.info(f'[ctl] disliked loop #{core.active_loop_id} '
-                          f'(net: {lib.net_rating("loop", core.active_loop_id):+d})')
+                          f'(+{len(core._palette_axis.palette_history)} palettes)')
                     _maybe_evolve()
                 core.next_loop()  # switch to a different loop
             elif event.command == 'next':
@@ -641,6 +679,11 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             renderer.clear_histogram()
             renderer.dispatch_chaos_game(iterations=frame.iterations)
             ctx.memory_barrier()
+
+            # Opportunistic symmetry scoring — score the current genome if unscored
+            # Runs at most once every 120 frames (~2s) to avoid GPU readback spam
+            if _frame % 120 == 60 and core.active_loop_id is not None:
+                _try_score_symmetry(core, renderer, lib)
 
             # Tonemap pass — only swap surfaces the compositor is ready for
             for name, surf in ready.items():

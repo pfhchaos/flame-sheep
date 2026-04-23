@@ -470,6 +470,7 @@ class Genome:
 
         More accurate than CPU scorer but requires a full render pass (~16ms).
         Use for final scoring of candidates, not bulk pre-filtering.
+        Includes symmetry metrics (tier 2) since we have a real histogram.
         """
         hit_counts, color_accs = renderer.histogram_data()
         hit_grid = hit_counts.astype(np.float64)
@@ -481,7 +482,9 @@ class Genome:
                 color_accs.astype(np.float64) / (hit_counts.astype(np.float64) * COLOR_SCALE),
                 0.0,
             )
-        return _score_from_histogram(hit_grid, color_grid)
+        scores = _score_from_histogram(hit_grid, color_grid)
+        scores.update(_score_symmetry(hit_grid))
+        return scores
 
 def _score_from_histogram(hit_grid: np.ndarray, color_grid: np.ndarray) -> dict[str, float]:
     """
@@ -567,6 +570,25 @@ def _score_from_histogram(hit_grid: np.ndarray, color_grid: np.ndarray) -> dict[
         color_entropy=color_entropy,
         balance=balance,
         complexity=complexity,
+    )
+
+
+def _score_symmetry(hit_grid: np.ndarray) -> dict[str, float]:
+    """Compute symmetry metrics from a hit-count histogram.
+
+    Separate from _score_from_histogram because symmetry detection
+    is tier 2 (moderate cost) — not run during fast genome generation,
+    only during GPU scoring or idle background passes.
+    """
+    from .symmetry import symmetry_scores
+    sym = symmetry_scores(hit_grid)
+    return dict(
+        symmetry_max=sym['symmetry_max'],
+        rotational=sym['rotational_best'],
+        reflective=sym['reflective_best'],
+        radial=sym['radial'],
+        periodic=sym['periodic'],
+        fractal_dim=sym['fractal_dim'],
     )
 
 

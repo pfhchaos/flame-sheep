@@ -16,11 +16,14 @@ class PaletteAxis:
 
     DRIFT_MORPH_SPEED = 0.003
 
+    PALETTE_HISTORY_SIZE = 8
+
     def __init__(self, initial_palette: np.ndarray, lib=None, rng=None):
         self.enabled = True
         self._lib = lib
         self._rng = rng or np.random.default_rng()
         self._current_palette_id: int | None = None
+        self.palette_history: list[int] = []  # recent palette IDs for vote propagation
 
         self.palette_current = initial_palette.copy()
         self.palette_target  = initial_palette.copy()
@@ -70,17 +73,30 @@ class PaletteAxis:
             if neighbors:
                 ids = [n[0] for n in neighbors]
                 dists = np.array([n[1] for n in neighbors])
-                weights = 1.0 / (dists + 0.01)
+                # Weight by proximity, boosted by user votes
+                vote_bonus = np.array([
+                    max(0.1, 1.0 + self._lib.net_rating('palette', pid) * 0.3)
+                    for pid in ids])
+                weights = vote_bonus / (dists + 0.01)
                 weights /= weights.sum()
                 choice = int(self._rng.choice(ids, p=weights))
                 self._current_palette_id = choice
+                self._track_palette(choice)
                 return self._lib.load_palette(choice)
 
         all_ids = self._lib.all_palette_ids()
         if all_ids:
             choice = int(self._rng.choice(all_ids))
             self._current_palette_id = choice
+            self._track_palette(choice)
             return self._lib.load_palette(choice)
 
         from flame_sheep.genome import _random_palette
         return _random_palette(self._rng)
+
+    def _track_palette(self, palette_id: int):
+        """Add palette to recent history, deduplicating consecutive repeats."""
+        if not self.palette_history or self.palette_history[-1] != palette_id:
+            self.palette_history.append(palette_id)
+            if len(self.palette_history) > self.PALETTE_HISTORY_SIZE:
+                self.palette_history = self.palette_history[-self.PALETTE_HISTORY_SIZE:]
