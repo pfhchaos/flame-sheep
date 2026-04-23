@@ -78,7 +78,7 @@ layout(std430, binding = 5) readonly buffer Weights {
 
 // Per-transform variation parameters (8 floats per transform)
 // Layout: [julian_power, julian_dist, splits_x, splits_y, curl_c1, curl_c2, reserved, reserved]
-#define MAX_VAR_PARAMS 8
+#define MAX_VAR_PARAMS 16
 layout(std430, binding = 6) readonly buffer VarParams {
     float u_var_params[];  // length = MAX_TRANSFORMS * MAX_VAR_PARAMS
 };
@@ -344,6 +344,69 @@ vec2 var_curl(vec2 p, int tidx) {
                 (p.y * re - p.x * im) / d);
 }
 
+// --- Tiling variations ---
+
+vec2 var_rectangles(vec2 p, int tidx) {
+    int vbase = tidx * MAX_VAR_PARAMS;
+    float rx = u_var_params[vbase + 6];
+    float ry = u_var_params[vbase + 7];
+    float ox = (abs(rx) < 1e-6) ? p.x : (2.0 * floor(p.x / rx) + 1.0) * rx - p.x;
+    float oy = (abs(ry) < 1e-6) ? p.y : (2.0 * floor(p.y / ry) + 1.0) * ry - p.y;
+    return vec2(ox, oy);
+}
+
+vec2 var_checks(vec2 p, int tidx) {
+    int vbase = tidx * MAX_VAR_PARAMS;
+    float cs = u_var_params[vbase + 8];
+    float cx = u_var_params[vbase + 9];
+    float cy = u_var_params[vbase + 10];
+    float ics = 1.0 / max(cs, 1e-6);
+    int cell = int(round(p.x * ics)) + int(round(p.y * ics));
+    if (cell % 2 == 0) {
+        return vec2(p.x + cx, p.y);
+    } else {
+        return vec2(p.x, p.y + cy);
+    }
+}
+
+vec2 var_hex_modulus(vec2 p, int tidx) {
+    int vbase = tidx * MAX_VAR_PARAMS;
+    float size = u_var_params[vbase + 11];
+    float hsize = 0.86602540 / max(size, 1e-6);  // sqrt(3)/2
+    float weight = 1.0 / 0.86602540;
+    // Convert to hex coords
+    float hx = (0.57735027 * p.x * hsize - p.y * hsize / 3.0);
+    float hz = (2.0 * p.y * hsize / 3.0);
+    float hy = -hx - hz;
+    // Round to nearest hex cell
+    float rx = round(hx), ry = round(hy), rz = round(hz);
+    float xd = abs(rx - hx), yd = abs(ry - hy), zd = abs(rz - hz);
+    if (xd > yd && xd > zd) rx = -ry - rz;
+    else if (yd > zd) ry = -rx - rz;
+    // Hex-local coordinates
+    float fx = hx - rx;
+    float fy = hz - rz;
+    return vec2(fx * weight, fy * weight);
+}
+
+vec2 var_kaleidoscope(vec2 p, int tidx) {
+    int vbase = tidx * MAX_VAR_PARAMS;
+    float pull = u_var_params[vbase + 12];
+    float rot = u_var_params[vbase + 13];
+    float n = max(u_var_params[vbase + 14], 2.0);
+    // Rotate input
+    float cr = cos(rot), sr = sin(rot);
+    vec2 rp = vec2(cr * p.x - sr * p.y, sr * p.x + cr * p.y);
+    // Convert to polar
+    float a = atan(rp.y, rp.x);
+    float ri = length(rp) + pull;
+    // Mirror into sector
+    float sector = 6.28318530 / n;
+    a = mod(a, sector);
+    if (a > sector * 0.5) a = sector - a;
+    return ri * vec2(cos(a), sin(a));
+}
+
 // ------------------------------------------------------------
 // Apply single variation by index (switch-based dispatch)
 // ------------------------------------------------------------
@@ -387,6 +450,10 @@ vec2 apply_single_variation(int var_idx, vec2 p, int tidx) {
         case 35: return var_cross(p);
         case 36: return var_butterfly(p);
         case 37: return var_curl(p, tidx);
+        case 38: return var_rectangles(p, tidx);
+        case 39: return var_checks(p, tidx);
+        case 40: return var_hex_modulus(p, tidx);
+        case 41: return var_kaleidoscope(p, tidx);
         default: return p;
     }
 }

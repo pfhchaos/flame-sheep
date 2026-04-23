@@ -305,6 +305,15 @@ class Genome:
             var_params[i, 3] = vp.get('splits_y', 0.5)
             var_params[i, 4] = vp.get('curl_c1', 0.0)
             var_params[i, 5] = vp.get('curl_c2', 0.0)
+            var_params[i, 6] = vp.get('rect_x', 0.5)
+            var_params[i, 7] = vp.get('rect_y', 0.5)
+            var_params[i, 8] = vp.get('check_size', 1.0)
+            var_params[i, 9] = vp.get('check_x', 0.0)
+            var_params[i, 10] = vp.get('check_y', 0.0)
+            var_params[i, 11] = vp.get('hex_size', 1.0)
+            var_params[i, 12] = vp.get('kal_pull', 0.0)
+            var_params[i, 13] = vp.get('kal_rotate', 0.0)
+            var_params[i, 14] = vp.get('kal_n', 6.0)
 
         # normalize weights to probabilities
         w_sum = weights[:n].sum()
