@@ -34,7 +34,8 @@ def symmetry_scores(hit_grid: np.ndarray) -> dict[str, float]:
     if hit_grid.sum() == 0:
         return dict(rotational_best=0.0, rotational_n=0,
                     reflective_best=0.0, reflective_angle=0.0,
-                    radial=0.0, fractal_dim=0.0, symmetry_max=0.0)
+                    radial=0.0, periodic=0.0, periodic_freq=0.0,
+                    fractal_dim=0.0, symmetry_max=0.0)
 
     # Normalize to float, log-scale for perceptual uniformity
     grid = np.log1p(hit_grid.astype(np.float64))

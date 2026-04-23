@@ -524,24 +524,32 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
 
     # --- opportunistic symmetry scoring ---
     def _try_score_symmetry(core, renderer, lib):
-        """Score the currently displayed genome's symmetry if not yet computed."""
+        """Score the just-completed genome's symmetry.
+
+        Called on the frame after morph_t hit 1.0 — the histogram still
+        shows the completed genome (morph_t ≈ 0, so current ≈ display).
+        The completed genome is current_genome (loop_pos already advanced).
+        """
         ga = core._genome_axis
-        if not ga._loop_genomes or ga._loop_pos >= len(ga._loop_genomes):
+        if not ga._loop_genomes:
             return
-        # Find genome ID for current loop position
         gids = lib.loop_genome_ids(ga.active_loop_id) if ga.active_loop_id else []
         if not gids:
             return
-        gid = gids[ga._loop_pos % len(gids)]
+        # Completed genome is now current — loop_pos points to the NEW target
+        completed_pos = (ga._loop_pos - 1) % len(ga._loop_genomes)
+        gid = gids[completed_pos % len(gids)]
         # Check if already scored
         row = lib.conn.execute(
             'SELECT symmetry_max FROM genomes WHERE id = ?', (gid,)
         ).fetchone()
         if row and row[0] is not None:
             return  # already scored
-        # Read histogram and compute symmetry
+        # Read downsampled histogram (GPU downsample, ~256KB readback vs ~38MB)
         from .genome import _score_symmetry
-        hit_counts, _ = renderer.histogram_data()
+        hit_counts = renderer.histogram_data_coarse()
+        if hit_counts.sum() == 0:
+            return  # empty histogram (e.g., first frame after startup)
         sym = _score_symmetry(hit_counts.astype(np.float64))
         lib.conn.execute(
             '''UPDATE genomes SET symmetry_max=?, rotational=?, reflective=?,
@@ -625,10 +633,17 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
     _watchdog_last = time.perf_counter()
 
     def _watchdog():
-        """Background thread: force exit if render loop stops making progress."""
+        """Background thread: force exit if render loop stops making progress.
+
+        Grace period: first 15s after start allows slow shader compilation
+        on large canvases (3+ monitors, Arc GPU). After that, 3s stall = exit.
+        """
+        start = time.perf_counter()
         while not quit_requested:
             time.sleep(2.0)
-            if time.perf_counter() - _watchdog_last > 3.0:
+            elapsed = time.perf_counter() - start
+            timeout = 15.0 if elapsed < 20.0 else 3.0
+            if time.perf_counter() - _watchdog_last > timeout:
                 log.error('[watchdog] render loop stalled, forcing exit')
                 os._exit(1)
 
@@ -666,6 +681,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             last_time  = now
 
             frame = core.tick(frame_time)
+            _watchdog_last = time.perf_counter()
 
             # Compute pass — surface doesn't matter for compute, keep first
             if not session.make_current(first_surf):
@@ -679,10 +695,11 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             renderer.clear_histogram()
             renderer.dispatch_chaos_game(iterations=frame.iterations)
             ctx.memory_barrier()
+            _watchdog_last = time.perf_counter()
 
-            # Opportunistic symmetry scoring — score the current genome if unscored
-            # Runs at most once every 120 frames (~2s) to avoid GPU readback spam
-            if _frame % 120 == 60 and core.active_loop_id is not None:
+            # Symmetry scoring — triggered when a genome morph completes
+            if core._genome_axis.score_ready and core.active_loop_id is not None:
+                core._genome_axis.score_ready = False
                 _try_score_symmetry(core, renderer, lib)
 
             # Tonemap pass — only swap surfaces the compositor is ready for
@@ -693,6 +710,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                                        brightness=frame.brightness)
                 if not session.swap(surf):
                     break  # wayland connection lost
+                _watchdog_last = time.perf_counter()
 
     finally:
         mpris.stop()

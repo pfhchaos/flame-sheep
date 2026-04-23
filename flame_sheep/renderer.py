@@ -100,6 +100,9 @@ class FlameRenderer:
             vertex_shader   = (SHADER_DIR / 'tonemap.vert').read_text(),
             fragment_shader = (SHADER_DIR / 'blur.frag').read_text(),
         )
+        self.downsample_hist_shader = self.ctx.compute_shader(
+            (SHADER_DIR / 'downsample_hist.comp').read_text()
+        )
 
     def _create_resources(self):
         w, h = self.canvas_w, self.canvas_h
@@ -111,6 +114,13 @@ class FlameRenderer:
         histogram_data = np.zeros(n_pixels * 2, dtype=np.uint32)
         self.histogram_buf = self.ctx.buffer(histogram_data.tobytes())
         self.histogram_buf.bind_to_storage_buffer(0)
+
+        # Downsampled histogram for symmetry scoring (binding=6)
+        self._ds_w = min(256, w)
+        self._ds_h = min(256, h)
+        ds_data = np.zeros(self._ds_w * self._ds_h, dtype=np.uint32)
+        self._ds_buf = self.ctx.buffer(ds_data.tobytes())
+        self._ds_buf.bind_to_storage_buffer(6)
 
         # Palette texture: 256 x 1 RGB32F
         self.palette_tex = self.ctx.texture((256, 1), components=3, dtype='f4')
@@ -322,3 +332,20 @@ class FlameRenderer:
         hit_counts = raw[:n_pixels].reshape(self.canvas_h, self.canvas_w)
         color_accs = raw[n_pixels:].reshape(self.canvas_h, self.canvas_w)
         return hit_counts, color_accs
+
+    def histogram_data_coarse(self) -> np.ndarray:
+        """Downsample hit_counts on the GPU, read back ~256KB instead of ~38MB.
+
+        Returns hit_counts shape (ds_h, ds_w) uint32.
+        """
+        ds = self.downsample_hist_shader
+        ds['u_canvas_w'] = self.canvas_w
+        ds['u_canvas_h'] = self.canvas_h
+        ds['u_out_w'] = self._ds_w
+        ds['u_out_h'] = self._ds_h
+        gx = (self._ds_w + 15) // 16
+        gy = (self._ds_h + 15) // 16
+        ds.run(group_x=gx, group_y=gy)
+        self.ctx.memory_barrier()
+        raw = np.frombuffer(self._ds_buf.read(), dtype=np.uint32)
+        return raw.reshape(self._ds_h, self._ds_w)

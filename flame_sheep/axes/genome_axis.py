@@ -54,6 +54,9 @@ class GenomeAxis:
         self._next_genome: Genome | None = None
         self._genome_lock = threading.Lock()
 
+        # Symmetry scoring: set when a morph completes naturally
+        self.score_ready = False
+
         # Kick counting
         self._kick_count = 0
         self._recent_kick_energy = 0.5
@@ -111,6 +114,7 @@ class GenomeAxis:
         self.morph_t = min(1.0, self.morph_t + self.morph_speed * perc_scale)
 
         if self.morph_t >= 1.0:
+            self.score_ready    = True
             self.current_genome = self.target_genome
             self.morph_t        = 0.0
             self._swap_next_genome()
@@ -142,7 +146,7 @@ class GenomeAxis:
                 self.target_genome, self.morph_t)
             self._swap_next_genome()
             self.morph_t = 0.0
-            kick_period = since if since < 2.0 else 0.5
+            kick_period = since if 0 < since < 2.0 else 0.5
             frames_until_swap = (kick_period * self.KICK_SWAP_EVERY * 60) * 0.8
             self.morph_speed = max(0.01, 1.0 / frames_until_swap)
             dist = self.current_genome.distance(self.target_genome)

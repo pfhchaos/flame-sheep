@@ -84,11 +84,16 @@ class PipeWireSource:
                 if self._stop_event.is_set():
                     return None
                 self._cond.wait(timeout=0.1)
-            # Take the n most recent new samples from the buffer
-            buf_list = list(self._buffer)
-            # The new samples are at the tail of the buffer
-            start = len(buf_list) - self._new_samples
-            samples = np.array(buf_list[start:start + n], dtype=np.float32)
+            # Clamp _new_samples to buffer length: if the deque overflowed
+            # (e.g., during a GPU stall), old samples were silently dropped
+            # and _new_samples would exceed len(buffer), causing negative
+            # start indices and corrupted reads.
+            buf_len = len(self._buffer)
+            if self._new_samples > buf_len:
+                self._new_samples = buf_len
+            # Take the n oldest unconsumed samples from the buffer
+            start = buf_len - self._new_samples
+            samples = np.array(list(self._buffer)[start:start + n], dtype=np.float32)
             self._new_samples -= n
             return samples
 

@@ -1,5 +1,9 @@
 """Zoom axis — hihat/clap events drive a zoom pulse that decays over time."""
 
+import logging
+
+log = logging.getLogger(__name__)
+
 from flame_sheep.audio._types import AudioState
 
 
@@ -25,6 +29,8 @@ class ZoomAxis:
                 self.zoom_boost = min(
                     self.ZOOM_BOOST_MAX,
                     self.zoom_boost + event.energy * 0.15)
+                log.debug(f'[{event.kind}] energy={event.energy:.2f}  '
+                          f'zoom={self.zoom_boost:.3f}')
 
     def contribute(self, frame) -> None:
         frame.genome.zoom *= (1.0 + self.zoom_boost)

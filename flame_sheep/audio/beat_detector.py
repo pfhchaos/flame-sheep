@@ -3,7 +3,7 @@
 import numpy as np
 from collections import deque
 
-from ._constants import SAMPLE_RATE, N_BINS, HISTORY_LEN, FREQS
+from ._constants import SAMPLE_RATE, N_BINS, HISTORY_LEN, FREQS, FFT_SIZE, HOP_SIZE
 from ._types import BeatEvent
 from ._spectrum import SpectrumFrame
 from ._bands import (
@@ -26,10 +26,12 @@ class FluxBeatDetector:
     """
 
     # Detection constants
-    THRESHOLD = 1.5   # flux must exceed this × local average to fire
+    THRESHOLD = 1.5       # flux must exceed this × local average to fire
+    KICK_THRESHOLD = 3.5  # higher threshold for kick (2-bin band has high variance)
     COOLDOWN  = 12    # audio frames between onsets (~128ms at HOP_SIZE=512)
     MIN_FLUX  = 1e-7  # gates out DC/numerical noise
-    SHARPNESS = 3.0   # min flux ratio (current/previous) for snare/hihat
+    SHARPNESS = 3.0   # min flux ratio (current vs pre-attack) for snare/hihat
+    SHARPNESS_LOOKBACK = FFT_SIZE // HOP_SIZE  # span the full overlap attack ramp
 
     def __init__(self, adaptive: bool = False, sharpness: bool = True):
         self._adaptive = adaptive
@@ -70,8 +72,11 @@ class FluxBeatDetector:
         self._cooldown_frames = {'kick': 0, 'snare': 0, 'clap': 0, 'hihat': 0}
         self._frame_count     = {'kick': 0, 'snare': 0, 'clap': 0, 'hihat': 0}
 
-        # Per-band previous flux (for attack sharpness)
-        self._prev_flux = {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0}
+        # Per-band recent flux (for attack sharpness lookback)
+        self._recent_flux = {
+            band: deque(maxlen=self.SHARPNESS_LOOKBACK + 1)
+            for band in ('kick', 'snare', 'clap', 'hihat')
+        }
 
     @property
     def adaptive_bands(self):
@@ -105,8 +110,8 @@ class FluxBeatDetector:
         for band in self._bands:
             band_flux = self._band_flux(flux, band)
             hist = self._flux_history[band]
-            prev = self._prev_flux[band]
-            self._prev_flux[band] = band_flux
+            recent = self._recent_flux[band]
+            recent.append(band_flux)
 
             self._frame_count[band] += 1
             in_cooldown = (self._frame_count[band]
@@ -116,10 +121,12 @@ class FluxBeatDetector:
                 local_avg = float(np.mean(hist))
 
                 # Attack sharpness gate for snare/hihat:
-                # require steep flux rise to reject gradual vocal onsets
+                # compare to pre-attack baseline (median of lookback window)
+                # to span the overlap attack ramp from 75% overlapping windows
                 if (self._sharpness and band in ('snare', 'clap', 'hihat')
-                        and prev > self.MIN_FLUX):
-                    if band_flux / prev < self.SHARPNESS:
+                        and len(recent) > self.SHARPNESS_LOOKBACK):
+                    pre_attack = float(np.median(list(recent)[:-1]))
+                    if pre_attack > self.MIN_FLUX and band_flux / pre_attack < self.SHARPNESS:
                         hist.append(band_flux)
                         continue
 
@@ -135,12 +142,13 @@ class FluxBeatDetector:
                         hist.append(band_flux)
                         continue
 
+                thresh = self.KICK_THRESHOLD if band == 'kick' else self.THRESHOLD
                 if local_avg < self.MIN_FLUX:
                     events.append(BeatEvent(kind=band, energy=1.0))
                     self._cooldown_frames[band] = self._frame_count[band]
-                elif band_flux > local_avg * self.THRESHOLD:
+                elif band_flux > local_avg * thresh:
                     normalized = min(1.0,
-                        (band_flux / local_avg - self.THRESHOLD) / self.THRESHOLD)
+                        (band_flux / local_avg - thresh) / thresh)
                     events.append(BeatEvent(kind=band, energy=normalized))
                     self._cooldown_frames[band] = self._frame_count[band]
 
