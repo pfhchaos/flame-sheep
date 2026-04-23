@@ -9,6 +9,7 @@ log = logging.getLogger(__name__)
 
 from flame_sheep.audio._types import AudioState, BeatEvent
 from flame_sheep.genome import Genome
+from flame_sheep.variations import Variation
 
 
 class GenomeAxis:
@@ -265,3 +266,23 @@ class GenomeAxis:
                 else:
                     self.target_genome = self._genome_factory()
             self._prefetch_genome()
+        log.info(f'[genome] {_describe_genome(self.target_genome)}')
+
+
+# Reverse map: variation index -> name
+_VAR_NAMES = {v: k.lower() for k, v in vars(Variation).items()
+              if isinstance(v, int)}
+
+
+def _describe_genome(g: Genome) -> str:
+    """One-line summary: top variations per transform, sorted by weight."""
+    parts = []
+    for i, t in enumerate(sorted(g.transforms, key=lambda t: -t.weight)):
+        if t.weight < 0.05:
+            continue
+        active = [(w, _VAR_NAMES.get(j, f'v{j}'))
+                  for j, w in enumerate(t.variations) if w > 0.01]
+        active.sort(key=lambda x: -x[0])
+        names = '+'.join(n for _, n in active[:3])
+        parts.append(f'{names}({t.weight:.2f})')
+    return '  '.join(parts) if parts else '(empty)'
