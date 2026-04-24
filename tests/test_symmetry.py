@@ -188,16 +188,18 @@ class TestSymmetryScores:
         assert scores['symmetry_max'] == 0.0
         assert scores['fractal_dim'] == 0.0
 
-    def test_symmetry_max_is_max(self):
+    def test_symmetry_max_bounded_by_components(self):
         rng = np.random.default_rng(42)
         grid = rng.integers(0, 100, (64, 64), dtype=np.uint32)
         scores = symmetry_scores(grid)
-        assert scores['symmetry_max'] == max(
+        raw_max = max(
             scores['rotational_best'],
             scores['reflective_best'],
             scores['radial'],
             scores['periodic'],
         )
+        # symmetry_max <= raw max (coverage_quality may attenuate)
+        assert scores['symmetry_max'] <= raw_max + 1e-10
 
     def test_all_scores_in_range(self):
         rng = np.random.default_rng(42)

@@ -42,6 +42,10 @@ def symmetry_scores(hit_grid: np.ndarray) -> dict[str, float]:
     grid = np.log1p(hit_grid.astype(np.float64))
     grid /= grid.max() + 1e-10
 
+    # Coverage gate: sparse histograms produce meaningless symmetry scores
+    h, w = hit_grid.shape
+    coverage = float(np.count_nonzero(hit_grid)) / (h * w)
+
     # Center on attractor centroid for symmetry checks
     centered = _center_on_attractor(grid)
 
@@ -51,6 +55,10 @@ def symmetry_scores(hit_grid: np.ndarray) -> dict[str, float]:
     per_score, per_freq = _periodic_structure(grid)  # translation-invariant
     self_sim = _self_similarity(grid)
     fdim = _fractal_dimension(hit_grid)
+
+    # Attenuate symmetry for degenerate histograms — sparse or uniform
+    # coverage < 5% = collapsed, coverage > 80% = uniform fill
+    coverage_quality = min(1.0, coverage / 0.05) * min(1.0, (1.0 - coverage) / 0.2)
 
     return dict(
         rotational_best=rot_score,
@@ -62,7 +70,7 @@ def symmetry_scores(hit_grid: np.ndarray) -> dict[str, float]:
         periodic_freq=per_freq,
         fractal_dim=fdim,
         self_similarity=self_sim,
-        symmetry_max=max(rot_score, ref_score, rad_score, per_score),
+        symmetry_max=max(rot_score, ref_score, rad_score, per_score) * coverage_quality,
     )
 
 
@@ -152,11 +160,17 @@ def _reflective_symmetry(grid: np.ndarray, n_angles: int = 18) -> tuple[float, f
     return best_score, best_angle
 
 
-def _radial_symmetry(grid: np.ndarray, n_rings: int = 16) -> float:
-    """Measure radial/mandala symmetry via concentric ring correlation.
+def _radial_symmetry(grid: np.ndarray, n_rings: int = 8,
+                     n_sectors: int = 12) -> float:
+    """Measure radial/mandala symmetry.
 
-    Computes mean intensity per ring at increasing radii from center.
-    High correlation between adjacent rings = radial symmetry.
+    Combines two signals:
+    1. Angular uniformity — each ring is evenly filled around the circle
+    2. Radial profile structure — rings have different intensities (not flat)
+
+    Random noise scores low because it has no radial profile structure.
+    A single point scores low because most rings are empty.
+    A bullseye or mandala scores high on both.
     """
     h, w = grid.shape
     cy, cx = h / 2.0, w / 2.0
@@ -164,35 +178,58 @@ def _radial_symmetry(grid: np.ndarray, n_rings: int = 16) -> float:
 
     ys, xs = np.mgrid[0:h, 0:w]
     dist = np.sqrt((xs - cx)**2 + (ys - cy)**2)
+    angle = np.arctan2(ys - cy, xs - cx)  # -pi to pi
 
     ring_means = []
+    ring_uniformity = []
     for i in range(n_rings):
-        r_lo = i * max_r / n_rings
-        r_hi = (i + 1) * max_r / n_rings
-        mask = (dist >= r_lo) & (dist < r_hi)
-        if mask.any():
-            ring_means.append(float(grid[mask].mean()))
-        else:
+        r_lo = (i + 1) * max_r / (n_rings + 1)
+        r_hi = (i + 2) * max_r / (n_rings + 1)
+        ring_mask = (dist >= r_lo) & (dist < r_hi)
+
+        if ring_mask.sum() < n_sectors:
+            continue
+
+        ring_total = grid[ring_mask].sum()
+        if ring_total < 1e-10:
             ring_means.append(0.0)
+            continue
 
-    if len(ring_means) < 3:
+        ring_means.append(float(grid[ring_mask].mean()))
+
+        # Angular uniformity within this ring
+        sector_sums = np.zeros(n_sectors)
+        for s in range(n_sectors):
+            a_lo = -np.pi + s * 2 * np.pi / n_sectors
+            a_hi = a_lo + 2 * np.pi / n_sectors
+            sector_mask = ring_mask & (angle >= a_lo) & (angle < a_hi)
+            if sector_mask.any():
+                sector_sums[s] = grid[sector_mask].sum()
+
+        p = sector_sums / (sector_sums.sum() + 1e-10)
+        entropy = -np.sum(np.where(p > 0, p * np.log(p + 1e-10), 0))
+        max_entropy = np.log(n_sectors)
+        ring_uniformity.append(entropy / max_entropy)
+
+    if len(ring_uniformity) < 2:
         return 0.0
 
-    # Measure how structured the radial profile is:
-    # high variance in ring means = concentric structure (rings, mandalas)
-    # low variance = uniform fill or random
-    ring_arr = np.array(ring_means)
-    if ring_arr.max() < 1e-10:
-        return 0.0
+    # Angular uniformity: mean across rings
+    uniformity = float(np.mean(ring_uniformity))
 
-    ring_arr /= ring_arr.max()
-    # Coefficient of variation — how much the rings differ from each other
-    mean = ring_arr.mean()
-    if mean < 1e-10:
+    # Radial profile structure: how much ring means vary
+    # Random noise has flat profile (all rings similar) → low structure
+    # Mandalas have peaks and troughs → high structure
+    rm = np.array(ring_means)
+    if rm.max() < 1e-10:
         return 0.0
-    cv = float(ring_arr.std() / mean)
-    # Normalize: CV > 0.5 = strong ring structure
-    return min(1.0, max(0.0, cv / 0.5))
+    rm_norm = rm / rm.max()
+    profile_var = float(rm_norm.std())
+    # Normalize: std > 0.3 = strong radial profile
+    profile_score = min(1.0, profile_var / 0.3)
+
+    # Both needed: uniform sectors AND structured radial profile
+    return uniformity * profile_score
 
 
 def _periodic_structure(grid: np.ndarray) -> tuple[float, float]:
