@@ -57,8 +57,6 @@ class GenomeAxis:
         self._next_genome: Genome | None = None
         self._genome_lock = threading.Lock()
 
-        # Symmetry scoring: set when a morph completes naturally
-        self.score_ready = False
 
         # Kick energy tracking (for strong beat detection)
         self._recent_kick_energy = 0.5
@@ -115,7 +113,7 @@ class GenomeAxis:
             self.morph_t + self.morph_speed * perc_scale * self._break_damping)
 
         if self.morph_t >= 1.0:
-            self.score_ready    = True
+
             self.current_genome = self.target_genome
             self.morph_t        = 0.0
             self._swap_next_genome()
@@ -141,9 +139,6 @@ class GenomeAxis:
 
         # Strong beat → swap direction (downbeat detection)
         if event.energy > self._recent_kick_energy * self.STRONG_BEAT_THRESHOLD:
-            # Score if this genome has been displayed long enough
-            if self.morph_t > 0.5:
-                self.score_ready = True
             self.current_genome = self.current_genome.lerp(
                 self.target_genome, self.morph_t)
             self._swap_next_genome()

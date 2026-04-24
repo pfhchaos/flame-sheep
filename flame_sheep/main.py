@@ -533,44 +533,12 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             _evolving = False
         threading.Thread(target=_wait_evolve, daemon=True).start()
 
-    # --- opportunistic symmetry scoring ---
-    def _try_score_symmetry(core, renderer, lib):
-        """Score the just-completed genome's symmetry.
-
-        Called on the frame after morph_t hit 1.0 — the histogram still
-        shows the completed genome (morph_t ≈ 0, so current ≈ display).
-        The completed genome is current_genome (loop_pos already advanced).
-        """
-        ga = core._genome_axis
-        if not ga._loop_genomes:
-            return
-        gids = lib.loop_genome_ids(ga.active_loop_id) if ga.active_loop_id else []
-        if not gids:
-            return
-        # Completed genome is now current — loop_pos points to the NEW target
-        completed_pos = (ga._loop_pos - 1) % len(ga._loop_genomes)
-        gid = gids[completed_pos % len(gids)]
-        # Check if already scored
-        row = lib.conn.execute(
-            'SELECT symmetry_max FROM genomes WHERE id = ?', (gid,)
-        ).fetchone()
-        if row and row[0] is not None:
-            return  # already scored
-        # Read downsampled histogram (GPU downsample, ~256KB readback vs ~38MB)
-        from .genome import _score_symmetry
-        hit_counts = renderer.histogram_data_coarse()
-        if hit_counts.sum() == 0:
-            return  # empty histogram (e.g., first frame after startup)
-        sym = _score_symmetry(hit_counts.astype(np.float64))
-        lib.conn.execute(
-            '''UPDATE genomes SET symmetry_max=?, rotational=?, reflective=?,
-               radial=?, periodic=?, fractal_dim=? WHERE id=?''',
-            (sym['symmetry_max'], sym['rotational'], sym['reflective'],
-             sym['radial'], sym['periodic'], sym['fractal_dim'], gid),
-        )
-        lib.conn.commit()
-        log.debug(f'[symmetry] genome #{gid}: sym={sym["symmetry_max"]:.3f} '
-                  f'fd={sym["fractal_dim"]:.2f}')
+    # --- background symmetry scoring ---
+    from .scorer import BackgroundScorer
+    from .storage import _db_path
+    scorer = BackgroundScorer(db_path=str(_db_path()))
+    if lib is not None:
+        scorer.start()
 
     # --- control pipe for external commands ---
     control = ControlPipe()
@@ -709,11 +677,6 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             ctx.memory_barrier()
             _watchdog_last = time.perf_counter()
 
-            # Symmetry scoring — triggered when a genome morph completes
-            if core._genome_axis.score_ready and core.active_loop_id is not None:
-                core._genome_axis.score_ready = False
-                _try_score_symmetry(core, renderer, lib)
-
             # Tonemap pass — only swap surfaces the compositor is ready for
             for name, surf in ready.items():
                 if not session.make_current(surf):
@@ -725,6 +688,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                 _watchdog_last = time.perf_counter()
 
     finally:
+        scorer.stop()
         mpris.stop()
         control.stop()
         core.stop()
