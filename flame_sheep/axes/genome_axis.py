@@ -32,14 +32,14 @@ class GenomeAxis:
 
     MIN_GENOME_DISTANCE = 0.15
     DRIFT_MORPH_SPEED   = 0.001
-    KICK_MORPH_PULSE    = 0.03
+    KICK_MORPH_PULSE    = 0.008
     LOOP_HISTORY_SIZE   = 8
     BREAK_DECAY         = 0.97   # damping per frame during break (~half speed in 0.4s)
     DENSITY_MORPH_SCALE = 0.003  # morph_speed baseline += kick_density * this
-    STRONG_BEAT_THRESHOLD = 1.5  # swap when energy > recent_avg * this
+    STRONG_BEAT_THRESHOLD = 2.0  # swap when energy > recent_avg * this
 
     # Centroid delta threshold for triggering a swap in low-percussiveness mode
-    CENTROID_SWAP_THRESHOLD = 200.0
+    CENTROID_SWAP_THRESHOLD = 500.0
 
     def __init__(self, genome_factory, lib=None, rng=None):
         self.enabled = True
@@ -90,7 +90,7 @@ class GenomeAxis:
                 self._handle_song_start()
 
         # In low-percussiveness mode, a large centroid shift triggers a swap
-        if (audio.percussiveness < 0.3
+        if (audio.percussiveness < 0.15
                 and audio.centroid_delta > self.CENTROID_SWAP_THRESHOLD
                 and self.morph_t > 0.3):
             self.current_genome = self.current_genome.lerp(
