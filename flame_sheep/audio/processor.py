@@ -29,6 +29,7 @@ from .beat_detector import FluxBeatDetector
 from .energy import EnergyAnalyzer
 from .source import PipeWireSource, FeedSource
 from .onset_density import OnsetDensityTracker
+from .stability import MagnitudeStability
 from ..tempo import TempoTracker
 from ._bands import (
     AdaptiveBand, make_mask, make_weights, a_weight_curve, A_WEIGHTS,
@@ -66,7 +67,9 @@ class AudioProcessor:
                  sharpness: bool = True, source=None):
         self._source = source or PipeWireSource(device=device)
         self._spectrum_engine = SpectrumEngine()
-        self._detector = FluxBeatDetector(adaptive=adaptive, sharpness=sharpness)
+        self._stability = MagnitudeStability()
+        self._detector = FluxBeatDetector(adaptive=adaptive, sharpness=sharpness,
+                                          stability=self._stability)
         self._energy = EnergyAnalyzer()
         self._tempo = TempoTracker()
         self._density = OnsetDensityTracker()
@@ -145,6 +148,7 @@ class AudioProcessor:
 
             now = time.perf_counter()
             frame = self._spectrum_engine.push_hop(hop)
+            self._stability.update(frame.magnitude)
             self._energy.update(frame.magnitude, frame.flux)
             events = self._detector.detect(frame)
 
@@ -224,6 +228,7 @@ class AudioProcessor:
             return []
 
         frame = self._spectrum_engine.compute(pcm)
+        self._stability.update(frame.magnitude)
         self._energy.update(frame.magnitude, frame.flux)
 
         with self._lock:

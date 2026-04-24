@@ -15,6 +15,7 @@ from flame_sheep.audio.beat_detector import FluxBeatDetector
 from flame_sheep.audio.drop_detector import DropDetector
 from flame_sheep.audio.bass_drop_detector import BassDropDetector
 from flame_sheep.audio.onset_density import OnsetDensityTracker
+from flame_sheep.audio.stability import MagnitudeStability
 from flame_sheep.audio.energy import EnergyAnalyzer
 from flame_sheep.axes.zoom_axis import ZoomAxis
 from flame_sheep.axes.brightness_axis import BrightnessAxis
@@ -683,6 +684,55 @@ class TestOnsetDensityTracker:
 
 
 # -------------------------------------------------------------------
+# MagnitudeStability
+# -------------------------------------------------------------------
+
+class TestMagnitudeStability:
+
+    def test_sustained_signal_high_stability(self):
+        ms = MagnitudeStability()
+        # Feed constant magnitude for many frames → high stability
+        mag = np.zeros(N_BINS, dtype=np.float32)
+        mag[2:5] = 0.5  # constant energy in kick band
+        for _ in range(100):
+            ms.update(mag)
+        mask = np.zeros(N_BINS, dtype=bool)
+        mask[2:5] = True
+        assert ms.band_stability(mask) > 0.8
+
+    def test_transient_signal_low_stability(self):
+        ms = MagnitudeStability()
+        rng = np.random.default_rng(42)
+        mask = np.zeros(N_BINS, dtype=bool)
+        mask[2:5] = True
+        # Feed alternating spike/silence → low stability
+        for i in range(100):
+            mag = np.zeros(N_BINS, dtype=np.float32)
+            if i % 10 == 0:  # spike every 10 frames
+                mag[2:5] = 1.0
+            ms.update(mag)
+        assert ms.band_stability(mask) < 0.5
+
+    def test_silence_is_stable(self):
+        ms = MagnitudeStability()
+        mag = np.zeros(N_BINS, dtype=np.float32)
+        for _ in range(50):
+            ms.update(mag)
+        mask = np.zeros(N_BINS, dtype=bool)
+        mask[2:5] = True
+        assert ms.band_stability(mask) == 1.0
+
+    def test_reset_clears_state(self):
+        ms = MagnitudeStability()
+        mag = np.ones(N_BINS, dtype=np.float32)
+        for _ in range(50):
+            ms.update(mag)
+        ms.reset()
+        assert ms._mag_ema.sum() == 0.0
+        assert ms._mag_var.sum() == 0.0
+
+
+# -------------------------------------------------------------------
 # DropDetector
 # -------------------------------------------------------------------
 
@@ -923,7 +973,7 @@ class TestGenomeAxisEvents:
         initial_target = id(axis.target_genome)
         audio = AudioState(
             percussiveness=0.1,
-            centroid_delta=500.0,  # big shift
+            centroid_delta=600.0,  # big shift
         )
         axis.tick(audio, 1/60, 0.0)
         assert id(axis.target_genome) != initial_target

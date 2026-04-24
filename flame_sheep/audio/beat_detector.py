@@ -30,13 +30,16 @@ class FluxBeatDetector:
     KICK_THRESHOLD = 3.5  # higher threshold for kick (2-bin band has high variance)
     COOLDOWN  = 12    # audio frames between onsets (~128ms at HOP_SIZE=512)
     KICK_COOLDOWN = 10 # shorter for kick to allow fast patterns (~107ms)
+    STABILITY_SCALING = 2.0  # how much stability raises the kick threshold
     MIN_FLUX  = 1e-7  # gates out DC/numerical noise
     SHARPNESS = 3.0   # min flux ratio (current vs pre-attack) for snare/hihat
     SHARPNESS_LOOKBACK = FFT_SIZE // HOP_SIZE  # span the full overlap attack ramp
 
-    def __init__(self, adaptive: bool = False, sharpness: bool = True):
+    def __init__(self, adaptive: bool = False, sharpness: bool = True,
+                 stability=None):
         self._adaptive = adaptive
         self._sharpness = sharpness
+        self._stability = stability  # MagnitudeStability reference (optional)
 
         # Static band masks
         self._bands = {
@@ -145,6 +148,11 @@ class FluxBeatDetector:
                         continue
 
                 thresh = self.KICK_THRESHOLD if band == 'kick' else self.THRESHOLD
+                # Scale kick threshold by band stability: stable (harmonic)
+                # bands need a larger flux spike to fire
+                if band == 'kick' and self._stability is not None:
+                    stab = self._stability.band_stability(self._bands['kick'])
+                    thresh *= (1.0 + stab * self.STABILITY_SCALING)
                 if local_avg < self.MIN_FLUX:
                     events.append(BeatEvent(kind=band, energy=1.0))
                     self._cooldown_frames[band] = self._frame_count[band]
