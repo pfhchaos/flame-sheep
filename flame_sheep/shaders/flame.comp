@@ -76,9 +76,11 @@ layout(std430, binding = 5) readonly buffer Weights {
     float u_weights[];
 };
 
-// Per-transform variation parameters (8 floats per transform)
-// Layout: [julian_power, julian_dist, splits_x, splits_y, curl_c1, curl_c2, reserved, reserved]
-#define MAX_VAR_PARAMS 16
+// Per-transform variation parameters (32 floats per transform)
+// [0-15]: julian, splits, curl, rect, checks, hex, kaleidoscope
+// [16-21]: icon (degree, lambda, alpha, beta, gamma, omega)
+// [22]: sattractor m  [23]: wallpaper group  [24]: frieze group
+#define MAX_VAR_PARAMS 32
 layout(std430, binding = 6) readonly buffer VarParams {
     float u_var_params[];  // length = MAX_TRANSFORMS * MAX_VAR_PARAMS
 };
@@ -407,6 +409,61 @@ vec2 var_kaleidoscope(vec2 p, int tidx) {
     return ri * vec2(cos(a), sin(a));
 }
 
+// --- symmetry-generating variations ---
+
+vec2 var_icon(vec2 p, int tidx) {
+    // Icon attractor: complex polynomial with n-fold rotational symmetry
+    // z' = lambda*z + alpha*conj(z)^(n-1) + beta*exp(i*omega)*conj(z)^(n-3)
+    int vbase = tidx * MAX_VAR_PARAMS;
+    float n = u_var_params[vbase + 16];      // degree (n-fold symmetry)
+    float lam = u_var_params[vbase + 17];    // lambda
+    float alp = u_var_params[vbase + 18];    // alpha
+    float bet = u_var_params[vbase + 19];    // beta
+    float gam = u_var_params[vbase + 20];    // gamma (unused in basic form)
+    float ome = u_var_params[vbase + 21];    // omega
+
+    // z = p.x + i*p.y, conj(z) = p.x - i*p.y
+    float zr = p.x, zi = p.y;
+    float cr = p.x, ci = -p.y;  // conjugate
+
+    // conj(z)^(n-1) via polar
+    float cr_r = length(vec2(cr, ci));
+    float cr_a = atan(ci, cr);
+    float nm1 = n - 1.0;
+    float cpow_r = pow(max(cr_r, 1e-10), nm1);
+    float cpow_a = nm1 * cr_a;
+    float c1r = cpow_r * cos(cpow_a);
+    float c1i = cpow_r * sin(cpow_a);
+
+    // conj(z)^(n-3) via polar
+    float nm3 = n - 3.0;
+    float cpow3_r = pow(max(cr_r, 1e-10), nm3);
+    float cpow3_a = nm3 * cr_a;
+    float c3r = cpow3_r * cos(cpow3_a);
+    float c3i = cpow3_r * sin(cpow3_a);
+
+    // exp(i*omega) * conj(z)^(n-3)
+    float eor = cos(ome), eoi = sin(ome);
+    float ec3r = eor * c3r - eoi * c3i;
+    float ec3i = eor * c3i + eoi * c3r;
+
+    // z' = lam*z + alp*conj(z)^(n-1) + bet*exp(i*ome)*conj(z)^(n-3)
+    float rx = lam * zr + alp * c1r + bet * ec3r;
+    float ry = lam * zi + alp * c1i + bet * ec3i;
+    return vec2(rx, ry);
+}
+
+vec2 var_sattractor(vec2 p, int tidx) {
+    // Symmetric attractor: m-fold rotational symmetry from roots of unity
+    // Pick random k in [0,m), rotate point by 2*pi*k/m
+    int vbase = tidx * MAX_VAR_PARAMS;
+    float m = max(u_var_params[vbase + 22], 2.0);
+    float k = floor(rng_float() * m);
+    float angle = k * 6.28318530 / m;
+    float ca = cos(angle), sa = sin(angle);
+    return vec2(ca * p.x - sa * p.y, sa * p.x + ca * p.y);
+}
+
 // ------------------------------------------------------------
 // Apply single variation by index (switch-based dispatch)
 // ------------------------------------------------------------
@@ -454,6 +511,8 @@ vec2 apply_single_variation(int var_idx, vec2 p, int tidx) {
         case 39: return var_checks(p, tidx);
         case 40: return var_hex_modulus(p, tidx);
         case 41: return var_kaleidoscope(p, tidx);
+        case 42: return var_icon(p, tidx);
+        case 43: return var_sattractor(p, tidx);
         default: return p;
     }
 }

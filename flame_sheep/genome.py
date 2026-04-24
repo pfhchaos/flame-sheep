@@ -31,6 +31,23 @@ _apply_variation_cpu = apply_variation_cpu
 MAX_TRANSFORMS = 6
 MAX_ACTIVE_VARS = 8  # max active variations per transform (for GPU loop)
 
+# GPU var_params slot table: {param_name: (slot_index, default_value)}
+# Must match the layout in flame.comp
+_VAR_PARAM_SLOTS = {
+    'julian_power': (0, 3.0), 'julian_dist': (1, 1.0),
+    'splits_x': (2, 0.5), 'splits_y': (3, 0.5),
+    'curl_c1': (4, 0.0), 'curl_c2': (5, 0.0),
+    'rect_x': (6, 0.5), 'rect_y': (7, 0.5),
+    'check_size': (8, 1.0), 'check_x': (9, 0.0), 'check_y': (10, 0.0),
+    'hex_size': (11, 1.0),
+    'kal_pull': (12, 0.0), 'kal_rotate': (13, 0.0), 'kal_n': (14, 6.0),
+    'icon_degree': (16, 4.0), 'icon_lambda': (17, 0.0),
+    'icon_alpha': (18, 0.0), 'icon_beta': (19, 0.0),
+    'icon_gamma': (20, 0.0), 'icon_omega': (21, 0.0),
+    'sat_m': (22, 4.0),
+    'wallpaper_group': (23, 0.0), 'frieze_group': (24, 0.0),
+}
+
 
 @dataclass
 class Transform:
@@ -297,23 +314,10 @@ class Genome:
                 active_vars[i, j, 0] = float(var_idx)
                 active_vars[i, j, 1] = tr.variations[var_idx]
 
-            # Pack variation parameters into fixed layout
+            # Pack variation parameters into fixed layout (slot table)
             vp = tr.var_params
-            var_params[i, 0] = vp.get('julian_power', 3.0)
-            var_params[i, 1] = vp.get('julian_dist', 1.0)
-            var_params[i, 2] = vp.get('splits_x', 0.5)
-            var_params[i, 3] = vp.get('splits_y', 0.5)
-            var_params[i, 4] = vp.get('curl_c1', 0.0)
-            var_params[i, 5] = vp.get('curl_c2', 0.0)
-            var_params[i, 6] = vp.get('rect_x', 0.5)
-            var_params[i, 7] = vp.get('rect_y', 0.5)
-            var_params[i, 8] = vp.get('check_size', 1.0)
-            var_params[i, 9] = vp.get('check_x', 0.0)
-            var_params[i, 10] = vp.get('check_y', 0.0)
-            var_params[i, 11] = vp.get('hex_size', 1.0)
-            var_params[i, 12] = vp.get('kal_pull', 0.0)
-            var_params[i, 13] = vp.get('kal_rotate', 0.0)
-            var_params[i, 14] = vp.get('kal_n', 6.0)
+            for name, (slot, default) in _VAR_PARAM_SLOTS.items():
+                var_params[i, slot] = vp.get(name, default)
 
         # normalize weights to probabilities
         w_sum = weights[:n].sum()

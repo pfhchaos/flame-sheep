@@ -68,4 +68,31 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
             'kal_n': n,
         }
 
+    elif var_idx == Variation.ICON:
+        # From JWildfire IconAttractorFunc.java randomize()
+        degree = float(rng.integers(2, 13))
+        return {
+            'icon_degree': degree,
+            'icon_lambda': float(rng.uniform(-3.0, 3.0)),
+            'icon_alpha': float(rng.uniform(-3.0, 3.0)),
+            'icon_beta': float(rng.uniform(-3.0, 3.0)),
+            'icon_gamma': float(rng.uniform(-1.0, 1.0)),
+            'icon_omega': float(rng.uniform(-1.0, 1.0)),
+        }
+
+    elif var_idx == Variation.SATTRACTOR:
+        return {
+            'sat_m': float(rng.integers(2, 13)),
+        }
+
+    elif var_idx == Variation.WALLPAPER:
+        return {
+            'wallpaper_group': float(rng.integers(0, 17)),
+        }
+
+    elif var_idx == Variation.FRIEZE:
+        return {
+            'frieze_group': float(rng.integers(0, 7)),
+        }
+
     return {}

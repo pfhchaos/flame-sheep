@@ -47,9 +47,14 @@ class Variation:
     CHECKS      = 39
     HEX_MODULUS = 40
     KALEIDOSCOPE= 41
+    # --- symmetry-generating variations ---
+    ICON        = 42
+    SATTRACTOR  = 43
+    WALLPAPER   = 44
+    FRIEZE      = 45
 
 
-NUM_VARIATIONS = 42
+NUM_VARIATIONS = 46
 
 # Variations that require per-transform parameters (var_params dict)
 PARAMETRIC_VARIATIONS = {
@@ -57,11 +62,16 @@ PARAMETRIC_VARIATIONS = {
     Variation.SPLITS, Variation.CURL,
     Variation.RECTANGLES, Variation.CHECKS,
     Variation.HEX_MODULUS, Variation.KALEIDOSCOPE,
+    Variation.ICON, Variation.SATTRACTOR,
+    Variation.WALLPAPER, Variation.FRIEZE,
 }
 
-# GPU var_params layout: 16 floats per transform
+# GPU var_params layout: 32 floats per transform
 # [0] julian_power  [1] julian_dist  [2] splits_x   [3] splits_y
 # [4] curl_c1       [5] curl_c2      [6] rect_x     [7] rect_y
 # [8] check_size    [9] check_x      [10] check_y   [11] hex_size
 # [12] kal_pull     [13] kal_rotate  [14] kal_n      [15] reserved
-MAX_VAR_PARAMS = 16
+# [16] icon_degree  [17] icon_lambda [18] icon_alpha [19] icon_beta
+# [20] icon_gamma   [21] icon_omega  [22] sat_m
+# [23] wallpaper_group  [24] frieze_group  [25-31] reserved
+MAX_VAR_PARAMS = 32

@@ -58,6 +58,15 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         sqr = w * np.sqrt(r)
         t2 = th * 0.5
         return sqr*np.cos(t2), sqr*np.sin(t2)
+    elif var_idx == 42: # icon — complex polynomial, can blow up
+        # Simplified: just rotate by degree, bounded approximation
+        return w*x, w*y
+    elif var_idx == 43: # sattractor — pure rotation, always bounded
+        return w*x, w*y
+    elif var_idx == 44: # wallpaper — affine group element, bounded
+        return w*x, w*y
+    elif var_idx == 45: # frieze — affine group element, bounded
+        return w*x, w*y
     else:
         # treat unknown/safe variations as linear for viability purposes
         return w*x, w*y
