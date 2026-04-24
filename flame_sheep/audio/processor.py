@@ -28,6 +28,8 @@ from ._spectrum import SpectrumEngine, SpectrumFrame
 from .beat_detector import FluxBeatDetector
 from .energy import EnergyAnalyzer
 from .source import PipeWireSource, FeedSource
+from .onset_density import OnsetDensityTracker
+from ..tempo import TempoTracker
 from ._bands import (
     AdaptiveBand, make_mask, make_weights, a_weight_curve, A_WEIGHTS,
     ALLOWED_RANGES, DEFAULT_RANGES,
@@ -66,6 +68,8 @@ class AudioProcessor:
         self._spectrum_engine = SpectrumEngine()
         self._detector = FluxBeatDetector(adaptive=adaptive, sharpness=sharpness)
         self._energy = EnergyAnalyzer()
+        self._tempo = TempoTracker()
+        self._density = OnsetDensityTracker()
 
         # Auto-detect: FeedSource is synchronous, everything else is threaded
         self._threaded = not isinstance(self._source, FeedSource)
@@ -80,6 +84,9 @@ class AudioProcessor:
         self._centroid_rms = 0.0
         self._percussiveness = 0.5
         self._band_rms = {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0}
+        self._bpm = 0.0
+        self._onset_density = {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0}
+        self._kick_density_delta = 0.0
         self._pending_events: list[BeatEvent] = []
 
         # Thread state
@@ -89,6 +96,20 @@ class AudioProcessor:
     def reset_bands(self):
         """Reset adaptive bands to defaults. Call on song change."""
         self._detector.reset_bands()
+
+    def song_started(self):
+        """Signal new song — reset tempo + density trackers."""
+        self._tempo.song_started()
+        self._density.reset()
+
+    def hint_tempo(self, bpm: float):
+        """Provide tempo hint from external source."""
+        self._tempo.hint_tempo(bpm)
+
+    def reset_tempo(self):
+        """Reset tempo + density state (e.g., on seek)."""
+        self._tempo.reset()
+        self._density.reset()
 
     def start(self):
         self._source.start()
@@ -122,9 +143,17 @@ class AudioProcessor:
             if hop is None:
                 break  # source stopped
 
+            now = time.perf_counter()
             frame = self._spectrum_engine.push_hop(hop)
             self._energy.update(frame.magnitude, frame.flux)
             events = self._detector.detect(frame)
+
+            # Feed tempo + density trackers
+            for event in events:
+                if event.kind in ('kick', 'snare', 'clap', 'hihat'):
+                    self._tempo.process_onset(event.kind, now)
+                    self._density.process_onset(event.kind, now)
+            self._density.update(now)
 
             with self._lock:
                 self._pending_events.extend(events)
@@ -136,6 +165,9 @@ class AudioProcessor:
                 self._centroid_rms = self._energy.centroid_rms
                 self._percussiveness = self._energy.percussiveness
                 self._band_rms = self._energy.band_rms
+                self._bpm = self._tempo.bpm
+                self._onset_density = self._density.densities
+                self._kick_density_delta = self._density.kick_density_delta
 
     def drain(self) -> AudioSnapshot:
         """Atomically read and clear accumulated audio state.
@@ -155,6 +187,9 @@ class AudioProcessor:
                 centroid_rms=self._centroid_rms,
                 percussiveness=self._percussiveness,
                 band_rms=self._band_rms.copy(),
+                bpm=self._bpm,
+                onset_density=self._onset_density.copy(),
+                kick_density_delta=self._kick_density_delta,
             )
 
         with self._lock:
@@ -168,6 +203,9 @@ class AudioProcessor:
                 centroid_rms=self._centroid_rms,
                 percussiveness=self._percussiveness,
                 band_rms=self._band_rms.copy(),
+                bpm=self._bpm,
+                onset_density=self._onset_density.copy(),
+                kick_density_delta=self._kick_density_delta,
             )
             self._pending_events = []
             return snap
@@ -267,6 +305,18 @@ class SyntheticAudioProcessor:
 
     def stop(self):
         pass  # nothing to close
+
+    def reset_bands(self):
+        pass
+
+    def song_started(self):
+        pass
+
+    def hint_tempo(self, bpm: float):
+        pass
+
+    def reset_tempo(self):
+        pass
 
     def process(self) -> list[BeatEvent]:
         if self._start_time is None:

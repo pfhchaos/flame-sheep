@@ -30,7 +30,6 @@ from .audio.drop_detector import DropDetector
 from .audio.bass_drop_detector import BassDropDetector
 from .renderer import FlameRenderer, Viewport
 from .control import ControlPipe, ControlEvent
-from .tempo import TempoTracker
 from .axes.zoom_axis import ZoomAxis
 from .axes.brightness_axis import BrightnessAxis
 from .axes.detail_axis import DetailAxis
@@ -75,8 +74,7 @@ class FlameSheepCore:
         self._brightness_axis = BrightnessAxis()
         self._detail_axis = DetailAxis()
         self._drift_mode = DriftMode(genome_factory=factory, lib=lib, rng=self.rng)
-        # Tempo tracking + drop detection
-        self.tempo = TempoTracker()
+        # Drop detection
         self._drop_detector = DropDetector()
         self._bass_drop_detector = BassDropDetector()
         self._pending_song_start = False
@@ -109,36 +107,33 @@ class FlameSheepCore:
         snap = self.audio.drain()
         now  = self._clock()
 
-        # Filter events through tempo gating
-        filtered_events = self._handle_beats(snap.events)
-
         # Inject song_start event if pending
+        events = list(snap.events)
         if self._pending_song_start:
-            filtered_events.insert(0, BeatEvent(kind='song_start', energy=0.0))
+            events.insert(0, BeatEvent(kind='song_start', energy=0.0))
             self._pending_song_start = False
 
-        # Run drop detectors — either may inject a 'drop' event
-        drop = self._drop_detector.detect(
-            filtered_events, snap.centroid_rms,
-            self.tempo.bpm, self._drift_mode.active, frame_time)
-        if drop is not None:
-            filtered_events.append(drop)
-        else:
-            bass_drop = self._bass_drop_detector.detect(
-                filtered_events, snap.rms,
-                self.tempo.bpm, self._drift_mode.active, frame_time)
-            if bass_drop is not None:
-                filtered_events.append(bass_drop)
+        # Run break detectors — update breaking state
+        self._drop_detector.detect(
+            events, snap.centroid_rms,
+            snap.bpm, self._drift_mode.active, frame_time)
+        self._bass_drop_detector.detect(
+            events, snap.rms,
+            snap.bpm, self._drift_mode.active, frame_time)
 
         # Build AudioState for axes
         audio = AudioState(
-            events=filtered_events,
+            events=events,
             rms=snap.rms,
             percussiveness=snap.percussiveness,
             centroid=snap.centroid,
             centroid_delta=snap.centroid_delta,
             centroid_rms=snap.centroid_rms,
-            bpm=self.tempo.bpm,
+            bpm=snap.bpm,
+            breaking=(self._drop_detector.breaking
+                      or self._bass_drop_detector.breaking),
+            onset_density=snap.onset_density,
+            kick_density_delta=snap.kick_density_delta,
         )
 
         # --- Mode transitions ---
@@ -258,29 +253,20 @@ class FlameSheepCore:
         self._genome_axis.next_loop()
 
     def song_started(self):
-        """Signal new song started — resets tempo, bands, drop detector.
+        """Signal new song started — resets tempo, bands, drop detectors.
         Injects a song_start event on the next tick via _pending_song_start.
         """
-        self.tempo.song_started()
+        self.audio.song_started()
         self.audio.reset_bands()
         self._drop_detector.reset()
         self._bass_drop_detector.reset()
         self._pending_song_start = True
         log.info('[song] reset tempo, bands, drop detectors')
-        
+
     def hint_tempo(self, bpm: float):
         """Provide tempo hint from external source."""
-        self.tempo.hint_tempo(bpm)
+        self.audio.hint_tempo(bpm)
         log.info(f'[tempo] hint: {bpm:.1f} BPM')
-
-    def _handle_beats(self, events: list[BeatEvent]) -> list[BeatEvent]:
-        """Feed events to tempo tracker and return them for axes.
-        All events pass through — no gating."""
-        now = self._clock()
-        for event in events:
-            if event.kind in ('kick', 'snare', 'clap', 'hihat'):
-                self.tempo.process_onset(event.kind, now)
-        return events
 
 
 
@@ -641,7 +627,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                     except ValueError:
                         log.info(f'[ctl] invalid tempo: {event.args[0]}')
             elif event.command == 'seek':
-                core.tempo.reset()
+                core.audio.reset_tempo()
                 core._drop_detector.reset()
                 core._bass_drop_detector.reset()
                 log.info('[ctl] seek — reset tempo + drop state')

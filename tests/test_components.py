@@ -14,6 +14,7 @@ from flame_sheep.audio._types import BeatEvent, AudioState
 from flame_sheep.audio.beat_detector import FluxBeatDetector
 from flame_sheep.audio.drop_detector import DropDetector
 from flame_sheep.audio.bass_drop_detector import BassDropDetector
+from flame_sheep.audio.onset_density import OnsetDensityTracker
 from flame_sheep.audio.energy import EnergyAnalyzer
 from flame_sheep.axes.zoom_axis import ZoomAxis
 from flame_sheep.axes.brightness_axis import BrightnessAxis
@@ -590,102 +591,166 @@ class TestEnergyAnalyzerContinuous:
 
 
 # -------------------------------------------------------------------
+# OnsetDensityTracker
+# -------------------------------------------------------------------
+
+class TestOnsetDensityTracker:
+
+    def test_density_increases_with_kicks(self):
+        dt = OnsetDensityTracker()
+        # Steady kicks at ~10/s, update each hop (~10ms) to let EMA converge
+        for i in range(100):
+            t = i * 0.01
+            if i % 10 == 0:
+                dt.process_onset('kick', t)
+            dt.update(t)
+        assert dt.densities['kick'] > 5.0
+
+    def test_density_decays_without_kicks(self):
+        dt = OnsetDensityTracker()
+        # Build up density
+        for i in range(100):
+            t = i * 0.01
+            if i % 10 == 0:
+                dt.process_onset('kick', t)
+            dt.update(t)
+        high = dt.densities['kick']
+        # No more kicks, keep updating
+        for i in range(200):
+            dt.update(1.0 + i * 0.01)
+        assert dt.densities['kick'] < high * 0.5
+
+    def test_per_band_independence(self):
+        dt = OnsetDensityTracker()
+        for i in range(10):
+            dt.process_onset('kick', i * 0.1)
+        for i in range(5):
+            dt.process_onset('hihat', i * 0.05)
+        dt.update(1.0)
+        assert dt.densities['kick'] > 0
+        assert dt.densities['hihat'] > 0
+        assert dt.densities['snare'] == 0.0
+
+    def test_delta_positive_during_accelerando(self):
+        dt = OnsetDensityTracker()
+        # Slow kicks for 2 seconds
+        for i in range(4):
+            dt.process_onset('kick', i * 0.5)
+        dt.update(2.0)
+        # Fast kicks for next second
+        for i in range(10):
+            dt.process_onset('kick', 2.0 + i * 0.1)
+        dt.update(3.0)
+        assert dt.kick_density_delta > 0
+
+    def test_delta_near_zero_at_steady_rate(self):
+        dt = OnsetDensityTracker()
+        # Steady 4 kicks/second for 5 seconds (let EMA converge)
+        for i in range(500):
+            t = i * 0.01
+            if i % 25 == 0:  # every 250ms = 4/s
+                dt.process_onset('kick', t)
+            dt.update(t)
+        assert abs(dt.kick_density_delta) < 1.0
+
+    def test_reset_clears_state(self):
+        dt = OnsetDensityTracker()
+        for i in range(10):
+            dt.process_onset('kick', i * 0.1)
+        dt.update(1.0)
+        assert dt.densities['kick'] > 0
+        dt.reset()
+        assert dt.densities['kick'] == 0.0
+        assert dt.kick_density_delta == 0.0
+
+
+# -------------------------------------------------------------------
 # DropDetector
 # -------------------------------------------------------------------
 
 class TestDropDetector:
 
-    def test_no_drop_during_warmup(self):
+    def test_no_break_during_warmup(self):
         dd = DropDetector()
-        kick = [BeatEvent('kick', 1.0)]
-        # Even with quiet frames, warmup blocks detection
+        # Quiet frames during warmup shouldn't activate breaking
         for _ in range(200):
             dd.detect([], 0.0, 120.0, False, 1/60)
-        result = dd.detect(kick, 0.0, 120.0, False, 1/60)
-        assert result is None  # still in warmup (300 frames)
+        assert not dd.breaking
 
-    def test_no_drop_on_first_kicks(self):
+    def test_no_break_on_first_kicks(self):
         dd = DropDetector()
-        dd._warmup_frames = 999  # skip warmup
+        dd._warmup_frames = 999
         kick = [BeatEvent('kick', 1.0)]
-        # Only a few kicks — below MIN_KICKS_BEFORE_DROP (8)
+        # Only a few kicks — below MIN_KICKS_BEFORE_DROP
         for _ in range(5):
             dd.detect(kick, 1.0, 120.0, False, 1/60)
-        # Go quiet
-        for _ in range(150):
+        for _ in range(80):
             dd.detect([], 0.0, 120.0, False, 1/60)
-        # Kick after quiet — but only 6 total kicks, below threshold
-        result = dd.detect(kick, 0.5, 120.0, False, 1/60)
-        assert result is None
+        assert not dd.breaking
 
-    def test_drop_fires_after_quiet(self):
+    def test_break_activates_after_quiet(self):
         dd = DropDetector()
         dd._warmup_frames = 999
         kick = [BeatEvent('kick', 1.0)]
-        # Build up history
         for _ in range(20):
             dd.detect(kick, 1.0, 120.0, False, 1/60)
-        # Go quiet
-        for _ in range(150):
+        for _ in range(80):
             dd.detect([], 0.0, 120.0, False, 1/60)
-        # Kick after quiet
-        result = dd.detect(kick, 0.5, 120.0, False, 1/60)
-        assert result is not None
-        assert result.kind == 'drop'
+        assert dd.breaking
 
-    def test_drop_cooldown(self):
+    def test_break_ends_on_kick(self):
         dd = DropDetector()
         dd._warmup_frames = 999
         kick = [BeatEvent('kick', 1.0)]
-        # First drop
         for _ in range(20):
             dd.detect(kick, 1.0, 120.0, False, 1/60)
-        for _ in range(150):
+        for _ in range(80):
             dd.detect([], 0.0, 120.0, False, 1/60)
-        result1 = dd.detect(kick, 0.5, 120.0, False, 1/60)
-        assert result1 is not None
+        assert dd.breaking
+        dd.detect(kick, 0.5, 120.0, False, 1/60)
+        assert not dd.breaking
+
+    def test_break_cooldown(self):
+        dd = DropDetector()
+        dd._warmup_frames = 999
+        kick = [BeatEvent('kick', 1.0)]
+        # First break
+        for _ in range(20):
+            dd.detect(kick, 1.0, 120.0, False, 1/60)
+        for _ in range(80):
+            dd.detect([], 0.0, 120.0, False, 1/60)
+        assert dd.breaking
+        # End it
+        dd.detect(kick, 0.5, 120.0, False, 1/60)
+        assert not dd.breaking
         # Second attempt — should be blocked by cooldown
-        for _ in range(20):
+        for _ in range(10):
             dd.detect(kick, 1.0, 120.0, False, 1/60)
-        for _ in range(150):
+        for _ in range(80):
             dd.detect([], 0.0, 120.0, False, 1/60)
-        result2 = dd.detect(kick, 0.5, 120.0, False, 1/60)
-        assert result2 is None  # cooldown active
+        assert not dd.breaking  # cooldown active
 
-    def test_no_drop_during_drift(self):
+    def test_no_break_during_drift(self):
         dd = DropDetector()
         dd._warmup_frames = 999
         kick = [BeatEvent('kick', 1.0)]
         for _ in range(20):
             dd.detect(kick, 1.0, 120.0, False, 1/60)
-        for _ in range(150):
-            dd.detect([], 0.0, 120.0, False, 1/60)
-        # drifting=True should block
-        result = dd.detect(kick, 0.5, 120.0, True, 1/60)
-        assert result is None
+        for _ in range(80):
+            dd.detect([], 0.0, 120.0, True, 1/60)
+        assert not dd.breaking
 
     def test_reset_clears_state(self):
         dd = DropDetector()
         dd._warmup_frames = 999
         dd._total_kicks = 100
         dd._quiet_frames = 200
+        dd.breaking = True
         dd.reset()
         assert dd._total_kicks == 0
         assert dd._quiet_frames == 0
         assert dd._cooldown == 0.0
-
-    def test_freeze_duration_uses_bpm(self):
-        dd = DropDetector()
-        dd._warmup_frames = 999
-        kick = [BeatEvent('kick', 1.0)]
-        for _ in range(20):
-            dd.detect(kick, 1.0, 120.0, False, 1/60)
-        for _ in range(150):
-            dd.detect([], 0.0, 120.0, False, 1/60)
-        result = dd.detect(kick, 0.5, 120.0, False, 1/60)
-        assert result is not None
-        # At 120 BPM: bar = 4 * 0.5s = 2s, 2 bars = 4s
-        assert 3.5 < result.energy < 4.5
+        assert not dd.breaking
 
 
 # -------------------------------------------------------------------
@@ -694,74 +759,61 @@ class TestDropDetector:
 
 class TestBassDropDetector:
 
-    def test_bass_drop_fires_when_subbass_quiet(self):
-        """Sub-bass dropout + kick return → drop event."""
+    def test_bass_break_activates_when_subbass_quiet(self):
+        """Sub-bass dropout should activate breaking."""
         dd = BassDropDetector()
         dd._warmup_frames = 999
         kick = [BeatEvent('kick', 1.0)]
-        # Build history with sub-bass energy present
         for _ in range(20):
             dd.detect(kick, 0.5, 120.0, False, 1/60)
-        # Sub-bass goes quiet (but imagine vocals are still going)
-        for _ in range(100):
+        for _ in range(60):
             dd.detect([], 0.0, 120.0, False, 1/60)
-        # Kick returns
-        result = dd.detect(kick, 0.5, 120.0, False, 1/60)
-        assert result is not None
-        assert result.kind == 'drop'
+        assert dd.breaking
 
-    def test_no_drop_when_subbass_present(self):
-        """If sub-bass stays loud, no drop."""
+    def test_no_break_when_subbass_present(self):
+        """If sub-bass stays loud, no break."""
         dd = BassDropDetector()
         dd._warmup_frames = 999
         kick = [BeatEvent('kick', 1.0)]
         for _ in range(20):
             dd.detect(kick, 0.5, 120.0, False, 1/60)
-        # No kicks but sub-bass is still present
-        for _ in range(100):
+        for _ in range(60):
             dd.detect([], 0.3, 120.0, False, 1/60)
-        result = dd.detect(kick, 0.5, 120.0, False, 1/60)
-        assert result is None
+        assert not dd.breaking
 
-    def test_no_bass_drop_during_drift(self):
+    def test_bass_break_ends_on_kick(self):
         dd = BassDropDetector()
         dd._warmup_frames = 999
         kick = [BeatEvent('kick', 1.0)]
         for _ in range(20):
             dd.detect(kick, 0.5, 120.0, False, 1/60)
-        for _ in range(100):
+        for _ in range(60):
             dd.detect([], 0.0, 120.0, False, 1/60)
-        result = dd.detect(kick, 0.5, 120.0, True, 1/60)
-        assert result is None
+        assert dd.breaking
+        dd.detect(kick, 0.5, 120.0, False, 1/60)
+        assert not dd.breaking
 
-    def test_bass_drop_cooldown(self):
+    def test_no_bass_break_during_drift(self):
         dd = BassDropDetector()
         dd._warmup_frames = 999
         kick = [BeatEvent('kick', 1.0)]
-        # First drop
         for _ in range(20):
             dd.detect(kick, 0.5, 120.0, False, 1/60)
-        for _ in range(100):
-            dd.detect([], 0.0, 120.0, False, 1/60)
-        result1 = dd.detect(kick, 0.5, 120.0, False, 1/60)
-        assert result1 is not None
-        # Second attempt — cooldown
-        for _ in range(20):
-            dd.detect(kick, 0.5, 120.0, False, 1/60)
-        for _ in range(100):
-            dd.detect([], 0.0, 120.0, False, 1/60)
-        result2 = dd.detect(kick, 0.5, 120.0, False, 1/60)
-        assert result2 is None
+        for _ in range(60):
+            dd.detect([], 0.0, 120.0, True, 1/60)
+        assert not dd.breaking
 
     def test_reset_clears_state(self):
         dd = BassDropDetector()
         dd._warmup_frames = 999
         dd._total_kicks = 100
         dd._quiet_frames = 200
+        dd.breaking = True
         dd.reset()
         assert dd._total_kicks == 0
         assert dd._quiet_frames == 0
         assert dd._cooldown == 0.0
+        assert not dd.breaking
 
 
 # -------------------------------------------------------------------
@@ -781,16 +833,49 @@ class TestGenomeAxisEvents:
         # Should not raise
         axis.tick(audio, 1/60, 0.0)
 
-    def test_drop_freezes_morph(self):
+    def test_break_damps_morph(self):
         axis = self._make_axis()
-        # Fire a drop with 1s freeze
-        audio = AudioState(events=[BeatEvent('drop', 1.0)])
-        axis.tick(audio, 1/60, 0.0)
-        assert axis._drop_freeze_remaining > 0
-        # During freeze, morph shouldn't advance
-        mt_before = axis.morph_t
-        axis.tick(AudioState(), 1/60, 1.0)
-        assert axis.morph_t == mt_before
+        axis.morph_speed = 0.1
+        # Normal tick — morph advances
+        axis.tick(AudioState(), 1/60, 0.0)
+        mt_normal = axis.morph_t
+        assert mt_normal > 0
+
+        # Reset and apply break for many frames
+        axis.morph_t = 0.0
+        axis._break_damping = 1.0
+        for i in range(60):
+            axis.tick(AudioState(breaking=True), 1/60, float(i))
+        mt_breaking = axis.morph_t
+        # Should advance much less than 60 normal frames would
+        axis2 = self._make_axis()
+        axis2.morph_speed = 0.1
+        for i in range(60):
+            axis2.tick(AudioState(), 1/60, float(i))
+        assert mt_breaking < axis2.morph_t * 0.5, \
+            "Break should slow morph to less than half normal speed"
+
+    def test_brief_break_minimal_effect(self):
+        """A 10-frame false positive should barely affect morph."""
+        axis = self._make_axis()
+        axis.morph_speed = 0.1
+        # 10 frames of break
+        for i in range(10):
+            axis.tick(AudioState(breaking=True), 1/60, float(i))
+        damping_after_brief = axis._break_damping
+        # 0.97^10 ≈ 0.74 — still close to 1.0
+        assert damping_after_brief > 0.7
+
+    def test_damping_recovers_after_break(self):
+        axis = self._make_axis()
+        # Deep break
+        for i in range(60):
+            axis.tick(AudioState(breaking=True), 1/60, float(i))
+        assert axis._break_damping < 0.2
+        # Recovery
+        for i in range(60):
+            axis.tick(AudioState(breaking=False), 1/60, float(60 + i))
+        assert axis._break_damping > 0.8
 
     def test_song_start_resets(self):
         axis = self._make_axis()

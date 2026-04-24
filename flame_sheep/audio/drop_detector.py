@@ -1,14 +1,16 @@
-"""Drop detector — detects silence-to-onset transitions (drops/breaks).
+"""Break detector — detects sustained quiet (energy dropout).
 
-A "drop" is a dramatic onset after sustained quiet — the moment in a song
-where everything comes back in after a break. Emits BeatEvent(kind='drop').
+A "break" is a sustained period where energy drops well below average —
+the moment in a song where the beat drops out. Unlike the old drop detector
+which fired on kick return, this exposes a continuous `breaking` state
+that drives exponential morph slowdown in the visual axes.
 
 Detection requires:
-  - No kicks for QUIET_THRESHOLD_FRAMES
   - Energy (centroid_rms) below DROP_ENERGY_RATIO × running average
+  - Sustained for QUIET_THRESHOLD_FRAMES
   - At least MIN_KICKS_BEFORE_DROP kicks have occurred (not song start)
   - Not in drift mode (sustained silence with no music)
-  - Cooldown period between drops
+  - Cooldown period after a break ends
 """
 
 import logging
@@ -19,18 +21,15 @@ log = logging.getLogger(__name__)
 
 
 class DropDetector:
-    """Detect drops from beat events + energy features.
+    """Detect breaks from energy features.
 
-    Call detect() each frame with the current events and energy state.
-    Returns a BeatEvent(kind='drop') if a drop is detected.
+    Call tick() each frame. Read .breaking to check if a break is active.
     """
 
-    QUIET_THRESHOLD_FRAMES = 120   # ~2s of quiet before a drop can fire
+    QUIET_THRESHOLD_FRAMES = 60    # ~1s of quiet before break activates
     MIN_KICKS_BEFORE_DROP  = 8     # ignore song start
-    DROP_COOLDOWN          = 15.0  # seconds between drops
+    BREAK_COOLDOWN         = 15.0  # seconds after a break ends before next
     DROP_ENERGY_RATIO      = 0.15  # centroid_rms must drop below this × average
-    DROP_FREEZE_BARS       = 2     # how many bars the drop "lasts" (for consumers)
-    DROP_FREEZE_FALLBACK   = 2.0   # seconds, used when BPM is unknown
 
     def __init__(self):
         self._quiet_frames = 0
@@ -38,6 +37,7 @@ class DropDetector:
         self._cooldown = 0.0
         self._centroid_rms_avg = 0.0
         self._warmup_frames = 0
+        self.breaking = False
 
     def reset(self):
         """Reset state — call on song change."""
@@ -45,31 +45,28 @@ class DropDetector:
         self._total_kicks = 0
         self._cooldown = 0.0
         self._centroid_rms_avg = 0.0
+        self.breaking = False
 
     def detect(self, events: list[BeatEvent], centroid_rms: float,
-               bpm: float, drifting: bool, dt: float) -> BeatEvent | None:
-        """Check for a drop. Returns BeatEvent(kind='drop') or None.
+               bpm: float, drifting: bool, dt: float) -> None:
+        """Update break state. Read .breaking for current state.
 
         Args:
             events: beat events this frame (checks for kicks)
             centroid_rms: current energy around spectral centroid
             bpm: current tempo estimate (0 if unknown)
-            drifting: True if drift axis is active (no music)
+            drifting: True if drift mode is active (no music)
             dt: frame time delta
         """
-        # Track centroid RMS average (needs warmup before meaningful)
         self._centroid_rms_avg = 0.97 * self._centroid_rms_avg + 0.03 * centroid_rms
         self._warmup_frames += 1
 
-        # Tick cooldown
         if self._cooldown > 0:
             self._cooldown -= dt
 
-        # Need ~5s of audio history before drop detection is reliable
         if self._warmup_frames < 300:
-            return None
+            return
 
-        # Is it quiet? No kicks AND energy well below average
         is_quiet = (centroid_rms < self._centroid_rms_avg * self.DROP_ENERGY_RATIO
                     and self._centroid_rms_avg > 1e-6)
 
@@ -77,34 +74,27 @@ class DropDetector:
 
         if has_kick:
             self._total_kicks += 1
-
-            # Check for drop
-            if (self._quiet_frames >= self.QUIET_THRESHOLD_FRAMES
-                    and self._total_kicks > self.MIN_KICKS_BEFORE_DROP
-                    and self._cooldown <= 0
-                    and not drifting):
-                # Compute freeze duration from tempo
-                if bpm > 0:
-                    bar_duration = 4 * 60.0 / bpm
-                    freeze = bar_duration * self.DROP_FREEZE_BARS
-                else:
-                    freeze = self.DROP_FREEZE_FALLBACK
-
-                self._cooldown = self.DROP_COOLDOWN
-                quiet = self._quiet_frames
-                self._quiet_frames = 0
-
-                log.info(f'[DROP] after {quiet} quiet frames — '
-                         f'freeze {freeze:.1f}s'
-                         + (f' ({self.DROP_FREEZE_BARS} bars @ {bpm:.0f} BPM)'
-                            if bpm > 0 else ' (no tempo)'))
-
-                return BeatEvent(kind='drop', energy=freeze)
-
+            # Break ends on kick return
+            if self.breaking:
+                log.info(f'[BREAK END] after {self._quiet_frames} quiet frames')
+                self._cooldown = self.BREAK_COOLDOWN
+                self.breaking = False
             self._quiet_frames = 0
         elif is_quiet:
             self._quiet_frames += 1
         else:
+            # Energy recovered without a kick — break ends
+            if self.breaking:
+                self._cooldown = self.BREAK_COOLDOWN
+                self.breaking = False
             self._quiet_frames = 0
 
-        return None
+        # Activate break when quiet long enough
+        if (not self.breaking
+                and self._quiet_frames >= self.QUIET_THRESHOLD_FRAMES
+                and self._total_kicks > self.MIN_KICKS_BEFORE_DROP
+                and self._cooldown <= 0
+                and not drifting):
+            self.breaking = True
+            log.info(f'[BREAK] centroid_rms={centroid_rms:.4f} '
+                     f'avg={self._centroid_rms_avg:.4f}')

@@ -35,6 +35,7 @@ class GenomeAxis:
     KICK_SWAP_EVERY     = 4
     KICK_MORPH_PULSE    = 0.03
     LOOP_HISTORY_SIZE   = 8
+    BREAK_DECAY         = 0.97   # damping per frame during break (~half speed in 0.4s)
 
     # Centroid delta threshold for triggering a swap in low-percussiveness mode
     CENTROID_SWAP_THRESHOLD = 200.0
@@ -73,7 +74,7 @@ class GenomeAxis:
 
         # Timing
         self._last_kick_time = 0.0
-        self._drop_freeze_remaining = 0.0
+        self._break_damping = 1.0
 
         if lib is not None and lib.loop_count() > 0:
             self._load_top_loop()
@@ -85,16 +86,13 @@ class GenomeAxis:
         for event in audio.events:
             if event.kind == 'kick':
                 self._handle_kick(event, clock)
-            elif event.kind == 'drop':
-                self._handle_drop(event)
             elif event.kind == 'song_start':
                 self._handle_song_start()
 
         # In low-percussiveness mode, a large centroid shift triggers a swap
         if (audio.percussiveness < 0.3
                 and audio.centroid_delta > self.CENTROID_SWAP_THRESHOLD
-                and self.morph_t > 0.3
-                and self._drop_freeze_remaining <= 0):
+                and self.morph_t > 0.3):
             self.current_genome = self.current_genome.lerp(
                 self.target_genome, self.morph_t)
             self._swap_next_genome()
@@ -103,16 +101,18 @@ class GenomeAxis:
             log.debug(f'[centroid swap] delta={audio.centroid_delta:.0f}Hz '
                       f'perc={audio.percussiveness:.2f}')
 
-        # Drop freeze: hold the genome, don't morph
-        if self._drop_freeze_remaining > 0:
-            self._drop_freeze_remaining -= dt
-            return  # brightness/zoom still respond
+        # Break damping: exponential slowdown during breaks, symmetric recovery
+        if audio.breaking:
+            self._break_damping *= self.BREAK_DECAY
+        else:
+            self._break_damping = min(1.0, self._break_damping / self.BREAK_DECAY)
 
-        # Scale morph speed by percussiveness
+        # Scale morph speed by percussiveness and break damping
         perc_scale = 0.2 + 0.8 * min(1.0, audio.percussiveness / 0.5)
 
         # Advance morph
-        self.morph_t = min(1.0, self.morph_t + self.morph_speed * perc_scale)
+        self.morph_t = min(1.0,
+            self.morph_t + self.morph_speed * perc_scale * self._break_damping)
 
         if self.morph_t >= 1.0:
             self.score_ready    = True
@@ -159,21 +159,11 @@ class GenomeAxis:
             log.debug(f'[kick]  +{since:.3f}s  energy={event.energy:.2f}  '
                   f'beat={self._kick_count}/{self.KICK_SWAP_EVERY}')
 
-    def _handle_drop(self, event: BeatEvent):
-        """Drop event: force swap + freeze. energy field = freeze duration."""
-        self.current_genome = self.current_genome.lerp(
-            self.target_genome, self.morph_t)
-        self._swap_next_genome()
-        self.morph_t = 0.0
-        self._drop_freeze_remaining = event.energy  # encoded as freeze seconds
-        self.needs_walker_reset = True
-        log.info(f'[DROP] freeze {event.energy:.1f}s')
-
     def _handle_song_start(self):
         """Reset state for new song — swap loop + reset counters."""
         self._kick_count = 0
         self._last_kick_time = 0.0
-        self._drop_freeze_remaining = 0.0
+        self._break_damping = 1.0
         # New song, new loop
         if self._lib is not None and self._lib.loop_count() > 1:
             self.next_loop()
@@ -186,7 +176,7 @@ class GenomeAxis:
         self.morph_t = 0.0
         self.morph_speed = self.DRIFT_MORPH_SPEED
         self._kick_count = 0
-        self._drop_freeze_remaining = 0.0
+        self._break_damping = 1.0
         if loop_id is not None and loop_id != self.active_loop_id:
             self.load_loop(loop_id)
         self._prefetch_genome()

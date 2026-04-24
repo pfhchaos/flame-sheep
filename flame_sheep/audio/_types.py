@@ -12,7 +12,7 @@ class BeatEvent:
     Axes should ignore event kinds they don't recognize — new kinds
     can be added without updating every consumer.
     """
-    kind: str       # 'kick' | 'snare' | 'clap' | 'hihat' | 'drop' | 'song_start'
+    kind: str       # 'kick' | 'snare' | 'clap' | 'hihat' | 'song_start'
     energy: float   # normalized 0..1, how strong the onset was
 
 
@@ -30,6 +30,9 @@ class AudioState:
     centroid_delta: float = 0.0
     centroid_rms: float = 0.0
     bpm: float = 0.0
+    breaking: bool = False
+    onset_density: dict = field(default_factory=lambda: {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0})
+    kick_density_delta: float = 0.0
 
 
 @dataclass
@@ -48,3 +51,6 @@ class AudioSnapshot:
     centroid_rms: float = 0.0
     percussiveness: float = 0.5
     band_rms: dict = field(default_factory=lambda: {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0})
+    bpm: float = 0.0
+    onset_density: dict = field(default_factory=lambda: {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0})
+    kick_density_delta: float = 0.0
