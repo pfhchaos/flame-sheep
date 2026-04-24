@@ -285,17 +285,35 @@ class TestGenomeAxisUnit:
         axis.tick(AudioState(rms=0.0), 1/60, 0.0)
         assert axis.morph_t > 0.0
 
-    def test_kick_increments_counter(self):
+    def test_strong_beat_triggers_swap(self):
         axis = self._make_axis()
-        axis.tick(AudioState(events=[BeatEvent('kick', 0.5)], rms=0.0), 1/60, 1.0)
-        assert axis._kick_count == 1
+        # Build up low energy average with quiet kicks
+        for i in range(10):
+            axis.tick(AudioState(events=[BeatEvent('kick', 0.2)]), 1/60, float(i))
+        initial_target = id(axis.target_genome)
+        # One loud kick should trigger a swap
+        axis.tick(AudioState(events=[BeatEvent('kick', 1.0)]), 1/60, 20.0)
+        assert id(axis.target_genome) != initial_target
 
-    def test_four_kicks_trigger_swap(self):
+    def test_even_kicks_no_swap(self):
+        """All kicks at same energy should not trigger swaps."""
         axis = self._make_axis()
         initial_target = id(axis.target_genome)
-        for i in range(4):
-            axis.tick(AudioState(events=[BeatEvent('kick', 0.5)], rms=0.0), 1/60, float(i))
-        assert id(axis.target_genome) != initial_target
+        # 10 kicks all at same energy
+        for i in range(10):
+            axis.tick(AudioState(events=[BeatEvent('kick', 0.5)]), 1/60, float(i))
+        # No swap — energy never exceeds threshold
+        assert id(axis.target_genome) == initial_target
+
+    def test_density_drives_morph_speed(self):
+        axis = self._make_axis()
+        # Low density → slow baseline
+        axis.tick(AudioState(onset_density={'kick': 1.0, 'snare': 0, 'clap': 0, 'hihat': 0}), 1/60, 0.0)
+        slow_speed = axis.morph_speed
+        # High density → faster baseline
+        axis.tick(AudioState(onset_density={'kick': 5.0, 'snare': 0, 'clap': 0, 'hihat': 0}), 1/60, 1.0)
+        fast_speed = axis.morph_speed
+        assert fast_speed > slow_speed
 
     def test_force_swap(self):
         axis = self._make_axis()
@@ -882,10 +900,9 @@ class TestGenomeAxisEvents:
         # Build some state
         for i in range(10):
             axis.tick(AudioState(events=[BeatEvent('kick', 0.5)]), 1/60, float(i))
-        assert axis._kick_count > 0
-        # Song start should reset
+        # Song start should reset energy tracking
         axis.tick(AudioState(events=[BeatEvent('song_start', 0.0)]), 1/60, 20.0)
-        assert axis._kick_count == 0
+        assert axis._recent_kick_energy == 0.5
 
     def test_low_percussiveness_slows_morph(self):
         axis = self._make_axis()

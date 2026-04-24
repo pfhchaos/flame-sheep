@@ -32,10 +32,11 @@ class GenomeAxis:
 
     MIN_GENOME_DISTANCE = 0.15
     DRIFT_MORPH_SPEED   = 0.003
-    KICK_SWAP_EVERY     = 4
     KICK_MORPH_PULSE    = 0.03
     LOOP_HISTORY_SIZE   = 8
     BREAK_DECAY         = 0.97   # damping per frame during break (~half speed in 0.4s)
+    DENSITY_MORPH_SCALE = 0.015  # morph_speed baseline += kick_density * this
+    STRONG_BEAT_THRESHOLD = 1.5  # swap when energy > recent_avg * this
 
     # Centroid delta threshold for triggering a swap in low-percussiveness mode
     CENTROID_SWAP_THRESHOLD = 200.0
@@ -59,8 +60,7 @@ class GenomeAxis:
         # Symmetry scoring: set when a morph completes naturally
         self.score_ready = False
 
-        # Kick counting
-        self._kick_count = 0
+        # Kick energy tracking (for strong beat detection)
         self._recent_kick_energy = 0.5
 
         # Loop playback
@@ -121,8 +121,10 @@ class GenomeAxis:
             self._swap_next_genome()
             self.morph_speed    = self.DRIFT_MORPH_SPEED
 
-        # Decay morph speed toward drift
-        self.morph_speed = max(self.DRIFT_MORPH_SPEED, self.morph_speed * 0.98)
+        # Decay morph speed toward density-driven baseline
+        density_speed = (self.DRIFT_MORPH_SPEED
+                         + audio.onset_density.get('kick', 0) * self.DENSITY_MORPH_SCALE)
+        self.morph_speed = max(density_speed, self.morph_speed * 0.98)
 
     def contribute(self, frame) -> None:
         frame.genome = self.current_genome.lerp(self.target_genome, self.morph_t)
@@ -136,33 +138,25 @@ class GenomeAxis:
         self._recent_kick_energy = (
             self._recent_kick_energy * 0.8 + event.energy * 0.2)
 
-        if (event.energy > self._recent_kick_energy * 1.5
-                and self._kick_count > 1):
-            self._kick_count = 0
-
-        self._kick_count += 1
-        if self._kick_count >= self.KICK_SWAP_EVERY:
-            self._kick_count = 0
+        # Strong beat → swap direction (downbeat detection)
+        if event.energy > self._recent_kick_energy * self.STRONG_BEAT_THRESHOLD:
             self.current_genome = self.current_genome.lerp(
                 self.target_genome, self.morph_t)
             self._swap_next_genome()
             self.morph_t = 0.0
-            kick_period = since if 0 < since < 2.0 else 0.5
-            frames_until_swap = (kick_period * self.KICK_SWAP_EVERY * 60) * 0.8
-            self.morph_speed = max(0.01, 1.0 / frames_until_swap)
             dist = self.current_genome.distance(self.target_genome)
             log.debug(f'[SWAP]  +{since:.3f}s  energy={event.energy:.2f}  '
-                  f'dist={dist:.3f}  spd={self.morph_speed:.3f}')
+                      f'avg={self._recent_kick_energy:.2f}  dist={dist:.3f}')
         else:
+            # Normal kick — pulse morph speed
             self.morph_speed = min(0.15,
                 self.morph_speed + event.energy * self.KICK_MORPH_PULSE)
-            log.debug(f'[kick]  +{since:.3f}s  energy={event.energy:.2f}  '
-                  f'beat={self._kick_count}/{self.KICK_SWAP_EVERY}')
+            log.debug(f'[kick]  +{since:.3f}s  energy={event.energy:.2f}')
 
     def _handle_song_start(self):
-        """Reset state for new song — swap loop + reset counters."""
-        self._kick_count = 0
+        """Reset state for new song — swap loop + reset energy tracking."""
         self._last_kick_time = 0.0
+        self._recent_kick_energy = 0.5
         self._break_damping = 1.0
         # New song, new loop
         if self._lib is not None and self._lib.loop_count() > 1:
@@ -175,7 +169,7 @@ class GenomeAxis:
         self.target_genome = genome
         self.morph_t = 0.0
         self.morph_speed = self.DRIFT_MORPH_SPEED
-        self._kick_count = 0
+        self._recent_kick_energy = 0.5
         self._break_damping = 1.0
         if loop_id is not None and loop_id != self.active_loop_id:
             self.load_loop(loop_id)
