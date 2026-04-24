@@ -148,10 +148,10 @@ class FluxBeatDetector:
                         continue
 
                 thresh = self.KICK_THRESHOLD if band == 'kick' else self.THRESHOLD
-                # Scale kick threshold by band stability: stable (harmonic)
+                # Scale threshold by band stability: stable (harmonic)
                 # bands need a larger flux spike to fire
-                if band == 'kick' and self._stability is not None:
-                    stab = self._stability.band_stability(self._bands['kick'])
+                if self._stability is not None:
+                    stab = self._stability.band_stability(self._bands[band])
                     thresh *= (1.0 + stab * self.STABILITY_SCALING)
                 if local_avg < self.MIN_FLUX:
                     events.append(BeatEvent(kind=band, energy=1.0))
