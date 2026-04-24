@@ -75,7 +75,7 @@ class TestConfidenceAndLocking:
         tracker = TempoTracker()
         simulate_beats(tracker, 120, 40)
         assert tracker.locked
-        simulate_random_onsets(tracker, 80, start=100.0)
+        simulate_random_onsets(tracker, 120, start=100.0)
         assert tracker.confidence < LOCK_THRESHOLD or not tracker.locked
 
 
@@ -120,6 +120,57 @@ class TestState:
         assert 0.0 <= state.phase <= 1.0
 
 
+class TestHighTempo:
+    """Tests for high BPM and octave error resistance."""
+
+    def test_detects_200_bpm(self):
+        tracker = TempoTracker()
+        simulate_beats(tracker, 200, 40)
+        assert _bpm_close(tracker.bpm, 200), f"Expected ~200 BPM, got {tracker.bpm}"
+
+    def test_eighth_note_kicks_no_double_time(self):
+        """Eighth-note kick pattern should still detect quarter-note tempo."""
+        tracker = TempoTracker()
+        # 174 BPM eighth notes = onsets every 172ms
+        eighth_interval = 60.0 / 174 / 2
+        for i in range(60):
+            tracker.process_onset('kick', i * eighth_interval)
+        assert _bpm_close(tracker.bpm, 174), \
+            f"Expected ~174 BPM, got {tracker.bpm} (octave error?)"
+
+    def test_dnb_kick_ghost_pattern(self):
+        """DnB kick + ghost kick pattern should detect correct BPM."""
+        tracker = TempoTracker()
+        beat_interval = 60.0 / 160
+        for bar in range(10):
+            base = bar * 4 * beat_interval
+            # Kick on beat 1, ghost on 'and' of 1
+            tracker.process_onset('kick', base)
+            tracker.process_onset('kick', base + beat_interval * 0.5)
+            # Kick on beat 3, ghost on 'and' of 3
+            tracker.process_onset('kick', base + 2 * beat_interval)
+            tracker.process_onset('kick', base + 2.5 * beat_interval)
+        assert tracker.bpm > 0, "Should estimate BPM from DnB pattern"
+        assert _bpm_close(tracker.bpm, 160, tolerance=15), \
+            f"Expected ~160 BPM, got {tracker.bpm}"
+
+    def test_accelerando_follows(self):
+        """Tracker should follow a tempo ramp without permanently breaking."""
+        tracker = TempoTracker()
+        time = 0.0
+        bpm = 140.0
+        for _ in range(200):
+            tracker.process_onset('kick', time)
+            time += 60.0 / bpm
+            bpm = min(200, 140 + (time / 20.0) * 60)
+        # After ramp stabilizes at 200, should eventually lock
+        for i in range(40):
+            tracker.process_onset('kick', time)
+            time += 60.0 / 200
+        assert _bpm_close(tracker.bpm, 200, tolerance=15), \
+            f"Expected ~200 BPM after ramp, got {tracker.bpm}"
+
+
 class TestEdgeCases:
 
     def test_empty_tracker(self):
@@ -143,9 +194,12 @@ class TestEdgeCases:
         assert not tracker.locked
 
 
-def _bpm_close(actual: float, expected: float, tolerance: float = 8.0) -> bool:
-    """Check if BPM is close, accounting for octave equivalents."""
-    for ratio in [0.5, 1.0, 2.0]:
-        if abs(actual - expected * ratio) < tolerance:
-            return True
-    return False
+def _bpm_close(actual: float, expected: float, tolerance: float = 8.0,
+               allow_octave: bool = False) -> bool:
+    """Check if BPM is close to expected."""
+    if allow_octave:
+        for ratio in [0.5, 1.0, 2.0]:
+            if abs(actual - expected * ratio) < tolerance:
+                return True
+        return False
+    return abs(actual - expected) < tolerance

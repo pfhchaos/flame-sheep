@@ -30,7 +30,6 @@ class AudioState:
     centroid_delta: float = 0.0
     centroid_rms: float = 0.0
     bpm: float = 0.0
-    drifting: bool = False
 
 
 @dataclass

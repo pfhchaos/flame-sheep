@@ -241,7 +241,7 @@ class TestPaletteAxis:
 class TestQuietDrift:
 
     def test_drift_swaps_when_quiet(self):
-        """When audio is silent, genome should still swap via drift."""
+        """When audio is silent, drift mode should produce changing genomes."""
         clock = FakeClock(start=1000.0)
         _seed = iter(range(1000))
         core = FlameSheepCore(test_audio=True, lib=None, clock=clock,
@@ -249,20 +249,20 @@ class TestQuietDrift:
         core.audio._rms = 0.0
 
         dt = 1.0 / 60
-        swaps = 0
-        prev_target = id(core.target_genome)
+        genomes = []
 
         # 20 seconds at 60fps
         for _ in range(60 * 20):
             clock.advance(dt)
-            core.tick(dt)
-            if id(core.target_genome) != prev_target:
-                swaps += 1
-                prev_target = id(core.target_genome)
+            frame = core.tick(dt)
+            genomes.append(frame.genome)
 
         core.stop()
-        assert swaps >= 1, \
-            "Genome should drift-swap when RMS stays below threshold"
+        # Frame genomes should change over time during drift
+        first = genomes[0]
+        changed = any(g.distance(first) > 0.01 for g in genomes[-60:])
+        assert changed, \
+            "Frame genome should change during drift mode"
 
 
 # ----------------------------------------------------------------

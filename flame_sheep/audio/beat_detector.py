@@ -29,6 +29,7 @@ class FluxBeatDetector:
     THRESHOLD = 1.5       # flux must exceed this × local average to fire
     KICK_THRESHOLD = 3.5  # higher threshold for kick (2-bin band has high variance)
     COOLDOWN  = 12    # audio frames between onsets (~128ms at HOP_SIZE=512)
+    KICK_COOLDOWN = 8 # shorter for kick to allow fast patterns (~85ms)
     MIN_FLUX  = 1e-7  # gates out DC/numerical noise
     SHARPNESS = 3.0   # min flux ratio (current vs pre-attack) for snare/hihat
     SHARPNESS_LOOKBACK = FFT_SIZE // HOP_SIZE  # span the full overlap attack ramp
@@ -114,8 +115,9 @@ class FluxBeatDetector:
             recent.append(band_flux)
 
             self._frame_count[band] += 1
+            cd = self.KICK_COOLDOWN if band == 'kick' else self.COOLDOWN
             in_cooldown = (self._frame_count[band]
-                           - self._cooldown_frames[band]) < self.COOLDOWN
+                           - self._cooldown_frames[band]) < cd
 
             if len(hist) >= 10 and band_flux > self.MIN_FLUX and not in_cooldown:
                 local_avg = float(np.mean(hist))

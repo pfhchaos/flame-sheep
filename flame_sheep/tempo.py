@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 # Tempo range
 MIN_BPM = 60
-MAX_BPM = 300
+MAX_BPM = 400
 
 # IOI estimation
 MIN_ONSETS_FOR_ESTIMATE = 8
@@ -167,11 +167,12 @@ class TempoTracker:
 
         best_anchor = recent[-1]
         best_count = 0
+        divisors = [1, 2] if bpm < 180 else [1]
         for candidate in recent:
             count = 0
             for t in recent:
                 elapsed = t - candidate
-                for divisor in [1, 2]:
+                for divisor in divisors:
                     period = self._beat_period / divisor
                     if period < IOI_MIN:
                         continue
@@ -197,9 +198,13 @@ class TempoTracker:
                 ioi = times[j] - times[i]
                 if IOI_MIN <= ioi <= IOI_MAX:
                     iois.append(ioi)
+                # Symmetric octave folding — add both half and double
                 half = ioi / 2
                 if IOI_MIN <= half <= IOI_MAX:
                     iois.append(half)
+                double = ioi * 2
+                if IOI_MIN <= double <= IOI_MAX:
+                    iois.append(double)
 
         if len(iois) < 4:
             return 0.0
@@ -218,6 +223,18 @@ class TempoTracker:
             return 0.0
 
         bpm = 60.0 / peak_ioi
+
+        # Prefer lower octave: if BPM > 200, check for half-BPM peak
+        if bpm > 200:
+            half_ioi = peak_ioi * 2
+            if IOI_MIN <= half_ioi <= IOI_MAX:
+                bin_width = (IOI_MAX - IOI_MIN) / IOI_HIST_BINS
+                half_bin = int((half_ioi - IOI_MIN) / bin_width)
+                half_bin = min(max(half_bin, 2), IOI_HIST_BINS - 3)
+                half_peak = float(max(smoothed[half_bin - 2 : half_bin + 3]))
+                if half_peak > smoothed[peak_bin] * 0.4:
+                    bpm = bpm / 2
+
         if MIN_BPM <= bpm <= MAX_BPM:
             return bpm
         return 0.0
@@ -228,7 +245,10 @@ class TempoTracker:
             return True
 
         elapsed = timestamp - self._last_beat_time
-        for divisor in [1, 2]:
+        # Above 180 BPM, only check primary grid — divisor 2 would
+        # reinforce a double-time hypothesis by accepting half-time onsets
+        divisors = [1, 2] if self._bpm < 180 else [1]
+        for divisor in divisors:
             period = self._beat_period / divisor
             if period < 0.1:
                 continue

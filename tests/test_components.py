@@ -13,11 +13,12 @@ from flame_sheep.audio._constants import FFT_SIZE, HOP_SIZE, N_BINS, SAMPLE_RATE
 from flame_sheep.audio._types import BeatEvent, AudioState
 from flame_sheep.audio.beat_detector import FluxBeatDetector
 from flame_sheep.audio.drop_detector import DropDetector
+from flame_sheep.audio.bass_drop_detector import BassDropDetector
 from flame_sheep.audio.energy import EnergyAnalyzer
 from flame_sheep.axes.zoom_axis import ZoomAxis
 from flame_sheep.axes.brightness_axis import BrightnessAxis
 from flame_sheep.axes.detail_axis import DetailAxis
-from flame_sheep.axes.drift_axis import DriftAxis
+from flame_sheep.drift_mode import DriftMode
 from flame_sheep.axes.genome_axis import GenomeAxis
 
 from .conftest import trivial_genome
@@ -398,42 +399,81 @@ class TestNextLoopSelection:
 
 
 # -------------------------------------------------------------------
-# DriftAxis
+# DriftMode
 # -------------------------------------------------------------------
 
-class TestDriftAxisUnit:
+class TestDriftModeUnit:
 
-    def _make_axis(self):
+    def _make(self):
         _seed = iter(range(1000))
-        return GenomeAxis(
-            genome_factory=lambda: trivial_genome(next(_seed)))
+        factory = lambda: trivial_genome(next(_seed))
+        genome_axis = GenomeAxis(genome_factory=factory)
+        drift = DriftMode(genome_factory=factory)
+        return drift, genome_axis
 
-    def test_no_drift_when_loud(self):
-        genome_axis = self._make_axis()
-        drift = DriftAxis(genome_axis)
-        initial_target = id(genome_axis.target_genome)
+    def test_not_active_when_loud(self):
+        drift, _ = self._make()
         for i in range(600):
-            drift.tick(AudioState(rms=0.1), 1/60, float(i))  # rms above threshold
-        assert id(genome_axis.target_genome) == initial_target
+            drift.tick(AudioState(rms=0.1), 1/60, float(i))
+        assert not drift.active
 
-    def test_drift_swaps_when_quiet(self):
-        genome_axis = self._make_axis()
-        drift = DriftAxis(genome_axis)
-        initial_target = id(genome_axis.target_genome)
-        # Tick enough quiet frames to trigger a swap
-        for i in range(drift.SWAP_FRAMES + 10):
+    def test_activates_after_quiet(self):
+        drift, genome_axis = self._make()
+        for i in range(drift.ENTER_FRAMES + 1):
             drift.tick(AudioState(rms=0.0), 1/60, float(i))
-        assert id(genome_axis.target_genome) != initial_target
+            if drift.active:
+                drift.enter(genome_axis)
+                break
+        assert drift.active
+
+    def test_deactivates_on_sound(self):
+        drift, genome_axis = self._make()
+        # Enter drift
+        for i in range(drift.ENTER_FRAMES + 1):
+            drift.tick(AudioState(rms=0.0), 1/60, float(i))
+            if drift.active:
+                drift.enter(genome_axis)
+                break
+        assert drift.active
+        # Loud frame exits
+        drift.tick(AudioState(rms=0.1), 1/60, 999.0)
+        assert not drift.active
 
     def test_loud_resets_quiet_counter(self):
-        genome_axis = self._make_axis()
-        drift = DriftAxis(genome_axis)
-        # Almost enough quiet frames
-        for i in range(drift.SWAP_FRAMES - 10):
+        drift, _ = self._make()
+        for i in range(drift.ENTER_FRAMES - 10):
             drift.tick(AudioState(rms=0.0), 1/60, float(i))
-        # Loud frame resets
-        drift.tick(AudioState(rms=0.1), 1/60, float(drift.SWAP_FRAMES))
+        drift.tick(AudioState(rms=0.1), 1/60, 999.0)
         assert drift._quiet_frames == 0
+
+    def test_morph_completes_before_swap_interval(self):
+        """Fixed morph speed must complete within ENTER_FRAMES."""
+        frames_to_complete = int(1.0 / DriftMode.MORPH_SPEED) + 1
+        assert frames_to_complete < DriftMode.ENTER_FRAMES, \
+            f"Morph takes {frames_to_complete} frames but swap is at {DriftMode.ENTER_FRAMES}"
+
+    def test_enter_snapshots_genome(self):
+        drift, genome_axis = self._make()
+        # Advance genome_axis morph partway
+        genome_axis.morph_t = 0.5
+        expected = genome_axis.current_genome.lerp(
+            genome_axis.target_genome, 0.5)
+        drift.tick(AudioState(rms=0.0), 1/60, 0.0)
+        # Force activation for test
+        drift.active = True
+        drift.enter(genome_axis)
+        assert drift.current_genome.distance(expected) < 1e-6
+
+    def test_exit_returns_interpolated(self):
+        drift, genome_axis = self._make()
+        drift.active = True
+        drift.enter(genome_axis)
+        # Advance morph partway
+        for i in range(100):
+            drift.tick(AudioState(rms=0.0), 1/60, float(i))
+        expected = drift.current_genome.lerp(drift.target_genome, drift.morph_t)
+        result = drift.exit()
+        assert result.distance(expected) < 1e-6
 
 
 # -------------------------------------------------------------------
@@ -646,6 +686,82 @@ class TestDropDetector:
         assert result is not None
         # At 120 BPM: bar = 4 * 0.5s = 2s, 2 bars = 4s
         assert 3.5 < result.energy < 4.5
+
+
+# -------------------------------------------------------------------
+# BassDropDetector
+# -------------------------------------------------------------------
+
+class TestBassDropDetector:
+
+    def test_bass_drop_fires_when_subbass_quiet(self):
+        """Sub-bass dropout + kick return → drop event."""
+        dd = BassDropDetector()
+        dd._warmup_frames = 999
+        kick = [BeatEvent('kick', 1.0)]
+        # Build history with sub-bass energy present
+        for _ in range(20):
+            dd.detect(kick, 0.5, 120.0, False, 1/60)
+        # Sub-bass goes quiet (but imagine vocals are still going)
+        for _ in range(100):
+            dd.detect([], 0.0, 120.0, False, 1/60)
+        # Kick returns
+        result = dd.detect(kick, 0.5, 120.0, False, 1/60)
+        assert result is not None
+        assert result.kind == 'drop'
+
+    def test_no_drop_when_subbass_present(self):
+        """If sub-bass stays loud, no drop."""
+        dd = BassDropDetector()
+        dd._warmup_frames = 999
+        kick = [BeatEvent('kick', 1.0)]
+        for _ in range(20):
+            dd.detect(kick, 0.5, 120.0, False, 1/60)
+        # No kicks but sub-bass is still present
+        for _ in range(100):
+            dd.detect([], 0.3, 120.0, False, 1/60)
+        result = dd.detect(kick, 0.5, 120.0, False, 1/60)
+        assert result is None
+
+    def test_no_bass_drop_during_drift(self):
+        dd = BassDropDetector()
+        dd._warmup_frames = 999
+        kick = [BeatEvent('kick', 1.0)]
+        for _ in range(20):
+            dd.detect(kick, 0.5, 120.0, False, 1/60)
+        for _ in range(100):
+            dd.detect([], 0.0, 120.0, False, 1/60)
+        result = dd.detect(kick, 0.5, 120.0, True, 1/60)
+        assert result is None
+
+    def test_bass_drop_cooldown(self):
+        dd = BassDropDetector()
+        dd._warmup_frames = 999
+        kick = [BeatEvent('kick', 1.0)]
+        # First drop
+        for _ in range(20):
+            dd.detect(kick, 0.5, 120.0, False, 1/60)
+        for _ in range(100):
+            dd.detect([], 0.0, 120.0, False, 1/60)
+        result1 = dd.detect(kick, 0.5, 120.0, False, 1/60)
+        assert result1 is not None
+        # Second attempt — cooldown
+        for _ in range(20):
+            dd.detect(kick, 0.5, 120.0, False, 1/60)
+        for _ in range(100):
+            dd.detect([], 0.0, 120.0, False, 1/60)
+        result2 = dd.detect(kick, 0.5, 120.0, False, 1/60)
+        assert result2 is None
+
+    def test_reset_clears_state(self):
+        dd = BassDropDetector()
+        dd._warmup_frames = 999
+        dd._total_kicks = 100
+        dd._quiet_frames = 200
+        dd.reset()
+        assert dd._total_kicks == 0
+        assert dd._quiet_frames == 0
+        assert dd._cooldown == 0.0
 
 
 # -------------------------------------------------------------------

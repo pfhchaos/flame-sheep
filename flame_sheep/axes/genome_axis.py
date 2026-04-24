@@ -179,6 +179,18 @@ class GenomeAxis:
             self.next_loop()
             log.info(f'[song_start] switched to loop #{self.active_loop_id}')
 
+    def accept_handoff(self, genome: Genome, loop_id: int | None = None):
+        """Receive genome from drift mode on transition back to active."""
+        self.current_genome = genome
+        self.target_genome = genome
+        self.morph_t = 0.0
+        self.morph_speed = self.DRIFT_MORPH_SPEED
+        self._kick_count = 0
+        self._drop_freeze_remaining = 0.0
+        if loop_id is not None and loop_id != self.active_loop_id:
+            self.load_loop(loop_id)
+        self._prefetch_genome()
+
     def force_swap(self):
         """Immediately swap to a new genome."""
         self.current_genome = self.current_genome.lerp(

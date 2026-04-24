@@ -27,6 +27,7 @@ from moderngl_window import settings
 from .genome import Genome, _lerp_arr
 from .audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent, AudioState, DEFAULT_DEVICE
 from .audio.drop_detector import DropDetector
+from .audio.bass_drop_detector import BassDropDetector
 from .renderer import FlameRenderer, Viewport
 from .control import ControlPipe, ControlEvent
 from .tempo import TempoTracker
@@ -35,7 +36,7 @@ from .axes.brightness_axis import BrightnessAxis
 from .axes.detail_axis import DetailAxis
 from .axes.genome_axis import GenomeAxis
 from .axes.palette_axis import PaletteAxis
-from .axes.drift_axis import DriftAxis
+from .drift_mode import DriftMode
 
 
 # Set by main() before run_window_config — workaround for moderngl-window
@@ -73,10 +74,11 @@ class FlameSheepCore:
         self._zoom_axis = ZoomAxis()
         self._brightness_axis = BrightnessAxis()
         self._detail_axis = DetailAxis()
-        self._drift_axis = DriftAxis(self._genome_axis)
+        self._drift_mode = DriftMode(genome_factory=factory, lib=lib, rng=self.rng)
         # Tempo tracking + drop detection
         self.tempo = TempoTracker()
         self._drop_detector = DropDetector()
+        self._bass_drop_detector = BassDropDetector()
         self._pending_song_start = False
 
         if test_audio:
@@ -115,12 +117,18 @@ class FlameSheepCore:
             filtered_events.insert(0, BeatEvent(kind='song_start', energy=0.0))
             self._pending_song_start = False
 
-        # Run drop detector — may inject a 'drop' event
+        # Run drop detectors — either may inject a 'drop' event
         drop = self._drop_detector.detect(
             filtered_events, snap.centroid_rms,
-            self.tempo.bpm, self._drift_axis.drifting, frame_time)
+            self.tempo.bpm, self._drift_mode.active, frame_time)
         if drop is not None:
             filtered_events.append(drop)
+        else:
+            bass_drop = self._bass_drop_detector.detect(
+                filtered_events, snap.rms,
+                self.tempo.bpm, self._drift_mode.active, frame_time)
+            if bass_drop is not None:
+                filtered_events.append(bass_drop)
 
         # Build AudioState for axes
         audio = AudioState(
@@ -131,16 +139,29 @@ class FlameSheepCore:
             centroid_delta=snap.centroid_delta,
             centroid_rms=snap.centroid_rms,
             bpm=self.tempo.bpm,
-            drifting=self._drift_axis.drifting,
         )
 
-        # Tick visual axes (drift must tick before genome to trigger swaps)
-        self._drift_axis.tick(audio, frame_time, now)
-        self._genome_axis.tick(audio, frame_time, now)
+        # --- Mode transitions ---
+        was_drifting = self._drift_mode.active
+        self._drift_mode.tick(audio, frame_time, now)
+        is_drifting = self._drift_mode.active
+
+        if not was_drifting and is_drifting:
+            self._drift_mode.enter(self._genome_axis)
+        elif was_drifting and not is_drifting:
+            self._genome_axis.accept_handoff(
+                self._drift_mode.exit(),
+                loop_id=self._drift_mode.active_loop_id)
+
+        # Shared axes always tick
         self._palette_axis.tick(audio, frame_time, now)
         self._zoom_axis.tick(audio, frame_time, now)
         self._brightness_axis.tick(audio, frame_time, now)
         self._detail_axis.tick(audio, frame_time, now)
+
+        # Only active mode's genome ticks
+        if not is_drifting:
+            self._genome_axis.tick(audio, frame_time, now)
 
         # Assemble frame state
         frame = self.FrameState(
@@ -151,8 +172,11 @@ class FlameSheepCore:
             iterations=self._detail_axis.iterations,
         )
 
-        # Axes contribute (order: genome first, then zoom modifies genome.zoom)
-        self._genome_axis.contribute(frame)
+        # Genome contribution from whichever mode is active
+        if is_drifting:
+            self._drift_mode.contribute(frame)
+        else:
+            self._genome_axis.contribute(frame)
         self._palette_axis.contribute(frame)
         self._zoom_axis.contribute(frame)
 
@@ -240,8 +264,9 @@ class FlameSheepCore:
         self.tempo.song_started()
         self.audio.reset_bands()
         self._drop_detector.reset()
+        self._bass_drop_detector.reset()
         self._pending_song_start = True
-        log.info('[song] reset tempo, bands, drop detector')
+        log.info('[song] reset tempo, bands, drop detectors')
         
     def hint_tempo(self, bpm: float):
         """Provide tempo hint from external source."""
@@ -618,6 +643,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             elif event.command == 'seek':
                 core.tempo.reset()
                 core._drop_detector.reset()
+                core._bass_drop_detector.reset()
                 log.info('[ctl] seek — reset tempo + drop state')
             elif event.command == 'pause':
                 # TODO: enter ambient/slow mode
