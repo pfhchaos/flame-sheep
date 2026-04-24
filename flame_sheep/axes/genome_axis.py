@@ -141,6 +141,9 @@ class GenomeAxis:
 
         # Strong beat → swap direction (downbeat detection)
         if event.energy > self._recent_kick_energy * self.STRONG_BEAT_THRESHOLD:
+            # Score if this genome has been displayed long enough
+            if self.morph_t > 0.5:
+                self.score_ready = True
             self.current_genome = self.current_genome.lerp(
                 self.target_genome, self.morph_t)
             self._swap_next_genome()
