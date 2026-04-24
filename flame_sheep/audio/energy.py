@@ -41,12 +41,18 @@ class EnergyAnalyzer:
         self._percussiveness = 0.5
         self._perc_alpha = 0.92  # smooth but responsive
 
-    def update(self, spectrum: np.ndarray, flux: np.ndarray | None = None) -> float:
+        # Harmonic energy (stability-weighted)
+        self._harmonic_rms = 0.0
+        self._harmonic_centroid_rms = 0.0
+
+    def update(self, spectrum: np.ndarray, flux: np.ndarray | None = None,
+               stability=None) -> float:
         """Update all features from spectrum magnitude and flux.
 
         Args:
             spectrum: FFT magnitude (N_BINS,)
             flux: spectral flux (N_BINS,), optional — needed for percussiveness
+            stability: MagnitudeStability reference, optional — for harmonic RMS
 
         Returns:
             Smoothed sub-bass RMS.
@@ -86,6 +92,21 @@ class EnergyAnalyzer:
             self._percussiveness = (self._perc_alpha * self._percussiveness
                                      + (1 - self._perc_alpha) * raw_perc)
 
+        # Harmonic energy (stability-weighted) — sustained content only
+        if stability is not None:
+            raw_h_rms = stability.harmonic_rms(spectrum, self._bins)
+            self._harmonic_rms = (self._alpha * self._harmonic_rms
+                                  + (1 - self._alpha) * raw_h_rms)
+            # Centroid-following harmonic energy
+            lo_c = self._centroid / 2
+            hi_c = self._centroid * 2
+            centroid_mask = (FREQS >= lo_c) & (FREQS <= hi_c)
+            if centroid_mask.any():
+                raw_hc_rms = stability.harmonic_rms(spectrum, centroid_mask)
+                self._harmonic_centroid_rms = (
+                    self._centroid_alpha * self._harmonic_centroid_rms
+                    + (1 - self._centroid_alpha) * raw_hc_rms)
+
         return self._rms
 
     @property
@@ -116,3 +137,13 @@ class EnergyAnalyzer:
     def percussiveness(self) -> float:
         """Flux/magnitude ratio — high = drums/transients, low = sustained tonal."""
         return self._percussiveness
+
+    @property
+    def harmonic_rms(self) -> float:
+        """Sub-bass RMS from stable (harmonic) bins only."""
+        return self._harmonic_rms
+
+    @property
+    def harmonic_centroid_rms(self) -> float:
+        """RMS around centroid from stable (harmonic) bins only."""
+        return self._harmonic_centroid_rms

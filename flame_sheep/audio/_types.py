@@ -29,6 +29,8 @@ class AudioState:
     centroid: float = 1000.0
     centroid_delta: float = 0.0
     centroid_rms: float = 0.0
+    harmonic_rms: float = 0.0
+    harmonic_centroid_rms: float = 0.0
     bpm: float = 0.0
     breaking: bool = False
     onset_density: dict = field(default_factory=lambda: {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0})
@@ -50,6 +52,8 @@ class AudioSnapshot:
     centroid_delta: float = 0.0
     centroid_rms: float = 0.0
     percussiveness: float = 0.5
+    harmonic_rms: float = 0.0
+    harmonic_centroid_rms: float = 0.0
     band_rms: dict = field(default_factory=lambda: {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0})
     bpm: float = 0.0
     onset_density: dict = field(default_factory=lambda: {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0})

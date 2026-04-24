@@ -239,12 +239,12 @@ class TestBrightnessAxisUnit:
 
     def test_loud_returns_ceiling(self):
         axis = BrightnessAxis(floor=0.7, ceiling=12.0, rms_scale=0.01)
-        axis.tick(AudioState(rms=1.0), 1/60, 0.0)  # rms >> scale
+        axis.tick(AudioState(harmonic_rms=1.0), 1/60, 0.0)
         assert axis.brightness == pytest.approx(12.0)
 
     def test_mid_rms_between_floor_and_ceiling(self):
         axis = BrightnessAxis(floor=0.7, ceiling=12.0, rms_scale=0.01)
-        axis.tick(AudioState(rms=0.005), 1/60, 0.0)
+        axis.tick(AudioState(harmonic_rms=0.005), 1/60, 0.0)
         assert 0.7 < axis.brightness < 12.0
 
 
@@ -261,7 +261,7 @@ class TestDetailAxisUnit:
 
     def test_loud_returns_max(self):
         axis = DetailAxis(min_iters=100, max_iters=500, rms_scale=0.01)
-        axis.tick(AudioState(rms=1.0), 1/60, 0.0)
+        axis.tick(AudioState(harmonic_rms=1.0), 1/60, 0.0)
         assert axis.iterations == 500
 
 

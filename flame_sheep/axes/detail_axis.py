@@ -19,7 +19,7 @@ class DetailAxis:
         self.iterations = min_iters
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
-        energy = max(audio.rms, audio.centroid_rms)
+        energy = max(audio.harmonic_rms, audio.harmonic_centroid_rms)
         t = min(energy / self.rms_scale, 1.0) ** 0.5
         self.iterations = int(self.min_iters + t * (self.max_iters - self.min_iters))
 

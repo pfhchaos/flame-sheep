@@ -86,6 +86,8 @@ class AudioProcessor:
         self._centroid_delta = 0.0
         self._centroid_rms = 0.0
         self._percussiveness = 0.5
+        self._harmonic_rms = 0.0
+        self._harmonic_centroid_rms = 0.0
         self._band_rms = {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0}
         self._bpm = 0.0
         self._onset_density = {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0}
@@ -149,7 +151,8 @@ class AudioProcessor:
             now = time.perf_counter()
             frame = self._spectrum_engine.push_hop(hop)
             self._stability.update(frame.magnitude)
-            self._energy.update(frame.magnitude, frame.flux)
+            self._energy.update(frame.magnitude, frame.flux,
+                                stability=self._stability)
             events = self._detector.detect(frame)
 
             # Feed tempo + density trackers
@@ -168,6 +171,8 @@ class AudioProcessor:
                 self._centroid_delta = self._energy.centroid_delta
                 self._centroid_rms = self._energy.centroid_rms
                 self._percussiveness = self._energy.percussiveness
+                self._harmonic_rms = self._energy.harmonic_rms
+                self._harmonic_centroid_rms = self._energy.harmonic_centroid_rms
                 self._band_rms = self._energy.band_rms
                 self._bpm = self._tempo.bpm
                 self._onset_density = self._density.densities
@@ -190,6 +195,8 @@ class AudioProcessor:
                 centroid_delta=self._centroid_delta,
                 centroid_rms=self._centroid_rms,
                 percussiveness=self._percussiveness,
+                harmonic_rms=self._harmonic_rms,
+                harmonic_centroid_rms=self._harmonic_centroid_rms,
                 band_rms=self._band_rms.copy(),
                 bpm=self._bpm,
                 onset_density=self._onset_density.copy(),
@@ -206,6 +213,8 @@ class AudioProcessor:
                 centroid_delta=self._centroid_delta,
                 centroid_rms=self._centroid_rms,
                 percussiveness=self._percussiveness,
+                harmonic_rms=self._harmonic_rms,
+                harmonic_centroid_rms=self._harmonic_centroid_rms,
                 band_rms=self._band_rms.copy(),
                 bpm=self._bpm,
                 onset_density=self._onset_density.copy(),
@@ -229,7 +238,8 @@ class AudioProcessor:
 
         frame = self._spectrum_engine.compute(pcm)
         self._stability.update(frame.magnitude)
-        self._energy.update(frame.magnitude, frame.flux)
+        self._energy.update(frame.magnitude, frame.flux,
+                            stability=self._stability)
 
         with self._lock:
             self._spectrum[:] = frame.magnitude
@@ -239,6 +249,8 @@ class AudioProcessor:
             self._centroid_delta = self._energy.centroid_delta
             self._centroid_rms = self._energy.centroid_rms
             self._percussiveness = self._energy.percussiveness
+            self._harmonic_rms = self._energy.harmonic_rms
+            self._harmonic_centroid_rms = self._energy.harmonic_centroid_rms
 
         return self._detector.detect(frame)
 

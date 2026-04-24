@@ -129,6 +129,8 @@ class FlameSheepCore:
             centroid=snap.centroid,
             centroid_delta=snap.centroid_delta,
             centroid_rms=snap.centroid_rms,
+            harmonic_rms=snap.harmonic_rms,
+            harmonic_centroid_rms=snap.harmonic_centroid_rms,
             bpm=snap.bpm,
             breaking=(self._drop_detector.breaking
                       or self._bass_drop_detector.breaking),

@@ -49,6 +49,25 @@ class MagnitudeStability:
         cv = float(np.sqrt(band_var) / (band_mag + 1e-10))
         return max(0.0, min(1.0, 1.0 - cv))
 
+    def _stability_per_bin(self) -> np.ndarray:
+        """Per-bin stability scores, 0..1. 1=harmonic, 0=transient."""
+        cv = np.sqrt(self._mag_var) / (self._mag_ema + 1e-10)
+        return np.clip(1.0 - cv, 0.0, 1.0).astype(np.float32)
+
+    def harmonic_rms(self, magnitude: np.ndarray, mask: np.ndarray) -> float:
+        """RMS of magnitude weighted by stability (harmonic content only).
+
+        Each bin's contribution is scaled by its stability score.
+        Stable bins (vocals, pads) contribute fully, transient bins
+        (kicks, consonants) are suppressed.
+        """
+        if not mask.any():
+            return 0.0
+        stability = self._stability_per_bin()
+        weighted = magnitude * stability
+        band = weighted[mask]
+        return float(np.sqrt(np.mean(band ** 2)))
+
     def reset(self):
         """Clear all state."""
         self._mag_ema[:] = 0.0

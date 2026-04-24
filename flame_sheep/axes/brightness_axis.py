@@ -20,7 +20,7 @@ class BrightnessAxis:
         self.brightness = floor
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
-        energy = max(audio.rms, audio.centroid_rms)
+        energy = max(audio.harmonic_rms, audio.harmonic_centroid_rms)
         t = min(energy / self.rms_scale, 1.0) ** 0.5
         self.brightness = self.floor + t * (self.ceiling - self.floor)
 
