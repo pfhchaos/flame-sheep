@@ -14,7 +14,7 @@ from flame_sheep.genome import _lerp_arr
 class PaletteAxis:
     """Snare -> palette walk. Energy controls jump distance."""
 
-    DRIFT_MORPH_SPEED = 0.003
+    DRIFT_MORPH_SPEED = 0.001
 
     PALETTE_HISTORY_SIZE = 8
 

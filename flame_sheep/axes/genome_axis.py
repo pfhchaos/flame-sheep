@@ -31,11 +31,11 @@ class GenomeAxis:
     """
 
     MIN_GENOME_DISTANCE = 0.15
-    DRIFT_MORPH_SPEED   = 0.003
+    DRIFT_MORPH_SPEED   = 0.001
     KICK_MORPH_PULSE    = 0.03
     LOOP_HISTORY_SIZE   = 8
     BREAK_DECAY         = 0.97   # damping per frame during break (~half speed in 0.4s)
-    DENSITY_MORPH_SCALE = 0.015  # morph_speed baseline += kick_density * this
+    DENSITY_MORPH_SCALE = 0.003  # morph_speed baseline += kick_density * this
     STRONG_BEAT_THRESHOLD = 1.5  # swap when energy > recent_avg * this
 
     # Centroid delta threshold for triggering a swap in low-percussiveness mode
@@ -121,10 +121,11 @@ class GenomeAxis:
             self._swap_next_genome()
             self.morph_speed    = self.DRIFT_MORPH_SPEED
 
-        # Decay morph speed toward density-driven baseline
+        # Ramp morph speed toward density-driven baseline
         density_speed = (self.DRIFT_MORPH_SPEED
                          + audio.onset_density.get('kick', 0) * self.DENSITY_MORPH_SCALE)
-        self.morph_speed = max(density_speed, self.morph_speed * 0.98)
+        # Blend toward baseline — ramps up after swap, decays down after pulse
+        self.morph_speed = 0.95 * self.morph_speed + 0.05 * density_speed
 
     def contribute(self, frame) -> None:
         frame.genome = self.current_genome.lerp(self.target_genome, self.morph_t)

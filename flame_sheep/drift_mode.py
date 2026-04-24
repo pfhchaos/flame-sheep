@@ -26,7 +26,7 @@ class DriftMode:
 
     RMS_THRESHOLD = 0.0001
     ENTER_FRAMES = 60 * 8       # ~8s quiet before activating
-    MORPH_SPEED = 0.003          # fixed — not scaled by percussiveness
+    MORPH_SPEED = 0.001          # fixed — not scaled by percussiveness
     MIN_GENOME_DISTANCE = 0.15
     CYCLES_PER_LOOP = 3
 
