@@ -125,7 +125,7 @@ class FluxBeatDetector:
                 # Attack sharpness gate for snare/hihat:
                 # compare to pre-attack baseline (median of lookback window)
                 # to span the overlap attack ramp from 75% overlapping windows
-                if (self._sharpness and band in ('snare', 'clap', 'hihat')
+                if (self._sharpness and band in ('kick', 'snare', 'clap', 'hihat')
                         and len(recent) > self.SHARPNESS_LOOKBACK):
                     pre_attack = float(np.median(list(recent)[:-1]))
                     if pre_attack > self.MIN_FLUX and band_flux / pre_attack < self.SHARPNESS:
