@@ -143,6 +143,10 @@ class FlameSheepCore:
 
         if not was_drifting and is_drifting:
             self._drift_mode.enter(self._genome_axis)
+            # Music stopped — reset break detectors so quiet intro
+            # of next song doesn't trigger a false break
+            self._drop_detector.reset()
+            self._bass_drop_detector.reset()
         elif was_drifting and not is_drifting:
             self._genome_axis.accept_handoff(
                 self._drift_mode.exit(),
