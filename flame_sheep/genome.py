@@ -531,6 +531,7 @@ def _score_symmetry(hit_grid: np.ndarray) -> dict[str, float]:
         radial=sym['radial'],
         periodic=sym['periodic'],
         fractal_dim=sym['fractal_dim'],
+        self_similarity=sym['self_similarity'],
     )
 
 

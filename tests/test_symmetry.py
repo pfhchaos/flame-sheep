@@ -179,7 +179,7 @@ class TestSymmetryScores:
         scores = symmetry_scores(grid)
         expected = {'rotational_best', 'rotational_n', 'reflective_best',
                     'reflective_angle', 'radial', 'periodic', 'periodic_freq',
-                    'fractal_dim', 'symmetry_max'}
+                    'fractal_dim', 'self_similarity', 'symmetry_max'}
         assert set(scores.keys()) == expected
 
     def test_empty_grid_all_zero(self):

@@ -61,7 +61,8 @@ class BackgroundScorer:
 
                 row = conn.execute(
                     'SELECT id, params FROM genomes '
-                    'WHERE symmetry_max IS NULL LIMIT 1'
+                    'WHERE symmetry_max IS NULL OR self_similarity IS NULL '
+                    'LIMIT 1'
                 ).fetchone()
 
                 if row is None:
@@ -74,15 +75,18 @@ class BackgroundScorer:
                     conn.execute(
                         '''UPDATE genomes
                            SET symmetry_max=?, rotational=?, reflective=?,
-                               radial=?, periodic=?, fractal_dim=?
+                               radial=?, periodic=?, fractal_dim=?,
+                               self_similarity=?
                            WHERE id=?''',
                         (scores['symmetry_max'], scores['rotational'],
                          scores['reflective'], scores['radial'],
-                         scores['periodic'], scores['fractal_dim'], gid),
+                         scores['periodic'], scores['fractal_dim'],
+                         scores['self_similarity'], gid),
                     )
                     conn.commit()
                     log.debug(f'[scorer] genome #{gid}  '
                               f'sym={scores["symmetry_max"]:.3f}  '
+                              f'self_sim={scores["self_similarity"]:.3f}  '
                               f'fdim={scores["fractal_dim"]:.3f}')
                 except Exception:
                     log.exception(f'[scorer] failed to score genome #{gid}')
@@ -90,7 +94,8 @@ class BackgroundScorer:
                     conn.execute(
                         '''UPDATE genomes
                            SET symmetry_max=0, rotational=0, reflective=0,
-                               radial=0, periodic=0, fractal_dim=0
+                               radial=0, periodic=0, fractal_dim=0,
+                               self_similarity=0
                            WHERE id=?''',
                         (gid,),
                     )

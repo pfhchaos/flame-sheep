@@ -14,6 +14,7 @@ striking but deliberate asymmetry can also look good.
 
 import numpy as np
 from scipy import ndimage
+from scipy.signal import fftconvolve
 
 
 def symmetry_scores(hit_grid: np.ndarray) -> dict[str, float]:
@@ -35,16 +36,20 @@ def symmetry_scores(hit_grid: np.ndarray) -> dict[str, float]:
         return dict(rotational_best=0.0, rotational_n=0,
                     reflective_best=0.0, reflective_angle=0.0,
                     radial=0.0, periodic=0.0, periodic_freq=0.0,
-                    fractal_dim=0.0, symmetry_max=0.0)
+                    fractal_dim=0.0, self_similarity=0.0, symmetry_max=0.0)
 
     # Normalize to float, log-scale for perceptual uniformity
     grid = np.log1p(hit_grid.astype(np.float64))
     grid /= grid.max() + 1e-10
 
-    rot_score, rot_n = _rotational_symmetry(grid)
-    ref_score, ref_angle = _reflective_symmetry(grid)
-    rad_score = _radial_symmetry(grid)
-    per_score, per_freq = _periodic_structure(grid)
+    # Center on attractor centroid for symmetry checks
+    centered = _center_on_attractor(grid)
+
+    rot_score, rot_n = _rotational_symmetry(centered)
+    ref_score, ref_angle = _reflective_symmetry(centered)
+    rad_score = _radial_symmetry(centered)
+    per_score, per_freq = _periodic_structure(grid)  # translation-invariant
+    self_sim = _self_similarity(grid)
     fdim = _fractal_dimension(hit_grid)
 
     return dict(
@@ -56,6 +61,7 @@ def symmetry_scores(hit_grid: np.ndarray) -> dict[str, float]:
         periodic=per_score,
         periodic_freq=per_freq,
         fractal_dim=fdim,
+        self_similarity=self_sim,
         symmetry_max=max(rot_score, ref_score, rad_score, per_score),
     )
 
@@ -297,3 +303,71 @@ def _fractal_dimension(hit_grid: np.ndarray) -> float:
 
     # Clamp to reasonable range
     return max(0.5, min(2.0, slope))
+
+
+def _center_on_attractor(grid: np.ndarray) -> np.ndarray:
+    """Shift grid so the attractor centroid is at the image center.
+
+    Flame fractals can have their symmetry center anywhere.
+    Rolling the grid to center the mass lets rotational/reflective/radial
+    checks find symmetry that would be missed about the image center.
+    """
+    h, w = grid.shape
+    total = grid.sum()
+    if total < 1e-10:
+        return grid
+    ys, xs = np.mgrid[0:h, 0:w]
+    cx = int(np.sum(xs * grid) / total)
+    cy = int(np.sum(ys * grid) / total)
+    shift_x = w // 2 - cx
+    shift_y = h // 2 - cy
+    return np.roll(np.roll(grid, shift_x, axis=1), shift_y, axis=0)
+
+
+def _self_similarity(grid: np.ndarray) -> float:
+    """Measure multi-scale self-similarity via template matching.
+
+    Downsamples the grid by 2x and 4x, then finds the best-matching
+    region in the original via normalized cross-correlation. High NCC
+    means a small piece of the fractal looks like the whole — the
+    defining property of IFS.
+
+    Returns 0..1, higher = more self-similar.
+    """
+    h, w = grid.shape
+    if h < 8 or w < 8:
+        return 0.0
+
+    scores = []
+    for factor in [2, 4]:
+        small = ndimage.zoom(grid, 1.0 / factor, order=1)
+        sh, sw = small.shape
+        if sh < 4 or sw < 4:
+            continue
+
+        # Normalize template
+        s_mean = small.mean()
+        s_std = small.std()
+        if s_std < 1e-10:
+            continue
+        s_norm = (small - s_mean) / s_std
+
+        # Sliding NCC via FFT convolution
+        # For each position, compute correlation with normalized template
+        g_local_sum = fftconvolve(grid, np.ones_like(small), mode='valid')
+        g_local_sq = fftconvolve(grid**2, np.ones_like(small), mode='valid')
+        n = small.size
+        g_local_mean = g_local_sum / n
+        g_local_var = g_local_sq / n - g_local_mean**2
+        g_local_std = np.sqrt(np.maximum(g_local_var, 0))
+
+        cross = fftconvolve(grid, s_norm[::-1, ::-1], mode='valid')
+        safe_std = np.where(g_local_std > 1e-10, g_local_std, 1.0)
+        ncc = np.where(g_local_std > 1e-10, cross / (n * safe_std), 0.0)
+
+        # Best match — but exclude the trivially centered match
+        # (the whole image downsampled matches itself at center)
+        best = float(ncc.max())
+        scores.append(max(0.0, best))
+
+    return float(np.mean(scores)) if scores else 0.0
