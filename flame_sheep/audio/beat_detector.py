@@ -7,7 +7,7 @@ from ._constants import SAMPLE_RATE, N_BINS, HISTORY_LEN, FREQS, FFT_SIZE, HOP_S
 from ._types import BeatEvent
 from ._spectrum import SpectrumFrame
 from ._bands import (
-    AdaptiveBand, make_mask,
+    AdaptiveBand, make_mask, BAND_MASKS,
     ADAPT_ALPHA, ADAPT_FAST_ALPHA, ADAPT_INTERVAL, ADAPT_ANCHOR,
     SECTION_THRESHOLD, FAST_ADAPT_FRAMES,
 )
@@ -41,13 +41,8 @@ class FluxBeatDetector:
         self._sharpness = sharpness
         self._stability = stability  # MagnitudeStability reference (optional)
 
-        # Static band masks
-        self._bands = {
-            'kick':  make_mask(50, 100),
-            'snare': make_mask(300, 1000),
-            'clap':  make_mask(1000, 8000),
-            'hihat': make_mask(8000, SAMPLE_RATE / 2),
-        }
+        # Static band masks (from shared definitions)
+        self._bands = {k: BAND_MASKS[k] for k in ('kick', 'snare', 'clap', 'hihat')}
         self._snare_confirm = make_mask(1000, 3000)
 
         # Adaptive bands

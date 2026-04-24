@@ -3,7 +3,7 @@
 import numpy as np
 
 from ._constants import N_BINS, FREQS, SAMPLE_RATE
-from ._bands import make_mask, A_WEIGHTS
+from ._bands import make_mask, A_WEIGHTS, BAND_MASKS, BAND_RANGES
 
 
 class EnergyAnalyzer:
@@ -16,20 +16,12 @@ class EnergyAnalyzer:
       - percussiveness: flux/magnitude ratio — drums vs sustain
     """
 
-    def __init__(self, lo: float = 20.0, hi: float = 200.0, alpha: float = 0.9):
-        self._bins = make_mask(lo, hi)
+    def __init__(self, alpha: float = 0.9):
         self._alpha = alpha
-        self._rms = 0.0
 
-        # Per-band RMS (matches beat detection bands)
-        self._band_masks = {
-            'kick':  make_mask(50, 100),
-            'snare': make_mask(300, 1000),
-            'clap':  make_mask(1000, 8000),
-            'hihat': make_mask(8000, SAMPLE_RATE / 2),
-        }
-        self._band_rms = {k: 0.0 for k in self._band_masks}
-        self._band_alpha = 0.9
+        # Per-band RMS and harmonic RMS (shared masks from _bands.py)
+        self._band_rms = {name: 0.0 for name in BAND_MASKS}
+        self._band_harmonic_rms = {name: 0.0 for name in BAND_MASKS}
 
         # Centroid tracking
         self._centroid = 1000.0  # Hz, start at a reasonable default
@@ -57,16 +49,16 @@ class EnergyAnalyzer:
         Returns:
             Smoothed sub-bass RMS.
         """
-        # Sub-bass RMS
-        raw_rms = float(np.sqrt(np.mean(spectrum[self._bins] ** 2)))
-        self._rms = self._alpha * self._rms + (1 - self._alpha) * raw_rms
+        alpha = self._alpha
 
-        # Per-band RMS
-        for band, mask in self._band_masks.items():
-            if mask.any():
-                raw = float(np.sqrt(np.mean(spectrum[mask] ** 2)))
-                self._band_rms[band] = (self._band_alpha * self._band_rms[band]
-                                        + (1 - self._band_alpha) * raw)
+        # Per-band RMS and harmonic RMS (unified loop)
+        for name, mask in BAND_MASKS.items():
+            raw = float(np.sqrt(np.mean(spectrum[mask] ** 2)))
+            self._band_rms[name] = alpha * self._band_rms[name] + (1 - alpha) * raw
+            if stability is not None:
+                raw_h = stability.harmonic_rms(spectrum, mask)
+                self._band_harmonic_rms[name] = (
+                    alpha * self._band_harmonic_rms[name] + (1 - alpha) * raw_h)
 
         # Spectral centroid (A-weighted for perceptual accuracy)
         weighted_spec = spectrum * A_WEIGHTS
@@ -85,6 +77,11 @@ class EnergyAnalyzer:
                 raw_c_rms = float(np.sqrt(np.mean(spectrum[centroid_mask] ** 2)))
                 self._centroid_rms = (self._centroid_alpha * self._centroid_rms
                                       + (1 - self._centroid_alpha) * raw_c_rms)
+                if stability is not None:
+                    raw_hc = stability.harmonic_rms(spectrum, centroid_mask)
+                    self._harmonic_centroid_rms = (
+                        self._centroid_alpha * self._harmonic_centroid_rms
+                        + (1 - self._centroid_alpha) * raw_hc)
 
         # Percussiveness: flux / magnitude ratio
         if flux is not None and mag_sum > 1e-10:
@@ -92,26 +89,22 @@ class EnergyAnalyzer:
             self._percussiveness = (self._perc_alpha * self._percussiveness
                                      + (1 - self._perc_alpha) * raw_perc)
 
-        # Harmonic energy (stability-weighted) — sustained content only
-        if stability is not None:
-            raw_h_rms = stability.harmonic_rms(spectrum, self._bins)
-            self._harmonic_rms = (self._alpha * self._harmonic_rms
-                                  + (1 - self._alpha) * raw_h_rms)
-            # Centroid-following harmonic energy
-            lo_c = self._centroid / 2
-            hi_c = self._centroid * 2
-            centroid_mask = (FREQS >= lo_c) & (FREQS <= hi_c)
-            if centroid_mask.any():
-                raw_hc_rms = stability.harmonic_rms(spectrum, centroid_mask)
-                self._harmonic_centroid_rms = (
-                    self._centroid_alpha * self._harmonic_centroid_rms
-                    + (1 - self._centroid_alpha) * raw_hc_rms)
-
-        return self._rms
+        return self._band_rms.get('subbass', 0.0)
 
     @property
     def rms(self) -> float:
-        return self._rms
+        """Sub-bass RMS (20-200Hz) — backwards compat alias."""
+        return self._band_rms.get('subbass', 0.0)
+
+    @property
+    def band_rms_all(self) -> dict[str, float]:
+        """Per-band RMS for all analysis bands."""
+        return dict(self._band_rms)
+
+    @property
+    def band_harmonic_rms_all(self) -> dict[str, float]:
+        """Per-band harmonic RMS for all analysis bands."""
+        return dict(self._band_harmonic_rms)
 
     @property
     def centroid(self) -> float:
@@ -130,8 +123,8 @@ class EnergyAnalyzer:
 
     @property
     def band_rms(self) -> dict[str, float]:
-        """Per-band RMS: kick (50-100Hz), snare (300-1kHz), clap (1-8kHz), hihat (8kHz+)."""
-        return dict(self._band_rms)
+        """Per-band RMS for detection bands (backwards compat)."""
+        return {k: self._band_rms[k] for k in ('kick', 'snare', 'clap', 'hihat')}
 
     @property
     def percussiveness(self) -> float:
@@ -140,8 +133,8 @@ class EnergyAnalyzer:
 
     @property
     def harmonic_rms(self) -> float:
-        """Sub-bass RMS from stable (harmonic) bins only."""
-        return self._harmonic_rms
+        """Sub-bass harmonic RMS (backwards compat)."""
+        return self._band_harmonic_rms.get('subbass', 0.0)
 
     @property
     def harmonic_centroid_rms(self) -> float:

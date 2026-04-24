@@ -22,6 +22,18 @@ DEFAULT_RANGES = {
     '_snare_confirm': (1000, 3000),
 }
 
+# All analysis bands including sub-bass (shared by all analyzers)
+BAND_RANGES = {
+    'subbass': (20, 200),
+    'kick':    (50, 100),
+    'snare':   (300, 1000),
+    'clap':    (1000, 8000),
+    'hihat':   (8000, SAMPLE_RATE / 2),
+}
+
+# Detection bands (subset used by beat detector + onset density)
+DETECTION_BANDS = ('kick', 'snare', 'clap', 'hihat')
+
 # Adaptation constants
 ADAPT_ALPHA        = 0.98   # EMA decay per frame (~0.6s half-life at 60fps)
 ADAPT_FAST_ALPHA   = 0.90   # faster decay during section changes
@@ -68,6 +80,9 @@ def a_weight_curve(freqs: np.ndarray) -> np.ndarray:
 
 # Precomputed A-weighting for our FFT bins
 A_WEIGHTS = a_weight_curve(FREQS)
+
+# Precomputed masks for all analysis bands (must be after make_mask definition)
+BAND_MASKS = {name: make_mask(*rng) for name, rng in BAND_RANGES.items()}
 
 
 class AdaptiveBand:
