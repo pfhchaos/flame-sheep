@@ -1,13 +1,33 @@
-"""CPU approximation of variation functions for viability testing.
+"""CPU approximation of variation functions for viability testing and scoring.
 
 Only implements variations that can blow up or produce large excursions.
 Safe/bounded variations fall through to linear (identity * w).
 
-Used by Genome.is_viable() to quickly check if a random genome's attractor
-stays in bounds without running the full GPU shader.
+Used by Genome.is_viable() and BackgroundScorer for CPU chaos game.
 """
 
 import numpy as np
+
+
+def apply_variations_cpu(variations: np.ndarray, x: float, y: float) -> tuple[float, float]:
+    """Apply all active variations weighted, matching GPU behavior.
+
+    Args:
+        variations: per-variation weights (NUM_VARIATIONS,)
+        x, y: input point (post-affine)
+
+    Returns:
+        (x', y') blended result
+    """
+    rx, ry = 0.0, 0.0
+    for var_idx in range(len(variations)):
+        w = float(variations[var_idx])
+        if w < 1e-6:
+            continue
+        vx, vy = apply_variation_cpu(var_idx, x, y, w)
+        rx += vx
+        ry += vy
+    return rx, ry
 
 
 def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[float, float]:

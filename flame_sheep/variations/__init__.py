@@ -19,4 +19,4 @@ from ._registry import (
 
 from ._params import random_var_params
 
-from ._cpu import apply_variation_cpu
+from ._cpu import apply_variation_cpu, apply_variations_cpu

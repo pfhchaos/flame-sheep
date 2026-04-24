@@ -87,7 +87,8 @@ def _scorer_main(db_path: str, stop_event):
 def _score_genome(params_json: str) -> dict[str, float]:
     """Run CPU chaos game and compute all symmetry metrics."""
     from flame_sheep.storage import _genome_from_json
-    from flame_sheep.genome import _score_from_histogram, _score_symmetry, _apply_variation_cpu
+    from flame_sheep.genome import _score_from_histogram, _score_symmetry
+    from flame_sheep.variations import apply_variations_cpu
 
     genome = _genome_from_json(params_json)
 
@@ -116,10 +117,7 @@ def _score_genome(params_json: str) -> dict[str, float]:
         nx = a * x + b * y + cc
         ny = d * x + e * y + f
 
-        best_var = int(np.argmax(tr.variations))
-        w = float(tr.variations[best_var])
-        if w > 0.0:
-            nx, ny = _apply_variation_cpu(best_var, nx, ny, w)
+        nx, ny = apply_variations_cpu(tr.variations, nx, ny)
 
         x, y = nx, ny
         c = (c + tr.color) * 0.5

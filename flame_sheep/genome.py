@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from .variations import (
     Variation, NUM_VARIATIONS, MAX_VAR_PARAMS, PARAMETRIC_VARIATIONS,
-    random_var_params, apply_variation_cpu,
+    random_var_params, apply_variation_cpu, apply_variations_cpu,
 )
 
 # Re-export for backwards compatibility
@@ -386,10 +386,7 @@ class Genome:
             nx = a * x + b * y + cc
             ny = d * x + e * y + f
 
-            best_var = int(np.argmax(tr.variations))
-            w = float(tr.variations[best_var])
-            if w > 0.0:
-                nx, ny = _apply_variation_cpu(best_var, nx, ny, w)
+            nx, ny = apply_variations_cpu(tr.variations, nx, ny)
 
             x, y = nx, ny
             c = (c + tr.color) * 0.5
