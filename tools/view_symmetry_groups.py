@@ -154,8 +154,8 @@ def show_matrix_wallpaper():
 
     # Teardrop centered near origin — fully asymmetric, no hidden overlaps
     t = np.linspace(0, 2*np.pi, 30)
-    r = 0.1 * (1 + np.cos(t))  # cardioid-ish
-    L = np.column_stack([r * np.cos(t) + 0.05, r * np.sin(t)])
+    r = 0.04 * (1 + np.cos(t))  # cardioid-ish, small
+    L = np.column_stack([r * np.cos(t) + 0.02, r * np.sin(t)])
 
     fig, axes = plt.subplots(3, 6, figsize=(18, 9))
     fig.suptitle('17 Wallpaper Groups — Transform Elements', fontsize=14)
