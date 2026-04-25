@@ -464,6 +464,44 @@ vec2 var_sattractor(vec2 p, int tidx) {
     return vec2(ca * p.x - sa * p.y, sa * p.x + ca * p.y);
 }
 
+// {{SYMMETRY_GROUPS}}
+
+vec2 var_wallpaper(vec2 p, int tidx) {
+    int vbase = tidx * MAX_VAR_PARAMS;
+    int group = int(u_var_params[vbase + 23]);
+    group = clamp(group, 0, 16);
+    int count = WALLPAPER_COUNTS[group];
+    int offset = WALLPAPER_OFFSETS[group];
+    int elem = int(rng_float() * float(count));
+    elem = clamp(elem, 0, count - 1);
+    int base = (offset + elem) * 6;
+    float a = WALLPAPER_DATA[base + 0];
+    float b = WALLPAPER_DATA[base + 1];
+    float c = WALLPAPER_DATA[base + 2];
+    float d = WALLPAPER_DATA[base + 3];
+    float e = WALLPAPER_DATA[base + 4];
+    float f = WALLPAPER_DATA[base + 5];
+    return vec2(a * p.x + b * p.y + c, d * p.x + e * p.y + f);
+}
+
+vec2 var_frieze(vec2 p, int tidx) {
+    int vbase = tidx * MAX_VAR_PARAMS;
+    int group = int(u_var_params[vbase + 24]);
+    group = clamp(group, 0, 6);
+    int count = FRIEZE_COUNTS[group];
+    int offset = FRIEZE_OFFSETS[group];
+    int elem = int(rng_float() * float(count));
+    elem = clamp(elem, 0, count - 1);
+    int base = (offset + elem) * 6;
+    float a = FRIEZE_DATA[base + 0];
+    float b = FRIEZE_DATA[base + 1];
+    float c = FRIEZE_DATA[base + 2];
+    float d = FRIEZE_DATA[base + 3];
+    float e = FRIEZE_DATA[base + 4];
+    float f = FRIEZE_DATA[base + 5];
+    return vec2(a * p.x + b * p.y + c, d * p.x + e * p.y + f);
+}
+
 // ------------------------------------------------------------
 // Apply single variation by index (switch-based dispatch)
 // ------------------------------------------------------------
@@ -513,6 +551,8 @@ vec2 apply_single_variation(int var_idx, vec2 p, int tidx) {
         case 41: return var_kaleidoscope(p, tidx);
         case 42: return var_icon(p, tidx);
         case 43: return var_sattractor(p, tidx);
+        case 44: return var_wallpaper(p, tidx);
+        case 45: return var_frieze(p, tidx);
         default: return p;
     }
 }

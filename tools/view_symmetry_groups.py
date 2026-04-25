@@ -1,260 +1,171 @@
 #!/usr/bin/env python3
-"""Visualize the 24 crystallographic symmetry groups.
+"""Visualize symmetry variations using the actual CPU chaos game.
 
-Renders a test shape (L-shape to show orientation) through each group's
-transforms. Run with: python tools/view_symmetry_groups.py
+Renders each symmetry group (wallpaper/frieze) and other variations
+(sattractor, icon) as flame fractal histograms. Uses the same data
+and code paths as the renderer and scorer.
+
+Usage:
+    python tools/view_symmetry_groups.py                  # all wallpaper groups
+    python tools/view_symmetry_groups.py --frieze          # all frieze groups
+    python tools/view_symmetry_groups.py --variation icon   # single variation
+    python tools/view_symmetry_groups.py --variation sattractor --param sat_m=6
 """
 
+import sys
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon
-from matplotlib.collections import PatchCollection
 
-# L-shape vertices (asymmetric to show rotation/reflection)
-L_SHAPE = np.array([
-    [0.0, 0.0], [0.3, 0.0], [0.3, 0.1], [0.1, 0.1], [0.1, 0.3], [0.0, 0.3]
-])
+sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parent.parent))
 
-
-def apply_affine(points, a, b, c, d, e, f):
-    """Apply affine transform to a set of 2D points."""
-    result = np.zeros_like(points)
-    result[:, 0] = a * points[:, 0] + b * points[:, 1] + c
-    result[:, 1] = d * points[:, 0] + e * points[:, 1] + f
-    return result
+from flame_sheep.genome import Genome, Transform, NUM_VARIATIONS
+from flame_sheep.variations import Variation, random_var_params
+from flame_sheep.variations._symmetry_groups import (
+    WALLPAPER_GROUPS, FRIEZE_GROUPS, WALLPAPER_NAMES, FRIEZE_NAMES,
+)
 
 
-# --- Wallpaper groups (SymNetG1-17) ---
-# Format: (name, [(a, b, c, d, e, f), ...])
-# Using stepx=0.5, stepy=0.5, sepx=0.5, sepy=0.5 as defaults
-
-sx, sy = 0.25, 0.25  # stepx/2, stepy/2
-sep = 0.25  # sepx/2, sepy/2
-
-WALLPAPER_GROUPS = [
-    ("p1 (ng1)", [
-        (1, 0, -sx, 0, 1, -sy),
-        (1, 0, sx, 0, 1, sy),
-    ]),
-    ("p2 (ng2)", [
-        (1, 0, -sx, 0, 1, -sy),
-        (1, 0, sx, 0, -1, sy),
-    ]),
-    ("pg (ng3)", [
-        (1, 0, -sep-sx, 0, 1, -sep-sy),
-        (-1, 0, sep+sx, 0, -1, sep+sy),
-    ]),
-    ("pmm (ng4)", [
-        (1, 0, -sep-2-sx, 0, 1, sep-1.5-sy),
-        (-1, 0, sep-sx, 0, -1, -sep-0.5-sy),
-        (1, 0, -sep+sx, 0, -1, -sep+0.5+sy),
-        (-1, 0, sep+2+sx, 0, 1, sep-0.5+sy),
-    ]),
-    ("pmg (ng5)", [
-        (1, 0, -sep-2-sx, 0, 1, sep-0.5),
-        (-1, 0, sep-sx, 0, -1, -sep-0.5),
-        (1, 0, -sep+sx, 0, -1, -sep-0.5),
-        (-1, 0, 2+sep+sx, 0, 1, sep-0.5),
-    ]),
-    ("pm (ng6)", [
-        (1, 0, -sx, 0, 1, -sy+sep),
-        (1, 0, -sx, 0, -1, -sy-sep),
-        (1, 0, sx, 0, 1, sy+sep),
-        (1, 0, sx, 0, -1, sy-sep),
-    ]),
-    ("cm (ng7)", [
-        (1, 0, -sep, 0, 1, sep),
-        (1, 0, sep, 0, -1, -sep),
-    ]),
-    ("pgg (ng8)", [
-        (1, 0, -1-sep, 0, -1, -sep),
-        (-1, 0, 1+sep, 0, 1, sep),
-        (-1, 0, 1+sep, 0, -1, -sep),
-        (1, 0, -1-sep, 0, 1, sep),
-        (1, 0, -1-sep, 0, -1, sep),
-        (-1, 0, 1+sep, 0, 1, -sep),
-        (-1, 0, 1+sep, 0, -1, sep),
-        (1, 0, -1-sep, 0, 1, -sep),
-    ]),
-    ("cmm (ng9)", [
-        (1, 0, sep, 0, -1, -sep),
-        (-1, 0, -sep, 0, 1, sep),
-        (-1, 0, -sep, 0, -1, -sep),
-        (1, 0, sep, 0, 1, sep),
-    ]),
-    ("p4 (ng10)", [
-        (-1, 0, -sep, 0, -1, -sep),
-        (0, 1, -sep, -1, 0, -sep),
-        (0, -1, sep, 1, 0, sep),
-        (1, 0, sep, 0, 1, sep),
-    ]),
-    ("p4m (ng11)", [
-        (1, 0, sep+sx, 0, 1, sep+sy),
-        (-1, 0, -sep+sx, 0, -1, -sep+sy),
-        (0, 1, sep+sx, -1, 0, -sep+sy),
-        (0, -1, -sep+sx, 1, 0, sep+sy),
-        (-1, 0, -sep-sx, 0, 1, sep-sy),
-        (0, -1, -sep-sx, -1, 0, -sep-sy),
-        (0, 1, sep-sx, 1, 0, sep-sy),
-        (1, 0, sep-sx, 0, -1, -sep-sy),
-    ]),
-    ("p4g (ng12)", [
-        (1, 0, sep, 0, 1, sep),
-        (-1, 0, -sep, 0, -1, -sep),
-        (0, 1, sep, -1, 0, -sep),
-        (0, -1, -sep, 1, 0, sep),
-        (-1, 0, -sep, 0, 1, sep),
-        (0, -1, -sep, -1, 0, -sep),
-        (0, 1, sep, 1, 0, sep),
-        (1, 0, sep, 0, -1, -sep),
-    ]),
-    ("p3 (ng13)", [
-        (1, 0, -sx, 0, -1, -sy),
-        (-0.5, -0.866, -sx, -0.866, 0.5, -sy),
-        (-0.5, 0.866, -sx, 0.866, 0.5, -sy),
-        (1, 0, sx, 0, -1, sy),
-        (-0.5, -0.866, sx, -0.866, 0.5, sy),
-        (-0.5, 0.866, sx, 0.866, 0.5, sy),
-    ]),
-    ("p3m1 (ng14)", [
-        (1, 0, -sx, 0, 1, -sy),
-        (1, 0, -sx, 0, -1, -sy),
-        (-0.5, -0.866, -sx, 0.866, -0.5, -sy),
-        (-0.5, 0.866, -sx, -0.866, -0.5, -sy),
-        (-0.5, -0.866, -sx, -0.866, 0.5, -sy),
-        (-0.5, 0.866, -sx, 0.866, 0.5, -sy),
-        (1, 0, sx, 0, 1, sy),
-        (1, 0, sx, 0, -1, sy),
-        (-0.5, -0.866, sx, 0.866, -0.5, sy),
-        (-0.5, 0.866, sx, -0.866, -0.5, sy),
-        (-0.5, -0.866, sx, -0.866, 0.5, sy),
-        (-0.5, 0.866, sx, 0.866, 0.5, sy),
-    ]),
-    ("p31m (ng15)", [
-        (0, 1, -sx, -1, 0, -sy),
-        (0, -1, -sx, -1, 0, -sy),
-        (0.866, -0.5, -sx, 0.5, 0.866, -sy),
-        (0.866, 0.5, -sx, 0.5, -0.866, -sy),
-        (-0.866, -0.5, -sx, 0.5, -0.866, -sy),
-        (-0.866, 0.5, -sx, 0.5, 0.866, -sy),
-        (0, 1, sx, -1, 0, sy),
-        (0, -1, sx, -1, 0, sy),
-        (0.866, -0.5, sx, 0.5, 0.866, sy),
-        (0.866, 0.5, sx, 0.5, -0.866, sy),
-        (-0.866, -0.5, sx, 0.5, -0.866, sy),
-        (-0.866, 0.5, sx, 0.5, 0.866, sy),
-    ]),
-    ("p6 (ng16)", [
-        (1, 0, -sx, 0, 1, -sy),
-        (0.5, -0.866, -sx, 0.866, 0.5, -sy),
-        (-0.5, -0.866, -sx, 0.866, -0.5, -sy),
-        (-1, 0, -sx, 0, -1, -sy),
-        (-0.5, 0.866, -sx, -0.866, -0.5, -sy),
-        (0.5, 0.866, -sx, -0.866, 0.5, -sy),
-        (1, 0, sx, 0, 1, sy),
-        (0.5, -0.866, sx, 0.866, 0.5, sy),
-        (-0.5, -0.866, sx, 0.866, -0.5, sy),
-        (-1, 0, sx, 0, -1, sy),
-        (-0.5, 0.866, sx, -0.866, -0.5, sy),
-        (0.5, 0.866, sx, -0.866, 0.5, sy),
-    ]),
-    ("p6m (ng17)", [
-        (1, 0, -sx, 0, 1, -sy),
-        (1, 0, -sx, 0, -1, -sy),
-        (0.5, -0.866, -sx, 0.866, 0.5, -sy),
-        (0.5, 0.866, -sx, 0.866, -0.5, -sy),
-        (-0.5, -0.866, -sx, 0.866, -0.5, -sy),
-        (-0.5, 0.866, -sx, 0.866, 0.5, -sy),
-        (-1, 0, -sx, 0, -1, -sy),
-        (-1, 0, -sx, 0, 1, -sy),
-        (-0.5, 0.866, -sx, -0.866, -0.5, -sy),
-        (-0.5, -0.866, -sx, -0.866, 0.5, -sy),
-        (0.5, 0.866, -sx, -0.866, 0.5, -sy),
-        (0.5, -0.866, -sx, -0.866, -0.5, -sy),
-    ]),
-]
-
-FRIEZE_GROUPS = [
-    ("p1 (bg1)", [
-        (1, 0, -sx-1, 0, 1, -sy),
-        (1, 0, sx, 0, 1, sy),
-    ]),
-    ("p11m (bg2)", [
-        (1, 0, -sx-1, 0, 1, -sy),
-        (1, 0, sx, 0, -1, sy+1),
-    ]),
-    ("p11g (bg3)", [
-        (1, 0, -sx-1, 0, 1, -sy-0.5),
-        (-1, 0, sx+1, 0, -1, sy+0.5),
-    ]),
-    ("p2 (bg4)", [
-        (1, 0, -sx-1, 0, 1, -sy-0.5),
-        (-1, 0, sx+1, 0, 1, sy+0.5),
-    ]),
-    ("p2mm (bg5)", [
-        (1, 0, -sx-1, 0, 1, -sy-0.5),
-        (1, 0, sx-1, 0, -1, sy+0.5),
-    ]),
-    ("p2mg (bg6)", [
-        (1, 0, -sx-1, 0, 1, -sy-0.5),
-        (-1, 0, sx+1, 0, 1, sy-0.5),
-        (1, 0, -sx-1, 0, -1, -sy+0.5),
-        (-1, 0, sx+1, 0, -1, sy+0.5),
-    ]),
-    ("p2gm (bg7)", [
-        (1, 0, -sx-2, 0, 1, -sy-0.5),
-        (-1, 0, sx+2, 0, 1, sy-0.5),
-        (1, 0, sx, 0, -1, sy+0.5),
-        (-1, 0, -sx, 0, -1, -sy+0.5),
-    ]),
-]
+def make_genome(variation_idx: int, var_params: dict = None,
+                rng: np.random.Generator = None) -> Genome:
+    """Create a minimal genome with one transform using a single variation."""
+    if rng is None:
+        rng = np.random.default_rng(42)
+    g = Genome()
+    t = Transform()
+    t.affine = np.array([0.8, 0.1, 0.0, -0.1, 0.8, 0.0], dtype=np.float32)
+    t.variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
+    t.variations[variation_idx] = 1.0
+    t.var_params = var_params or {}
+    t.weight = 1.0
+    t.color = 0.5
+    g.transforms = [t]
+    g.zoom = 1.0
+    return g
 
 
-def render_group(ax, name, transforms, shape=L_SHAPE):
-    """Render a symmetry group by applying all transforms to the test shape."""
-    colors = plt.cm.Set3(np.linspace(0, 1, len(transforms)))
-    patches = []
-    patch_colors = []
+def render_histogram(genome: Genome, grid_size: int = 256,
+                     n_iter: int = 100_000) -> np.ndarray:
+    """Run CPU chaos game and return log-scaled histogram."""
+    from flame_sheep.variations import apply_variations_cpu
+    from flame_sheep.variations._cpu import _current_var_params
 
-    for i, (a, b, c, d, e, f) in enumerate(transforms):
-        transformed = apply_affine(shape, a, b, c, d, e, f)
-        patches.append(Polygon(transformed, closed=True))
-        patch_colors.append(colors[i])
+    # Set var_params for CPU path (wallpaper/frieze group selection)
+    _current_var_params.clear()
+    for tr in genome.transforms:
+        _current_var_params.update(tr.var_params)
 
-    collection = PatchCollection(patches, alpha=0.6, edgecolors='black',
-                                  linewidths=0.5)
-    collection.set_facecolor(patch_colors)
-    ax.add_collection(collection)
-    ax.set_title(name, fontsize=8)
-    ax.set_aspect('equal')
-    ax.autoscale()
+    # Patch the module-level dict
+    import flame_sheep.variations._cpu as cpu_mod
+    cpu_mod._current_var_params = _current_var_params
+
+    fuse = 20
+    bound = 4.0
+    rng = np.random.default_rng(42)
+
+    hit_grid = np.zeros((grid_size, grid_size), dtype=np.float64)
+
+    weights = np.array([tr.weight for tr in genome.transforms], dtype=np.float64)
+    weights /= weights.sum()
+    cumw = np.cumsum(weights)
+
+    x, y = 0.0, 0.0
+    for i in range(fuse + n_iter):
+        r = rng.random()
+        tidx = min(int(np.searchsorted(cumw, r)), len(genome.transforms) - 1)
+        tr = genome.transforms[tidx]
+        a, b, c, d, e, f = tr.affine
+        nx = a * x + b * y + c
+        ny = d * x + e * y + f
+        nx, ny = apply_variations_cpu(tr.variations, nx, ny)
+        x, y = nx, ny
+        if not (np.isfinite(x) and np.isfinite(y)):
+            break
+        if i >= fuse and abs(x) < bound and abs(y) < bound:
+            gx = int((x + bound) / (2 * bound) * grid_size)
+            gy = int((y + bound) / (2 * bound) * grid_size)
+            gx = max(0, min(grid_size - 1, gx))
+            gy = max(0, min(grid_size - 1, gy))
+            hit_grid[gy, gx] += 1.0
+
+    return np.log1p(hit_grid)
+
+
+def show_wallpaper():
+    fig, axes = plt.subplots(3, 6, figsize=(18, 9))
+    fig.suptitle('17 Wallpaper Groups', fontsize=14)
+    for i in range(17):
+        row, col = divmod(i, 6)
+        params = {'wallpaper_group': float(i)}
+        g = make_genome(Variation.WALLPAPER, params)
+        hist = render_histogram(g)
+        axes[row, col].imshow(hist, cmap='inferno', origin='lower')
+        axes[row, col].set_title(f'{WALLPAPER_NAMES[i]} ({i})', fontsize=9)
+        axes[row, col].set_xticks([])
+        axes[row, col].set_yticks([])
+    axes[2, 5].set_visible(False)
+    fig.tight_layout()
+    fig.savefig('/tmp/wallpaper_groups.png', dpi=150)
+    print('Saved /tmp/wallpaper_groups.png')
+    plt.show()
+
+
+def show_frieze():
+    fig, axes = plt.subplots(1, 7, figsize=(21, 3))
+    fig.suptitle('7 Frieze Groups', fontsize=14)
+    for i in range(7):
+        params = {'frieze_group': float(i)}
+        g = make_genome(Variation.FRIEZE, params)
+        hist = render_histogram(g)
+        axes[i].imshow(hist, cmap='inferno', origin='lower')
+        axes[i].set_title(f'{FRIEZE_NAMES[i]} ({i})', fontsize=9)
+        axes[i].set_xticks([])
+        axes[i].set_yticks([])
+    fig.tight_layout()
+    fig.savefig('/tmp/frieze_groups.png', dpi=150)
+    print('Saved /tmp/frieze_groups.png')
+    plt.show()
+
+
+def show_variation(var_name: str, params: dict = None):
+    var_idx = getattr(Variation, var_name.upper(), None)
+    if var_idx is None:
+        print(f'Unknown variation: {var_name}')
+        print(f'Available: {[k for k in dir(Variation) if not k.startswith("_")]}')
+        return
+    if params is None:
+        rng = np.random.default_rng(42)
+        params = random_var_params(var_idx, rng)
+    g = make_genome(var_idx, params)
+    hist = render_histogram(g)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.imshow(hist, cmap='inferno', origin='lower')
+    ax.set_title(f'{var_name} {params}', fontsize=10)
     ax.set_xticks([])
     ax.set_yticks([])
+    fig.tight_layout()
+    plt.show()
 
 
 def main():
-    # Wallpaper groups: 17 panels
-    fig1, axes1 = plt.subplots(3, 6, figsize=(18, 9))
-    fig1.suptitle('17 Wallpaper Groups (SymNetG1-17)', fontsize=14)
-    for i, (name, transforms) in enumerate(WALLPAPER_GROUPS):
-        row, col = divmod(i, 6)
-        render_group(axes1[row, col], name, transforms)
-    # Hide unused panel
-    axes1[2, 5].set_visible(False)
-    fig1.tight_layout()
-    fig1.savefig('/tmp/wallpaper_groups.png', dpi=150)
-    print('Saved /tmp/wallpaper_groups.png')
+    parser = argparse.ArgumentParser(description='Visualize symmetry variations')
+    parser.add_argument('--frieze', action='store_true', help='Show frieze groups')
+    parser.add_argument('--variation', type=str, help='Show a single variation by name')
+    parser.add_argument('--param', type=str, action='append',
+                        help='Set param as key=value (can repeat)')
+    args = parser.parse_args()
 
-    # Frieze groups: 7 panels
-    fig2, axes2 = plt.subplots(1, 7, figsize=(21, 3))
-    fig2.suptitle('7 Frieze Groups (SymBandG1-7)', fontsize=14)
-    for i, (name, transforms) in enumerate(FRIEZE_GROUPS):
-        render_group(axes2[i], name, transforms)
-    fig2.tight_layout()
-    fig2.savefig('/tmp/frieze_groups.png', dpi=150)
-    print('Saved /tmp/frieze_groups.png')
-
-    plt.show()
+    if args.variation:
+        params = {}
+        if args.param:
+            for p in args.param:
+                k, v = p.split('=')
+                params[k] = float(v)
+        show_variation(args.variation, params or None)
+    elif args.frieze:
+        show_frieze()
+    else:
+        show_wallpaper()
 
 
 if __name__ == '__main__':

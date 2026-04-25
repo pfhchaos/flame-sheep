@@ -8,6 +8,9 @@ Used by Genome.is_viable() and BackgroundScorer for CPU chaos game.
 
 import numpy as np
 
+# Module-level var_params for CPU path (set by caller before apply)
+_current_var_params: dict = {}
+
 
 def apply_variations_cpu(variations: np.ndarray, x: float, y: float) -> tuple[float, float]:
     """Apply all active variations weighted, matching GPU behavior.
@@ -83,10 +86,22 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         return w*x, w*y
     elif var_idx == 43: # sattractor — pure rotation, always bounded
         return w*x, w*y
-    elif var_idx == 44: # wallpaper — affine group element, bounded
-        return w*x, w*y
-    elif var_idx == 45: # frieze — affine group element, bounded
-        return w*x, w*y
+    elif var_idx == 44: # wallpaper — random group element
+        from ._symmetry_groups import WALLPAPER_GROUPS
+        group = int(_current_var_params.get('wallpaper_group', 0))
+        group = max(0, min(16, group))
+        elements = WALLPAPER_GROUPS[group]
+        elem = elements[int(np.random.random() * len(elements))]
+        a, b, c, d, e, f = elem
+        return w*(a*x + b*y + c), w*(d*x + e*y + f)
+    elif var_idx == 45: # frieze — random group element
+        from ._symmetry_groups import FRIEZE_GROUPS
+        group = int(_current_var_params.get('frieze_group', 0))
+        group = max(0, min(6, group))
+        elements = FRIEZE_GROUPS[group]
+        elem = elements[int(np.random.random() * len(elements))]
+        a, b, c, d, e, f = elem
+        return w*(a*x + b*y + c), w*(d*x + e*y + f)
     else:
         # treat unknown/safe variations as linear for viability purposes
         return w*x, w*y

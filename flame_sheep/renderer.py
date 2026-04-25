@@ -86,9 +86,10 @@ class FlameRenderer:
         self._create_resources()
 
     def _load_shaders(self):
-        self.compute_shader = self.ctx.compute_shader(
-            (SHADER_DIR / 'flame.comp').read_text()
-        )
+        from .variations._symmetry_groups import generate_glsl
+        flame_src = (SHADER_DIR / 'flame.comp').read_text()
+        flame_src = flame_src.replace('// {{SYMMETRY_GROUPS}}', generate_glsl())
+        self.compute_shader = self.ctx.compute_shader(flame_src)
         self.clear_shader = self.ctx.compute_shader(
             (SHADER_DIR / 'clear.comp').read_text()
         )
