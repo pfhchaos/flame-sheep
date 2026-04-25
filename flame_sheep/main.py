@@ -65,7 +65,16 @@ class FlameSheepCore:
         self._lib = lib
 
         # --- Visual axes ---
-        factory = genome_factory or (lambda: Genome.random(self.rng))
+        if genome_factory:
+            factory = genome_factory
+        elif lib is not None and lib.genome_count() > 0:
+            # Pick random genomes from the library — no GIL-heavy
+            # viability checks, just a fast DB query
+            _top = [gid for gid, _ in lib.top_genomes(n=50)]
+            factory = lambda: lib.load_genome(
+                _top[int(self.rng.integers(0, len(_top)))])
+        else:
+            factory = lambda: Genome.random(self.rng)
         self._genome_axis = GenomeAxis(genome_factory=factory, lib=lib, rng=self.rng)
         self._palette_axis = PaletteAxis(
             initial_palette=self._genome_axis.current_genome.palette,
@@ -493,8 +502,26 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
 
     # --- library + evolution state ---
     from .storage import Library
-    from .loops import evolve_loops
+    from .loops import evolve_loops, compose_loops, save_best_loops
     lib = Library()
+
+    # Auto-seed library if empty
+    if lib.genome_count() == 0:
+        log.info('Empty library — generating initial genomes...')
+        rng = np.random.default_rng()
+        for i in range(200):
+            g = Genome.random(rng)
+            lib.save_genome(g, g.aesthetic_score())
+            if (i + 1) % 50 == 0:
+                log.info(f'  {i+1}/200 genomes')
+        log.info(f'Generated {lib.genome_count()} genomes')
+
+    if lib.loop_count() == 0 and lib.genome_count() >= 20:
+        log.info('No loops — composing initial loops...')
+        candidates = compose_loops(lib, n_attempts=200, loop_length=6)
+        if candidates:
+            save_best_loops(lib, candidates, n_keep=20)
+        log.info(f'Composed {lib.loop_count()} loops')
 
     core = FlameSheepCore(audio_device=audio_device, test_audio=test_audio, lib=lib,
                           )
