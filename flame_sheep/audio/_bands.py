@@ -15,8 +15,8 @@ ALLOWED_RANGES = {
 
 # Default (static) ranges: what the bands start at and anchor toward
 DEFAULT_RANGES = {
-    'kick':           (30, 120),
-    'snare':          (300, 1000),
+    'kick':           (30, 200),
+    'snare':          (200, 1000),
     'clap':           (1000, 8000),
     'hihat':          (8000, SAMPLE_RATE / 2),
     '_snare_confirm': (1000, 3000),
@@ -25,8 +25,8 @@ DEFAULT_RANGES = {
 # All analysis bands including sub-bass (shared by all analyzers)
 BAND_RANGES = {
     'subbass': (20, 200),
-    'kick':    (30, 120),
-    'snare':   (300, 1000),
+    'kick':    (30, 200),
+    'snare':   (200, 1000),
     'clap':    (1000, 8000),
     'hihat':   (8000, SAMPLE_RATE / 2),
 }
