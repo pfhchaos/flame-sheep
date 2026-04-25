@@ -27,9 +27,9 @@ class FluxBeatDetector:
 
     # Detection constants
     THRESHOLD = 1.5       # flux must exceed this × local average to fire
-    KICK_THRESHOLD = 2.5  # flux must exceed this × local average for kick (4 bins)
+    KICK_THRESHOLD = 3.5  # flux must exceed this × local average for kick
     COOLDOWN  = 12    # audio frames between onsets (~128ms at HOP_SIZE=512)
-    KICK_COOLDOWN = 10 # shorter for kick to allow fast patterns (~107ms)
+    KICK_COOLDOWN = 8  # fallback when no tempo locked (~85ms)
     STABILITY_SCALING = 1.0  # how much stability raises the kick threshold
     MIN_FLUX  = 1e-7  # gates out DC/numerical noise
     SHARPNESS = 3.0   # min flux ratio (current vs pre-attack) for snare/hihat
@@ -126,15 +126,11 @@ class FluxBeatDetector:
             if len(hist) >= 10 and band_flux > self.MIN_FLUX and not in_cooldown:
                 local_avg = float(np.mean(hist))
 
-                # Attack sharpness gate for snare/hihat:
-                # compare to pre-attack baseline (median of lookback window)
-                # to span the overlap attack ramp from 75% overlapping windows
-                if (self._sharpness and band in ('kick', 'snare', 'clap', 'hihat')
+                # Attack sharpness gate
+                if (self._sharpness and band in ('snare', 'clap', 'hihat')
                         and len(recent) > self.SHARPNESS_LOOKBACK):
                     pre_attack = float(np.median(list(recent)[:-1]))
                     if pre_attack > self.MIN_FLUX:
-                        # Scale sharpness threshold down when baseline is loud —
-                        # less headroom means smaller attack ratios for real events
                         sharpness_headroom = 1.0 / (1.0 + pre_attack * 10.0)
                         effective_sharpness = 1.0 + (self.SHARPNESS - 1.0) * sharpness_headroom
                         if band_flux / pre_attack < effective_sharpness:
