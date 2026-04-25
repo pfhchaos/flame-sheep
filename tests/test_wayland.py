@@ -226,6 +226,35 @@ class TestSwayHeadless:
             else:
                 os.environ.pop('WAYLAND_DISPLAY', None)
 
+    def test_create_wallpaper_session(self, headless_sway):
+        """Should be able to create a WallpaperSession and add a surface."""
+        wayland_display = headless_sway['wayland_display']
+        if not wayland_display:
+            pytest.skip('could not determine wayland display socket')
+
+        old_display = os.environ.get('WAYLAND_DISPLAY')
+        os.environ['WAYLAND_DISPLAY'] = wayland_display
+        try:
+            from flame_sheep.wayland_window import WallpaperSession
+            session = WallpaperSession()
+            outputs = list(session._wl_outputs.keys())
+            assert len(outputs) >= 1, 'No outputs in session'
+
+            # Create a layer-shell surface
+            surf = session.add_output(outputs[0])
+            assert surf is not None, 'Failed to create surface'
+
+            session.destroy()
+        except Exception as e:
+            if 'EGL' in str(e) or 'egl' in str(e):
+                pytest.skip(f'EGL not available: {e}')
+            raise
+        finally:
+            if old_display:
+                os.environ['WAYLAND_DISPLAY'] = old_display
+            else:
+                os.environ.pop('WAYLAND_DISPLAY', None)
+
     def test_layer_shell_available(self, headless_sway):
         """Headless sway should advertise wlr-layer-shell protocol."""
         wayland_display = headless_sway['wayland_display']
