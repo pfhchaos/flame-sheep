@@ -334,12 +334,9 @@ class FlameSheepApp(mglw.WindowConfig):
 # ---------------------------------------------------------------------------
 
 # Monitor physical specs: diagonal size in inches
-# Used to compute PPI for physical alignment across mixed-DPI displays
-MONITOR_SIZES = {
-    'LS24A600U': 24.0,   # Samsung 24" 2560x1440
-    'ASUS XG438': 43.0,  # ASUS 43" 3840x2160
-}
-DEFAULT_MONITOR_SIZE = 27.0  # fallback assumption
+# Used to compute PPI for physical alignment across mixed-DPI displays.
+# Override in config.toml [monitors] section or just use the default.
+DEFAULT_MONITOR_SIZE = 27.0  # fallback — works for most monitors
 
 
 def _get_sway_layout() -> dict[str, dict]:
@@ -364,7 +361,7 @@ def _get_sway_layout() -> dict[str, dict]:
             native_h = mode.get('height', r['height'])
             
             # Get diagonal size for this model
-            diag_inches = MONITOR_SIZES.get(model, DEFAULT_MONITOR_SIZE)
+            diag_inches = DEFAULT_MONITOR_SIZE
             
             # Calculate PPI from native resolution and diagonal
             diag_px = math.sqrt(native_w**2 + native_h**2)
