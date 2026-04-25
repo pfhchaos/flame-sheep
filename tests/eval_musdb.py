@@ -79,14 +79,18 @@ def _collect_fine_hop(pcm_mono: np.ndarray, adaptive: bool = False,
     from flame_sheep.audio._spectrum import SpectrumEngine
     from flame_sheep.audio.beat_detector import FluxBeatDetector
     from flame_sheep.audio.energy import EnergyAnalyzer
+    from flame_sheep.audio.stability import MagnitudeStability
 
     engine = SpectrumEngine()
-    detector = FluxBeatDetector(adaptive=adaptive, sharpness=sharpness)
+    stability = MagnitudeStability()
+    detector = FluxBeatDetector(adaptive=adaptive, sharpness=sharpness,
+                                stability=stability)
     energy = EnergyAnalyzer()
 
     silence = np.zeros(HOP_SIZE, dtype=np.float32)
     for _ in range(40):
         frame = engine.push_hop(silence)
+        stability.update(frame.magnitude)
         energy.update(frame.magnitude)
         detector.detect(frame)
 
@@ -97,6 +101,7 @@ def _collect_fine_hop(pcm_mono: np.ndarray, adaptive: bool = False,
         if len(chunk) < HOP_SIZE:
             chunk = np.pad(chunk, (0, HOP_SIZE - len(chunk)))
         frame = engine.push_hop(chunk)
+        stability.update(frame.magnitude)
         energy.update(frame.magnitude)
         ts = pos / SAMPLE_RATE
         for e in detector.detect(frame):
