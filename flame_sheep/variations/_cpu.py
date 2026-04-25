@@ -42,6 +42,27 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         return w*x, w*y
     elif var_idx == 1: # sinusoidal
         return w*np.sin(x), w*np.sin(y)
+    elif var_idx == 15: # waves
+        fx = _current_var_params.get('waves_freq_x', 0.5)
+        fy = _current_var_params.get('waves_freq_y', 0.5)
+        ax = _current_var_params.get('waves_amp_x', 0.5)
+        ay = _current_var_params.get('waves_amp_y', 0.5)
+        return w*(x + fx * np.sin(y / max(ax*ax, 1e-6))), w*(y + fy * np.sin(x / max(ay*ay, 1e-6)))
+    elif var_idx == 17: # popcorn
+        cx = _current_var_params.get('popcorn_cx', 0.5)
+        cy = _current_var_params.get('popcorn_cy', 0.5)
+        return w*(x + cx * np.sin(np.tan(3*y))), w*(y + cy * np.sin(np.tan(3*x)))
+    elif var_idx == 21: # rings
+        c = _current_var_params.get('rings_c', 0.5)
+        cc = c*c + 1e-6
+        rr = (r % (2*cc)) - cc + r * (1 - cc)
+        return w*rr*np.cos(th), w*rr*np.sin(th)
+    elif var_idx == 22: # fan
+        c = _current_var_params.get('fan_c', 0.5)
+        f = _current_var_params.get('fan_f', 0.5)
+        t = np.pi * c*c + 1e-6
+        th2 = th - t if ((th + f) % (2*t)) > t else th + t
+        return w*r*np.cos(th2), w*r*np.sin(th2)
     elif var_idx == 2: # spherical — 1/r², can blow up near origin
         r2 = x*x + y*y + 1e-10
         return w*x/r2, w*y/r2

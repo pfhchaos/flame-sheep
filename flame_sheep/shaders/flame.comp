@@ -190,24 +190,23 @@ vec2 var_bent(vec2 p) {
     if (q.y < 0.0) q.y *= 0.5;
     return q;
 }
-vec2 var_waves(vec2 p, int tidx) {
-    // uses affine b,c,e,f coefficients — reuse from transform
-    float b = u_affines[tidx*6 + 1];
-    float c = u_affines[tidx*6 + 2];
-    float e = u_affines[tidx*6 + 4];
-    float f = u_affines[tidx*6 + 5];
-    return vec2(p.x + b * sin(p.y / max(c*c, 1e-6)),
-                p.y + e * sin(p.x / max(f*f, 1e-6)));
+vec2 var_waves(vec2 p, int slot) {
+    float freq_x = u_active_vars[slot + PARAM_OFFSET + 0];
+    float freq_y = u_active_vars[slot + PARAM_OFFSET + 1];
+    float amp_x  = u_active_vars[slot + PARAM_OFFSET + 2];
+    float amp_y  = u_active_vars[slot + PARAM_OFFSET + 3];
+    return vec2(p.x + freq_x * sin(p.y / max(amp_x*amp_x, 1e-6)),
+                p.y + freq_y * sin(p.x / max(amp_y*amp_y, 1e-6)));
 }
 vec2 var_fisheye(vec2 p) {
     float ri = 2.0 / (r(p) + 1.0);
     return ri * vec2(p.y, p.x);  // note x/y swap
 }
-vec2 var_popcorn(vec2 p, int tidx) {
-    float c = u_affines[tidx*6 + 2];
-    float f = u_affines[tidx*6 + 5];
-    return vec2(p.x + c * sin(tan(3.0 * p.y)),
-                p.y + f * sin(tan(3.0 * p.x)));
+vec2 var_popcorn(vec2 p, int slot) {
+    float cx = u_active_vars[slot + PARAM_OFFSET + 0];
+    float cy = u_active_vars[slot + PARAM_OFFSET + 1];
+    return vec2(p.x + cx * sin(tan(3.0 * p.y)),
+                p.y + cy * sin(tan(3.0 * p.x)));
 }
 vec2 var_exponential(vec2 p) {
     return exp(p.x - 1.0) * vec2(cos(3.14159265 * p.y), sin(3.14159265 * p.y));
@@ -220,17 +219,17 @@ vec2 var_cosine(vec2 p) {
     return vec2(cos(3.14159265 * p.x) * cosh(p.y),
                -sin(3.14159265 * p.x) * sinh(p.y));
 }
-vec2 var_rings(vec2 p, int tidx) {
-    float c = u_affines[tidx*6 + 2];
+vec2 var_rings(vec2 p, int slot) {
+    float c = u_active_vars[slot + PARAM_OFFSET + 0];
     float cc = c * c + 1e-6;
     float ri = r(p);
     float th = theta(p);
     float rr = mod(ri + cc, 2.0 * cc) - cc + ri * (1.0 - cc);
     return rr * vec2(cos(th), sin(th));
 }
-vec2 var_fan(vec2 p, int tidx) {
-    float c = u_affines[tidx*6 + 2];
-    float f = u_affines[tidx*6 + 5];
+vec2 var_fan(vec2 p, int slot) {
+    float c = u_active_vars[slot + PARAM_OFFSET + 0];
+    float f = u_active_vars[slot + PARAM_OFFSET + 1];
     float th = theta(p); float ri = r(p);
     float t = 3.14159265 * c * c + 1e-6;
     float th2 = (mod(th + f, 2.0*t) > t) ? th - t : th + t;
@@ -502,9 +501,7 @@ vec2 var_frieze(vec2 p, int slot) {
 // ------------------------------------------------------------
 // Apply single variation by index (switch-based dispatch)
 // ------------------------------------------------------------
-// slot = offset into u_active_vars for this variation's data
-// tidx = transform index (for affine-reading variations like waves)
-vec2 apply_single_variation(int var_idx, vec2 p, int slot, int tidx) {
+vec2 apply_single_variation(int var_idx, vec2 p, int slot) {
     switch (var_idx) {
         case  0: return var_linear(p);
         case  1: return var_sinusoidal(p);
@@ -521,14 +518,14 @@ vec2 apply_single_variation(int var_idx, vec2 p, int slot, int tidx) {
         case 12: return var_ex(p);
         case 13: return var_julia(p);
         case 14: return var_bent(p);
-        case 15: return var_waves(p, tidx);     // reads u_affines, needs transform index
+        case 15: return var_waves(p, slot);
         case 16: return var_fisheye(p);
-        case 17: return var_popcorn(p, tidx);  // reads u_affines
+        case 17: return var_popcorn(p, slot);
         case 18: return var_exponential(p);
         case 19: return var_power(p);
         case 20: return var_cosine(p);
-        case 21: return var_rings(p, tidx);   // reads u_affines
-        case 22: return var_fan(p, tidx);     // reads u_affines
+        case 21: return var_rings(p, slot);
+        case 22: return var_fan(p, slot);
         case 23: return var_blob(p);
         case 24: return var_pdj(p);
         case 25: return var_fan2(p);
@@ -571,7 +568,7 @@ vec2 apply_variations(vec2 p, int tidx) {
 
         if (var_idx < 0) break;
 
-        result += w * apply_single_variation(var_idx, p, slot, tidx);
+        result += w * apply_single_variation(var_idx, p, slot);
     }
 
     return result;

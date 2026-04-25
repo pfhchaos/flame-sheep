@@ -37,6 +37,11 @@ TEST_POINTS = [
 
 # Fixed params for parametric variations
 PARAM_FIXTURES = {
+    Variation.WAVES: {'waves_freq_x': 0.5, 'waves_freq_y': 0.3,
+                      'waves_amp_x': 0.8, 'waves_amp_y': 0.6},
+    Variation.POPCORN: {'popcorn_cx': 0.3, 'popcorn_cy': 0.5},
+    Variation.RINGS: {'rings_c': 0.4},
+    Variation.FAN: {'fan_c': 0.3, 'fan_f': 0.5},
     Variation.JULIAN: {'julian_power': 4.0, 'julian_dist': 1.0},
     Variation.JULIASCOPE: {'julian_power': 4.0, 'julian_dist': 1.0},
     Variation.SPLITS: {'splits_x': 0.5, 'splits_y': 0.3},

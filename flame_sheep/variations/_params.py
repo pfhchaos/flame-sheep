@@ -35,7 +35,32 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
 
     Returns an empty dict for non-parametric variations.
     """
-    if var_idx in (Variation.JULIAN, Variation.JULIASCOPE):
+    if var_idx == Variation.WAVES:
+        return {
+            'waves_freq_x': float(rng.uniform(-2.5, 2.5)),
+            'waves_freq_y': float(rng.uniform(-2.5, 2.5)),
+            'waves_amp_x': float(rng.uniform(-2.5, 2.5)),
+            'waves_amp_y': float(rng.uniform(-2.5, 2.5)),
+        }
+
+    elif var_idx == Variation.POPCORN:
+        return {
+            'popcorn_cx': float(rng.uniform(-2.5, 2.5)),
+            'popcorn_cy': float(rng.uniform(-2.5, 2.5)),
+        }
+
+    elif var_idx == Variation.RINGS:
+        return {
+            'rings_c': float(rng.uniform(-2.5, 2.5)),
+        }
+
+    elif var_idx == Variation.FAN:
+        return {
+            'fan_c': float(rng.uniform(-2.5, 2.5)),
+            'fan_f': float(rng.uniform(-2.5, 2.5)),
+        }
+
+    elif var_idx in (Variation.JULIAN, Variation.JULIASCOPE):
         # Power 2-12, 50% chance negative (inverts symmetry)
         power = float(rng.integers(2, 13))
         if rng.random() < 0.5:

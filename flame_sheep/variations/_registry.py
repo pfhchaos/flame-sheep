@@ -58,6 +58,7 @@ NUM_VARIATIONS = 46
 
 # Variations that require per-transform parameters (var_params dict)
 PARAMETRIC_VARIATIONS = {
+    Variation.WAVES, Variation.POPCORN, Variation.RINGS, Variation.FAN,
     Variation.JULIAN, Variation.JULIASCOPE,
     Variation.SPLITS, Variation.CURL,
     Variation.RECTANGLES, Variation.CHECKS,
@@ -73,6 +74,11 @@ MAX_PARAMS_PER_VAR = 6
 SLOT_SIZE = 2 + MAX_PARAMS_PER_VAR  # var_idx, weight, p0..p5
 
 VAR_PARAMS_SPEC = {
+    Variation.WAVES:        ['waves_freq_x', 'waves_freq_y',
+                             'waves_amp_x', 'waves_amp_y'],
+    Variation.POPCORN:      ['popcorn_cx', 'popcorn_cy'],
+    Variation.RINGS:        ['rings_c'],
+    Variation.FAN:          ['fan_c', 'fan_f'],
     Variation.JULIAN:       ['julian_power', 'julian_dist'],
     Variation.JULIASCOPE:   ['julian_power', 'julian_dist'],
     Variation.SPLITS:       ['splits_x', 'splits_y'],
