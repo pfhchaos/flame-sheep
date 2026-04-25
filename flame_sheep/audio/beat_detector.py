@@ -11,7 +11,7 @@ _scaler = TempoScaler()
 from ._types import BeatEvent
 from ._spectrum import SpectrumFrame
 from ._bands import (
-    AdaptiveBand, make_mask, BAND_MASKS,
+    AdaptiveBand, SpringBand, make_mask, BAND_MASKS,
     ADAPT_ALPHA, ADAPT_FAST_ALPHA, ADAPT_INTERVAL, ADAPT_ANCHOR,
     SECTION_THRESHOLD, FAST_ADAPT_FRAMES,
 )
@@ -51,12 +51,23 @@ class FluxBeatDetector:
     def __init__(self, adaptive: bool = False, sharpness: bool = True,
                  stability=None):
         self._adaptive = adaptive
+        self._spring_bands_enabled = cfg.adaptive.enabled
         self._sharpness = sharpness
         self._stability = stability  # MagnitudeStability reference (optional)
         self._bpm = 0.0
 
         # Static band masks (from shared definitions)
         self._bands = {k: BAND_MASKS[k] for k in ('kick', 'snare', 'clap', 'hihat')}
+
+        # Spring-model adaptive bands
+        if self._spring_bands_enabled:
+            self._spring_bands = {
+                'kick':  SpringBand('kick'),
+                'snare': SpringBand('snare'),
+                'clap':  SpringBand('clap'),
+                'hihat': SpringBand('hihat'),
+            }
+            self._spring_frame = 0
         self._snare_confirm = make_mask(1000, 3000)
 
         # Adaptive bands
@@ -103,6 +114,9 @@ class FluxBeatDetector:
                 ab.reset()
             self._adapt_alpha = ADAPT_ALPHA
             self._fast_adapt_remaining = 0
+        if self._spring_bands_enabled:
+            for sb in self._spring_bands.values():
+                sb.reset()
 
     def detect(self, frame: SpectrumFrame) -> list[BeatEvent]:
         """Detect beat onsets from a spectrum frame.
@@ -117,6 +131,9 @@ class FluxBeatDetector:
 
         if self._adaptive:
             self._update_adaptive_bands(flux)
+
+        if self._spring_bands_enabled:
+            self._update_spring_bands(flux)
 
         events = []
 
@@ -190,6 +207,9 @@ class FluxBeatDetector:
             w = self._adaptive_bands[band].weights
             s = w.sum()
             return float(np.dot(flux, w) / s) if s > 0 else 0.0
+        elif self._spring_bands_enabled and band in self._spring_bands:
+            mask = self._spring_bands[band].mask
+            return float(flux[mask].mean()) if mask.any() else 0.0
         else:
             mask = self._bands[band]
             return float(flux[mask].mean()) if mask.any() else 0.0
@@ -202,6 +222,45 @@ class FluxBeatDetector:
             return float(np.dot(flux, w) / s) if s > 0 else 0.0
         else:
             return float(flux[self._snare_confirm].mean())
+
+    def _update_spring_bands(self, flux: np.ndarray):
+        """Update spring band positions from stability-weighted flux."""
+        self._spring_frame += 1
+        if self._spring_frame < cfg.adaptive.update_interval:
+            return
+        self._spring_frame = 0
+
+        # Get per-bin stability for weighting
+        if self._stability is not None:
+            stab = self._stability._fast.stability_per_bin()
+        else:
+            stab = np.zeros(N_BINS, dtype=np.float32)
+
+        # Update flux EMA for each band
+        for sb in self._spring_bands.values():
+            sb.update_flux_ema(flux, stab)
+
+        # Apply forces — bands are ordered by default center frequency
+        band_order = ['kick', 'snare', 'clap', 'hihat']
+        for i, name in enumerate(band_order):
+            sb = self._spring_bands[name]
+            # Neighbors for repulsion
+            neighbors = []
+            if i > 0:
+                neighbors.append(self._spring_bands[band_order[i-1]])
+            if i < len(band_order) - 1:
+                neighbors.append(self._spring_bands[band_order[i+1]])
+
+            sb.apply_forces(
+                anchor_k=cfg.adaptive.anchor_strength,
+                flux_k=cfg.adaptive.flux_pull_strength,
+                neighbors=neighbors,
+                repulsion_k=cfg.adaptive.repulsion_strength,
+            )
+
+        # Update the static band masks too (for stability computation)
+        for name in band_order:
+            self._bands[name] = self._spring_bands[name].mask
 
     def _update_adaptive_bands(self, flux: np.ndarray):
         """EMA update of per-bin flux accumulators + periodic weight recompute."""

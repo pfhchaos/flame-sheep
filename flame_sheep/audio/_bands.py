@@ -85,6 +85,98 @@ A_WEIGHTS = a_weight_curve(FREQS)
 BAND_MASKS = {name: make_mask(*rng) for name, rng in BAND_RANGES.items()}
 
 
+class SpringBand:
+    """Frequency band that drifts toward percussive energy via spring physics.
+
+    Center frequency is pulled toward the stability-weighted flux centroid
+    within the allowed range, pulled back to default by an anchor spring,
+    and repelled by neighboring bands. Width can also adapt.
+
+    Update at ~10/s (every ADAPT_INTERVAL frames), not every frame.
+    """
+
+    __slots__ = ('name', 'center', 'width', 'default_center', 'default_width',
+                 'lo_allowed', 'hi_allowed', 'mask', '_flux_ema')
+
+    def __init__(self, name: str):
+        self.name = name
+        lo_a, hi_a = ALLOWED_RANGES[name]
+        lo_d, hi_d = DEFAULT_RANGES[name]
+        self.lo_allowed = lo_a
+        self.hi_allowed = hi_a
+        self.default_center = (lo_d + hi_d) / 2.0
+        self.default_width = (hi_d - lo_d) / 2.0
+        self.center = self.default_center
+        self.width = self.default_width
+        self.mask = make_mask(lo_d, hi_d)
+        self._flux_ema = np.zeros(N_BINS, dtype=np.float32)
+
+    def update_flux_ema(self, flux: np.ndarray, stability: np.ndarray,
+                        alpha: float = 0.95):
+        """Accumulate stability-weighted flux (percussive energy only)."""
+        # Weight flux by (1-stability) so transient bins dominate
+        percussive_flux = flux * (1.0 - stability)
+        allowed = percussive_flux * self._allowed_mask_f()
+        self._flux_ema = alpha * self._flux_ema + (1 - alpha) * allowed
+
+    def flux_centroid(self) -> float:
+        """Centroid of accumulated flux within allowed range."""
+        total = self._flux_ema.sum()
+        if total < 1e-10:
+            return self.default_center
+        return float(np.dot(FREQS, self._flux_ema) / total)
+
+    def apply_forces(self, anchor_k: float, flux_k: float,
+                     neighbors: list['SpringBand'], repulsion_k: float):
+        """Update center position from spring forces.
+
+        Args:
+            anchor_k: spring constant pulling toward default center
+            flux_k: spring constant pulling toward flux centroid
+            neighbors: adjacent bands for repulsion
+            repulsion_k: repulsive force strength
+        """
+        # Force 1: anchor spring — pull toward default
+        f_anchor = anchor_k * (self.default_center - self.center)
+
+        # Force 2: flux pull — pull toward percussive energy centroid
+        target = self.flux_centroid()
+        f_flux = flux_k * (target - self.center)
+
+        # Force 3: repulsion from neighbors
+        f_repulsion = 0.0
+        for nb in neighbors:
+            dist = self.center - nb.center
+            if abs(dist) < 1e-6:
+                dist = 1.0  # avoid division by zero
+            # Repulsive force inversely proportional to distance
+            f_repulsion += repulsion_k / dist
+
+        # Apply net force (overdamped — no velocity, just position update)
+        self.center += f_anchor + f_flux + f_repulsion
+
+        # Clamp to allowed range
+        half = self.width
+        self.center = max(self.lo_allowed + half,
+                          min(self.hi_allowed - half, self.center))
+
+        # Rebuild mask from new center/width
+        lo = max(self.lo_allowed, self.center - half)
+        hi = min(self.hi_allowed, self.center + half)
+        self.mask = make_mask(lo, hi)
+
+    def _allowed_mask_f(self) -> np.ndarray:
+        """Float mask for allowed frequency range."""
+        return ((FREQS >= self.lo_allowed) & (FREQS < self.hi_allowed)).astype(np.float32)
+
+    def reset(self):
+        self.center = self.default_center
+        self.width = self.default_width
+        self.mask = make_mask(self.default_center - self.default_width,
+                              self.default_center + self.default_width)
+        self._flux_ema[:] = 0.0
+
+
 class AdaptiveBand:
     """Soft-weighted frequency band that adapts to onset flux distribution."""
 
