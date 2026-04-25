@@ -9,6 +9,7 @@ from flame_sheep.genome import (
     Genome, Transform, _apply_variation_cpu, _score_from_histogram,
     MAX_TRANSFORMS, MAX_ACTIVE_VARS, NUM_VARIATIONS
 )
+from flame_sheep.variations import Variation
 
 
 RNG = np.random.default_rng(42)  # fixed seed for reproducibility
@@ -371,6 +372,84 @@ class TestAestheticScoreCpu:
                 varying += 1
         assert varying >= 3, \
             f"only {varying}/{len(scores[0])} metrics varied across 10 genomes"
+
+
+# ----------------------------------------------------------------
+# GPU packing
+# ----------------------------------------------------------------
+
+class TestGpuPacking:
+
+    def test_active_vars_has_correct_indices(self):
+        """Active vars should contain the variation indices and weights."""
+        g = Genome()
+        t = Transform()
+        t.variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
+        t.variations[Variation.CURL] = 0.7
+        t.variations[Variation.SPLITS] = 0.3
+        g.transforms = [t]
+        _, active_vars, _, _, _ = g.to_gpu_arrays()
+        # First transform, first two active vars
+        indices = sorted([int(active_vars[0, 0, 0]), int(active_vars[0, 1, 0])])
+        assert Variation.SPLITS in indices
+        assert Variation.CURL in indices
+
+    def test_var_params_packed_at_correct_slots(self):
+        """Var params should land at the correct slot indices."""
+        from flame_sheep.genome import _VAR_PARAM_SLOTS
+        g = Genome()
+        t = Transform()
+        t.variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
+        t.variations[Variation.CURL] = 1.0
+        t.var_params = {'curl_c1': 0.42, 'curl_c2': -0.77}
+        g.transforms = [t]
+        _, _, _, _, var_params = g.to_gpu_arrays()
+        c1_slot = _VAR_PARAM_SLOTS['curl_c1'][0]
+        c2_slot = _VAR_PARAM_SLOTS['curl_c2'][0]
+        assert abs(var_params[0, c1_slot] - 0.42) < 1e-6
+        assert abs(var_params[0, c2_slot] - (-0.77)) < 1e-6
+
+    def test_unused_slots_have_defaults(self):
+        """Unused variation params should have default values."""
+        from flame_sheep.genome import _VAR_PARAM_SLOTS
+        g = Genome()
+        t = Transform()
+        t.variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
+        t.variations[Variation.LINEAR] = 1.0  # non-parametric
+        g.transforms = [t]
+        _, _, _, _, var_params = g.to_gpu_arrays()
+        # Julian defaults should be present even though not active
+        jp_slot, jp_default = _VAR_PARAM_SLOTS['julian_power']
+        assert abs(var_params[0, jp_slot] - jp_default) < 1e-6
+
+    def test_icon_params_packed(self):
+        """Icon variation should have all 6 params packed."""
+        from flame_sheep.genome import _VAR_PARAM_SLOTS
+        g = Genome()
+        t = Transform()
+        t.variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
+        t.variations[Variation.ICON] = 1.0
+        t.var_params = {
+            'icon_degree': 5.0, 'icon_lambda': 1.5,
+            'icon_alpha': -0.3, 'icon_beta': 0.7,
+            'icon_gamma': 0.1, 'icon_omega': -0.2,
+        }
+        g.transforms = [t]
+        _, _, _, _, var_params = g.to_gpu_arrays()
+        for name, value in t.var_params.items():
+            slot = _VAR_PARAM_SLOTS[name][0]
+            assert abs(var_params[0, slot] - value) < 1e-6, \
+                f'{name} at slot {slot}: expected {value}, got {var_params[0, slot]}'
+
+    def test_weights_normalized(self):
+        """Transform weights should sum to 1.0 after packing."""
+        g = Genome()
+        g.transforms = [Transform(), Transform(), Transform()]
+        g.transforms[0].weight = 2.0
+        g.transforms[1].weight = 3.0
+        g.transforms[2].weight = 5.0
+        _, _, _, weights, _ = g.to_gpu_arrays()
+        assert abs(weights[:3].sum() - 1.0) < 1e-6
 
 
 # ----------------------------------------------------------------
