@@ -405,3 +405,72 @@ class TestVariationCpu:
         x, y = _apply_variation_cpu(2, 1e-8, 1e-8, 1.0)
         assert np.isfinite(x)
         assert np.isfinite(y)
+
+    def test_sattractor_finite(self):
+        from flame_sheep.variations._cpu import _current_var_params
+        import flame_sheep.variations._cpu as cpu_mod
+        cpu_mod._current_var_params = {'sat_m': 6.0}
+        x, y = _apply_variation_cpu(43, 1.0, 0.5, 1.0)
+        assert np.isfinite(x) and np.isfinite(y)
+
+    def test_wallpaper_all_groups_finite(self):
+        import flame_sheep.variations._cpu as cpu_mod
+        for group in range(17):
+            cpu_mod._current_var_params = {'wallpaper_group': float(group)}
+            for _ in range(20):
+                x, y = _apply_variation_cpu(44, 1.0, 0.5, 1.0)
+                assert np.isfinite(x) and np.isfinite(y), \
+                    f"wallpaper group {group} produced non-finite output"
+
+    def test_frieze_all_groups_finite(self):
+        import flame_sheep.variations._cpu as cpu_mod
+        for group in range(7):
+            cpu_mod._current_var_params = {'frieze_group': float(group)}
+            for _ in range(20):
+                x, y = _apply_variation_cpu(45, 1.0, 0.5, 1.0)
+                assert np.isfinite(x) and np.isfinite(y), \
+                    f"frieze group {group} produced non-finite output"
+
+
+class TestSymmetryGroupData:
+
+    def test_wallpaper_group_count(self):
+        from flame_sheep.variations._symmetry_groups import WALLPAPER_GROUPS
+        assert len(WALLPAPER_GROUPS) == 17
+
+    def test_frieze_group_count(self):
+        from flame_sheep.variations._symmetry_groups import FRIEZE_GROUPS
+        assert len(FRIEZE_GROUPS) == 7
+
+    def test_all_transforms_are_6_tuples(self):
+        from flame_sheep.variations._symmetry_groups import WALLPAPER_GROUPS, FRIEZE_GROUPS
+        for i, group in enumerate(WALLPAPER_GROUPS):
+            for j, elem in enumerate(group):
+                assert len(elem) == 6, f"wallpaper[{i}][{j}] has {len(elem)} elements"
+        for i, group in enumerate(FRIEZE_GROUPS):
+            for j, elem in enumerate(group):
+                assert len(elem) == 6, f"frieze[{i}][{j}] has {len(elem)} elements"
+
+    def test_expected_element_counts(self):
+        from flame_sheep.variations._symmetry_groups import WALLPAPER_GROUPS, FRIEZE_GROUPS
+        # From JWildfire source
+        wp_expected = [2, 2, 2, 2, 2, 4, 4, 8, 4, 4, 8, 8, 6, 12, 12, 12, 24]
+        for i, (group, expected) in enumerate(zip(WALLPAPER_GROUPS, wp_expected)):
+            assert len(group) == expected, \
+                f"wallpaper[{i}] has {len(group)} elements, expected {expected}"
+
+    def test_glsl_generation(self):
+        from flame_sheep.variations._symmetry_groups import generate_glsl
+        glsl = generate_glsl()
+        assert 'WALLPAPER_COUNTS' in glsl
+        assert 'FRIEZE_COUNTS' in glsl
+        assert 'WALLPAPER_DATA' in glsl
+        assert 'FRIEZE_DATA' in glsl
+
+    def test_rebuild_with_different_step(self):
+        from flame_sheep.variations._symmetry_groups import (
+            WALLPAPER_GROUPS, _build_wallpaper, S
+        )
+        original_c = WALLPAPER_GROUPS[0][0][2]  # first group, first elem, c component
+        bigger = _build_wallpaper(1.0)
+        assert bigger[0][0][2] != original_c, "Different S should produce different translations"
