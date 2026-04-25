@@ -5,6 +5,7 @@ import logging
 log = logging.getLogger(__name__)
 
 from flame_sheep.audio._types import AudioState
+from flame_sheep.config import cfg
 
 
 class ZoomAxis:
@@ -14,10 +15,14 @@ class ZoomAxis:
     buzzy shimmer instead of discrete throbs.
     """
 
-    ZOOM_BOOST_MAX     = 0.3
-    ZOOM_DECAY         = 0.95
-    DENSITY_DAMPING    = 0.05   # pulse magnitude scales as 1/(1+density*this)
-    DENSITY_DECAY_SCALE = 0.15  # decay exponent scales with density
+    @property
+    def ZOOM_BOOST_MAX(self): return cfg.zoom.boost_max
+    @property
+    def ZOOM_DECAY(self): return cfg.zoom.decay
+    @property
+    def DENSITY_DAMPING(self): return cfg.zoom.density_damping
+    @property
+    def DENSITY_DECAY_SCALE(self): return cfg.zoom.density_decay_scale
 
     def __init__(self):
         self.enabled = True

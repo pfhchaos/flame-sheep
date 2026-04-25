@@ -12,6 +12,7 @@ import numpy as np
 
 from flame_sheep.audio._types import AudioState
 from flame_sheep.genome import Genome
+from flame_sheep.config import cfg
 
 log = logging.getLogger(__name__)
 
@@ -24,11 +25,16 @@ class DriftMode:
     via enter()/exit() handoff.
     """
 
-    RMS_THRESHOLD = 0.0001
-    ENTER_FRAMES = 60 * 8       # ~8s quiet before activating
-    MORPH_SPEED = 0.001          # fixed — not scaled by percussiveness
-    MIN_GENOME_DISTANCE = 0.15
-    CYCLES_PER_LOOP = 3
+    @property
+    def RMS_THRESHOLD(self): return cfg.drift.rms_threshold
+    @property
+    def ENTER_FRAMES(self): return cfg.drift.enter_frames
+    @property
+    def MORPH_SPEED(self): return cfg.drift.morph_speed
+    @property
+    def MIN_GENOME_DISTANCE(self): return cfg.drift.min_genome_distance
+    @property
+    def CYCLES_PER_LOOP(self): return cfg.drift.cycles_per_loop
 
     def __init__(self, genome_factory, lib=None, rng=None):
         self._genome_factory = genome_factory

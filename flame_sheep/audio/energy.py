@@ -4,6 +4,7 @@ import numpy as np
 
 from ._constants import N_BINS, FREQS, SAMPLE_RATE
 from ._bands import make_mask, A_WEIGHTS, BAND_MASKS, BAND_RANGES
+from ..config import cfg
 
 
 class EnergyAnalyzer:
@@ -16,22 +17,22 @@ class EnergyAnalyzer:
       - percussiveness: flux/magnitude ratio — drums vs sustain
     """
 
-    def __init__(self, alpha: float = 0.9):
-        self._alpha = alpha
+    def __init__(self, alpha: float = None):
+        self._alpha = alpha if alpha is not None else cfg.energy.rms_alpha
 
         # Per-band RMS and harmonic RMS (shared masks from _bands.py)
         self._band_rms = {name: 0.0 for name in BAND_MASKS}
         self._band_harmonic_rms = {name: 0.0 for name in BAND_MASKS}
 
         # Centroid tracking
-        self._centroid = 1000.0  # Hz, start at a reasonable default
+        self._centroid = 1000.0
         self._prev_centroid = 1000.0
         self._centroid_rms = 0.0
-        self._centroid_alpha = 0.85  # faster than RMS — follow tonal changes
+        self._centroid_alpha = cfg.energy.centroid_alpha
 
         # Percussiveness tracking
         self._percussiveness = 0.5
-        self._perc_alpha = 0.92  # smooth but responsive
+        self._perc_alpha = cfg.energy.percussiveness_alpha
 
         # Harmonic energy (stability-weighted)
         self._harmonic_rms = 0.0

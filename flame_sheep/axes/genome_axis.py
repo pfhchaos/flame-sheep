@@ -3,6 +3,8 @@
 import logging
 import threading
 from collections import deque
+
+from flame_sheep.config import cfg
 import numpy as np
 
 log = logging.getLogger(__name__)
@@ -30,17 +32,24 @@ class GenomeAxis:
         morph_speed: how fast morph_t advances per frame
     """
 
-    MIN_GENOME_DISTANCE = 0.15
-    DRIFT_MORPH_SPEED   = 0.001
-    KICK_MORPH_PULSE    = 0.008
     LOOP_HISTORY_SIZE   = 8
-    BREAK_DECAY         = 0.97   # damping per frame during break (~half speed in 0.4s)
-    DENSITY_MORPH_SCALE = 0.003  # morph_speed baseline += rhythm_density * this
-    STRONG_BEAT_THRESHOLD = 2.0  # swap when energy > recent_avg * this
-    DENSITY_DAMPING     = 0.3    # per-kick effect scales as 1/(1+density*this)
 
-    # Centroid delta threshold for triggering a swap in low-percussiveness mode
-    CENTROID_SWAP_THRESHOLD = 500.0
+    @property
+    def DRIFT_MORPH_SPEED(self): return cfg.genome.drift_morph_speed
+    @property
+    def KICK_MORPH_PULSE(self): return cfg.genome.kick_morph_pulse
+    @property
+    def BREAK_DECAY(self): return cfg.genome.break_decay
+    @property
+    def DENSITY_MORPH_SCALE(self): return cfg.genome.density_morph_scale
+    @property
+    def STRONG_BEAT_THRESHOLD(self): return cfg.genome.strong_beat_threshold
+    @property
+    def DENSITY_DAMPING(self): return cfg.genome.density_damping
+    @property
+    def CENTROID_SWAP_THRESHOLD(self): return cfg.genome.centroid_swap_threshold
+    @property
+    def MIN_GENOME_DISTANCE(self): return cfg.drift.min_genome_distance
 
     def __init__(self, genome_factory, lib=None, rng=None):
         self.enabled = True
@@ -89,7 +98,7 @@ class GenomeAxis:
                 self._handle_song_start()
 
         # In low-percussiveness mode, a large centroid shift triggers a swap
-        if (audio.percussiveness < 0.15
+        if (audio.percussiveness < cfg.genome.centroid_swap_perc_gate
                 and audio.centroid_delta > self.CENTROID_SWAP_THRESHOLD
                 and self.morph_t > 0.3):
             self.current_genome = self.current_genome.lerp(

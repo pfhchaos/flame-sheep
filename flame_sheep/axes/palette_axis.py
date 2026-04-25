@@ -9,15 +9,18 @@ import numpy as np
 
 from flame_sheep.audio._types import AudioState
 from flame_sheep.genome import _lerp_arr
+from flame_sheep.config import cfg
 
 
 class PaletteAxis:
     """Snare -> palette walk. Energy controls jump distance."""
 
-    DRIFT_MORPH_SPEED = 0.001
-    DENSITY_DAMPING   = 0.2    # snare density scales speed boost
-
     PALETTE_HISTORY_SIZE = 8
+
+    @property
+    def DRIFT_MORPH_SPEED(self): return cfg.palette.drift_morph_speed
+    @property
+    def DENSITY_DAMPING(self): return cfg.palette.density_damping
 
     def __init__(self, initial_palette: np.ndarray, lib=None, rng=None):
         self.enabled = True

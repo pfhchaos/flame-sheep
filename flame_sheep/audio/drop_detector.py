@@ -16,6 +16,7 @@ Detection requires:
 import logging
 
 from ._types import BeatEvent
+from ..config import cfg
 
 log = logging.getLogger(__name__)
 
@@ -26,10 +27,14 @@ class DropDetector:
     Call tick() each frame. Read .breaking to check if a break is active.
     """
 
-    QUIET_THRESHOLD_FRAMES = 60    # ~1s of quiet before break activates
-    MIN_KICKS_BEFORE_DROP  = 8     # ignore song start
-    BREAK_COOLDOWN         = 15.0  # seconds after a break ends before next
-    DROP_ENERGY_RATIO      = 0.15  # centroid_rms must drop below this × average
+    @property
+    def QUIET_THRESHOLD_FRAMES(self): return cfg.breaks.quiet_threshold_frames
+    @property
+    def MIN_KICKS_BEFORE_DROP(self): return cfg.breaks.min_kicks_before_break
+    @property
+    def BREAK_COOLDOWN(self): return cfg.breaks.cooldown_seconds
+    @property
+    def DROP_ENERGY_RATIO(self): return cfg.breaks.drop_energy_ratio
 
     def __init__(self):
         self._quiet_frames = 0

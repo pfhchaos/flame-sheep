@@ -11,6 +11,8 @@ Positive = speeding up, negative = slowing down.
 
 from collections import deque
 
+from ..config import cfg
+
 
 class OnsetDensityTracker:
     """Multi-band onset density tracker.
@@ -19,10 +21,14 @@ class OnsetDensityTracker:
     Read density properties for current values.
     """
 
-    WINDOW = 1.0         # seconds of history for density
-    DELTA_WINDOW = 2.0   # seconds back for delta comparison
-    ALPHA = 0.9          # EMA smoothing
+    @property
+    def WINDOW(self): return cfg.density.window
+    @property
+    def DELTA_WINDOW(self): return cfg.density.delta_window
     BANDS = ('kick', 'snare', 'clap', 'hihat')
+
+    @property
+    def ALPHA(self): return cfg.density.alpha
 
     def __init__(self):
         self._times: dict[str, deque[float]] = {b: deque() for b in self.BANDS}

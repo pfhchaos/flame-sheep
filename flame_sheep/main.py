@@ -636,6 +636,11 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             elif event.command == 'resume':
                 # TODO: exit ambient mode
                 pass
+            elif event.command == 'config':
+                if event.args and event.args[0] == 'reload':
+                    from .config import cfg
+                    cfg.reload()
+                    log.info('[ctl] config reloaded')
         return False
 
     last_time = time.perf_counter()

@@ -494,7 +494,8 @@ class TestDriftModeUnit:
 
     def test_morph_completes_in_reasonable_time(self):
         """Fixed morph speed should complete within ~20 seconds."""
-        frames_to_complete = int(1.0 / DriftMode.MORPH_SPEED) + 1
+        from flame_sheep.config import cfg
+        frames_to_complete = int(1.0 / cfg.drift.morph_speed) + 1
         assert frames_to_complete < 60 * 20, \
             f"Morph takes {frames_to_complete} frames ({frames_to_complete/60:.0f}s) — too slow"
 

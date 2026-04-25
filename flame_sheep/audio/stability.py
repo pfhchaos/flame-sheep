@@ -16,6 +16,7 @@ buffering, O(N_BINS) per frame, zero latency.
 import numpy as np
 
 from ._constants import N_BINS
+from ..config import cfg
 
 
 class _StabilityEMA:
@@ -72,7 +73,11 @@ class MagnitudeStability:
     period. Useful for section change detection and mode blending.
     """
 
-    def __init__(self, fast_alpha: float = 0.95, slow_alpha: float = 0.995):
+    def __init__(self, fast_alpha: float = None, slow_alpha: float = None):
+        if fast_alpha is None:
+            fast_alpha = cfg.stability.fast_alpha
+        if slow_alpha is None:
+            slow_alpha = cfg.stability.slow_alpha
         self._fast = _StabilityEMA(fast_alpha)
         self._slow = _StabilityEMA(slow_alpha)
 
