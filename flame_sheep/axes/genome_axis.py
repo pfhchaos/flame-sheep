@@ -35,7 +35,7 @@ class GenomeAxis:
     KICK_MORPH_PULSE    = 0.008
     LOOP_HISTORY_SIZE   = 8
     BREAK_DECAY         = 0.97   # damping per frame during break (~half speed in 0.4s)
-    DENSITY_MORPH_SCALE = 0.003  # morph_speed baseline += kick_density * this
+    DENSITY_MORPH_SCALE = 0.002  # morph_speed baseline += total_density * this
     STRONG_BEAT_THRESHOLD = 2.0  # swap when energy > recent_avg * this
     DENSITY_DAMPING     = 0.3    # per-kick effect scales as 1/(1+density*this)
 
@@ -120,9 +120,10 @@ class GenomeAxis:
             self._swap_next_genome()
             self.morph_speed    = self.DRIFT_MORPH_SPEED
 
-        # Ramp morph speed toward density-driven baseline
+        # Ramp morph speed toward density-driven baseline (all bands contribute)
+        total_density = sum(b.onset_density for b in audio.bands.values())
         density_speed = (self.DRIFT_MORPH_SPEED
-                         + audio.bands['kick'].onset_density * self.DENSITY_MORPH_SCALE)
+                         + total_density * self.DENSITY_MORPH_SCALE)
         # Blend toward baseline — ramps up after swap, decays down after pulse
         self.morph_speed = 0.95 * self.morph_speed + 0.05 * density_speed
 
