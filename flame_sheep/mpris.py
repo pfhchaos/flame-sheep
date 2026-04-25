@@ -65,7 +65,11 @@ class MprisListener:
             return
 
         DBusGMainLoop(set_as_default=True)
-        bus = dbus.SessionBus()
+        try:
+            bus = dbus.SessionBus()
+        except dbus.exceptions.DBusException as e:
+            log.warning(f'MPRIS listener disabled — no session bus: {e}')
+            return
 
         # Subscribe to PropertiesChanged on all MPRIS players
         bus.add_signal_receiver(
