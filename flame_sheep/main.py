@@ -69,11 +69,9 @@ class FlameSheepCore:
         if genome_factory:
             factory = genome_factory
         elif lib is not None and lib.genome_count() > 0:
-            # Pick random genomes from the library — no GIL-heavy
-            # viability checks, just a fast DB query
-            _top = [gid for gid, _ in lib.top_genomes(n=50)]
-            factory = lambda: lib.load_genome(
-                _top[int(self.rng.integers(0, len(_top)))])
+            # Pre-load top genomes — no DB access from prefetch thread
+            _pool = [lib.load_genome(gid) for gid, _ in lib.top_genomes(n=50)]
+            factory = lambda: _pool[int(self.rng.integers(0, len(_pool)))]
         else:
             factory = lambda: Genome.random(self.rng)
         self._genome_axis = GenomeAxis(genome_factory=factory, lib=lib, rng=self.rng)
