@@ -179,14 +179,17 @@ class FluxBeatDetector:
                         hist.append(band_flux)
                         continue
 
-                thresh = self.KICK_THRESHOLD if band == 'kick' else self.THRESHOLD
-                # Scale threshold by band stability: stable (harmonic)
-                # bands need a larger flux spike to fire.
-                # Reduce stability penalty when baseline is high — less
-                # headroom means smaller flux spikes are still real events.
+                # Per-band threshold: base scaled by band width
+                # Narrow bands have higher per-bin variance → need higher threshold
+                # Wide bands average out noise → can use lower threshold
+                band_mask = self._bands[band]
+                n_bins = int(band_mask.sum()) if hasattr(band_mask, 'sum') else np.count_nonzero(band_mask)
+                # sqrt scaling: threshold ~ 1/sqrt(n_bins), normalized to 30 bins
+                thresh = self.THRESHOLD * max(1.0, np.sqrt(30.0 / max(n_bins, 1)))
+
                 if self._stability is not None:
                     stab = self._stability.band_stability(self._bands[band])
-                    headroom = 1.0 / (1.0 + local_avg * 10.0)  # 0..1, low when loud
+                    headroom = 1.0 / (1.0 + local_avg * 10.0)
                     thresh *= (1.0 + stab * self.STABILITY_SCALING * headroom)
                 if local_avg < self.MIN_FLUX:
                     events.append(BeatEvent(kind=band, energy=1.0))
