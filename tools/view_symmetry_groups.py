@@ -152,9 +152,8 @@ def show_matrix_wallpaper():
     from matplotlib.patches import Polygon
     from matplotlib.collections import PatchCollection
 
-    # L-shape centered on origin
-    L = np.array([[-0.15, -0.15], [0.15, -0.15], [0.15, -0.05],
-                  [-0.05, -0.05], [-0.05, 0.15], [-0.15, 0.15]])
+    # Arrowhead centered on origin — asymmetric, pointy, easy to read orientation
+    L = np.array([[0.0, 0.15], [-0.12, -0.1], [0.0, -0.03], [0.12, -0.1]])
 
     fig, axes = plt.subplots(3, 6, figsize=(18, 9))
     fig.suptitle('17 Wallpaper Groups — Transform Elements', fontsize=14)
