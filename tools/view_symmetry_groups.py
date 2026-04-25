@@ -147,9 +147,81 @@ def show_variation(var_name: str, params: dict = None):
     plt.show()
 
 
+def show_matrix_wallpaper():
+    """Show each wallpaper group's transforms as geometric operations on an L-shape."""
+    from matplotlib.patches import Polygon
+    from matplotlib.collections import PatchCollection
+
+    L = np.array([[0, 0], [0.3, 0], [0.3, 0.1], [0.1, 0.1], [0.1, 0.3], [0, 0.3]])
+
+    fig, axes = plt.subplots(3, 6, figsize=(18, 9))
+    fig.suptitle('17 Wallpaper Groups — Transform Elements', fontsize=14)
+
+    for i, (name, elements) in enumerate(zip(WALLPAPER_NAMES, WALLPAPER_GROUPS)):
+        row, col = divmod(i, 6)
+        ax = axes[row, col]
+        colors = plt.cm.Set3(np.linspace(0, 1, max(len(elements), 1)))
+        patches = []
+        for j, (a, b, c, d, e, f) in enumerate(elements):
+            pts = np.column_stack([
+                a * L[:, 0] + b * L[:, 1] + c,
+                d * L[:, 0] + e * L[:, 1] + f,
+            ])
+            patches.append(Polygon(pts, closed=True))
+        coll = PatchCollection(patches, alpha=0.5, edgecolors='black', linewidths=0.5)
+        coll.set_facecolor(colors[:len(patches)])
+        ax.add_collection(coll)
+        ax.set_title(f'{name} ({len(elements)})', fontsize=8)
+        ax.set_aspect('equal')
+        ax.autoscale()
+        ax.set_xticks([])
+        ax.set_yticks([])
+    axes[2, 5].set_visible(False)
+    fig.tight_layout()
+    fig.savefig('/tmp/wallpaper_matrix.png', dpi=150)
+    print('Saved /tmp/wallpaper_matrix.png')
+    plt.show()
+
+
+def show_matrix_frieze():
+    """Show each frieze group's transforms as geometric operations on an L-shape."""
+    from matplotlib.patches import Polygon
+    from matplotlib.collections import PatchCollection
+
+    L = np.array([[0, 0], [0.3, 0], [0.3, 0.1], [0.1, 0.1], [0.1, 0.3], [0, 0.3]])
+
+    fig, axes = plt.subplots(1, 7, figsize=(21, 3))
+    fig.suptitle('7 Frieze Groups — Transform Elements', fontsize=14)
+
+    for i, (name, elements) in enumerate(zip(FRIEZE_NAMES, FRIEZE_GROUPS)):
+        ax = axes[i]
+        colors = plt.cm.Set3(np.linspace(0, 1, max(len(elements), 1)))
+        patches = []
+        for j, (a, b, c, d, e, f) in enumerate(elements):
+            pts = np.column_stack([
+                a * L[:, 0] + b * L[:, 1] + c,
+                d * L[:, 0] + e * L[:, 1] + f,
+            ])
+            patches.append(Polygon(pts, closed=True))
+        coll = PatchCollection(patches, alpha=0.5, edgecolors='black', linewidths=0.5)
+        coll.set_facecolor(colors[:len(patches)])
+        ax.add_collection(coll)
+        ax.set_title(f'{name} ({len(elements)})', fontsize=8)
+        ax.set_aspect('equal')
+        ax.autoscale()
+        ax.set_xticks([])
+        ax.set_yticks([])
+    fig.tight_layout()
+    fig.savefig('/tmp/frieze_matrix.png', dpi=150)
+    print('Saved /tmp/frieze_matrix.png')
+    plt.show()
+
+
 def main():
     parser = argparse.ArgumentParser(description='Visualize symmetry variations')
     parser.add_argument('--frieze', action='store_true', help='Show frieze groups')
+    parser.add_argument('--matrix', action='store_true',
+                        help='Show transform elements as L-shape operations instead of fractals')
     parser.add_argument('--variation', type=str, help='Show a single variation by name')
     parser.add_argument('--param', type=str, action='append',
                         help='Set param as key=value (can repeat)')
@@ -162,6 +234,10 @@ def main():
                 k, v = p.split('=')
                 params[k] = float(v)
         show_variation(args.variation, params or None)
+    elif args.matrix and args.frieze:
+        show_matrix_frieze()
+    elif args.matrix:
+        show_matrix_wallpaper()
     elif args.frieze:
         show_frieze()
     else:
