@@ -152,7 +152,9 @@ def show_matrix_wallpaper():
     from matplotlib.patches import Polygon
     from matplotlib.collections import PatchCollection
 
-    L = np.array([[0, 0], [0.3, 0], [0.3, 0.1], [0.1, 0.1], [0.1, 0.3], [0, 0.3]])
+    # L-shape centered on origin
+    L = np.array([[-0.15, -0.15], [0.15, -0.15], [0.15, -0.05],
+                  [-0.05, -0.05], [-0.05, 0.15], [-0.15, 0.15]])
 
     fig, axes = plt.subplots(3, 6, figsize=(18, 9))
     fig.suptitle('17 Wallpaper Groups — Transform Elements', fontsize=14)
@@ -171,6 +173,8 @@ def show_matrix_wallpaper():
         coll = PatchCollection(patches, alpha=0.5, edgecolors='black', linewidths=0.5)
         coll.set_facecolor(colors[:len(patches)])
         ax.add_collection(coll)
+        ax.axhline(0, color='gray', linewidth=0.3)
+        ax.axvline(0, color='gray', linewidth=0.3)
         ax.set_title(f'{name} ({len(elements)})', fontsize=8)
         ax.set_aspect('equal')
         ax.autoscale()
@@ -188,7 +192,8 @@ def show_matrix_frieze():
     from matplotlib.patches import Polygon
     from matplotlib.collections import PatchCollection
 
-    L = np.array([[0, 0], [0.3, 0], [0.3, 0.1], [0.1, 0.1], [0.1, 0.3], [0, 0.3]])
+    L = np.array([[-0.15, -0.15], [0.15, -0.15], [0.15, -0.05],
+                  [-0.05, -0.05], [-0.05, 0.15], [-0.15, 0.15]])
 
     fig, axes = plt.subplots(1, 7, figsize=(21, 3))
     fig.suptitle('7 Frieze Groups — Transform Elements', fontsize=14)
@@ -206,6 +211,8 @@ def show_matrix_frieze():
         coll = PatchCollection(patches, alpha=0.5, edgecolors='black', linewidths=0.5)
         coll.set_facecolor(colors[:len(patches)])
         ax.add_collection(coll)
+        ax.axhline(0, color='gray', linewidth=0.3)
+        ax.axvline(0, color='gray', linewidth=0.3)
         ax.set_title(f'{name} ({len(elements)})', fontsize=8)
         ax.set_aspect('equal')
         ax.autoscale()
