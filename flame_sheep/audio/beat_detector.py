@@ -5,6 +5,9 @@ from collections import deque
 
 from ._constants import SAMPLE_RATE, N_BINS, HISTORY_LEN, FREQS, FFT_SIZE, HOP_SIZE
 from ..config import cfg
+from .tempo_scaler import TempoScaler
+
+_scaler = TempoScaler()
 from ._types import BeatEvent
 from ._spectrum import SpectrumFrame
 from ._bands import (
@@ -125,9 +128,9 @@ class FluxBeatDetector:
 
             self._frame_count[band] += 1
             if band == 'kick' and self._bpm > 0:
-                # Tempo-scaled cooldown: 40% of beat period, min 4 frames
-                beat_frames = (60.0 / self._bpm) / (HOP_SIZE / SAMPLE_RATE)
-                cd = max(4, int(beat_frames * 0.4))
+                # Tempo-scaled: fraction of beat period
+                cd = _scaler.beats_to_frames(
+                    self._bpm, cfg.detection.kick_cooldown_beat_fraction)
             else:
                 cd = self.KICK_COOLDOWN if band == 'kick' else self.COOLDOWN
             in_cooldown = (self._frame_count[band]
