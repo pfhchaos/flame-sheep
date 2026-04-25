@@ -1,106 +1,103 @@
 # flame-sheep
 
-Audio-reactive flame fractal wallpaper. Electric Sheep reimagined for modern hardware.
+Audio-reactive flame fractal wallpaper for Wayland compositors.
 
-## Concept
+Renders IFS (Iterated Function System) flame fractals as your desktop wallpaper, morphing and pulsing in response to whatever audio is playing. Designed for sway and wlr-layer-shell compositors.
 
-Flame fractals (Scott Draves' algorithm) rendered in real time via OpenGL compute shaders.
-Audio from PipeWire drives the visualization across three orthogonal axes:
+## What it does
 
-- **Kick drum → geometry**: fractal structure morphs on the downbeat, with each genome
-  in a pre-composed loop advancing every 4 kicks (one musical bar).
-- **Snare → color**: palette shifts via graph traversal — energy controls jump distance
-  (quiet snares = subtle color drift, loud = dramatic shift).
-- **Hihat → zoom pulse**: brief zoom boost on hits, decays between them.
-- **RMS → brightness**: overall audio loudness drives tonemap brightness.
+- **Fractal wallpaper** — full-screen flame fractals rendered via OpenGL compute shaders, displayed as a Wayland layer-shell surface behind your windows
+- **Audio-reactive** — captures system audio via PipeWire, analyzes it in real time, and drives the visual response
+- **Beat detection** — spectral flux onset detection with per-bin harmonic/percussive separation. Low-frequency beats drive genome morphing, mid-range drives palette changes, high-frequency drives zoom pulses
+- **Density-driven** — at high tempos, per-event effects smoothly scale down into continuous texture. Works with everything from ambient to speedcore
+- **Adaptive** — band frequencies drift toward where the percussion actually lives (optional spring-model adaptive bands). Tempo-scaled constants adjust to the music's speed
+- **Evolutionary** — genomes evolve via user feedback (like/dislike). Background CPU scorer evaluates symmetry, self-similarity, fractal dimension, and detail sensitivity
+- **Multi-monitor** — renders independently on each output via wlr-layer-shell frame callbacks
 
-A genetic algorithm evolves loops of genomes based on automated fitness metrics
-(coverage, entropy, coherence, smoothness) and user feedback (like/dislike via
-control pipe or sway hotkeys). Evolution runs in a subprocess to avoid blocking rendering.
+## Requirements
 
-A single Arc 770 can render what once required thousands of distributed machines.
+- **GPU**: OpenGL 4.3+ compute shaders (tested on Intel Arc A770)
+- **Compositor**: sway or any wlr-layer-shell compatible Wayland compositor
+- **Audio**: PipeWire
+- **Python**: 3.11+
+- **Dependencies**: moderngl, numpy, scipy, sounddevice
 
-## Architecture
+## Quick start
 
-```
-PipeWire monitor sink
-    → audio.py (capture + FFT + beat detection + tempo tracking)
-    → FlameSheepCore (three orthogonal axes: genome/palette/zoom)
-    → renderer.py (moderngl, compute + fragment shaders)
-    → shaders/flame.comp (chaos game — GPU, 65k walkers, 30 variations)
-    → shaders/tonemap.frag (log density + color + RMS brightness — GPU)
+```bash
+git clone https://github.com/pfhchaos/flame-sheep.git
+cd flame-sheep
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
 
-~/.local/share/flame-sheep/library.db (SQLite)
-    → storage.py (genomes, loops, palettes, ratings, fitness)
-    → loops.py (composition, crossover, mutation, evolution)
-
-~/.local/share/flame-sheep/ctl (named pipe)
-    → control.py (like, dislike, swap, song, tempo, quit)
+# First run auto-generates 200 genomes and composes loops
+python -m flame_sheep
 ```
 
 ## Usage
 
 ```bash
-# Install (editable, in a venv)
-python -m venv --system-site-packages .venv
-source .venv/bin/activate
-pip install -e .
+# Run as wallpaper (default)
+python -m flame_sheep
 
-# Seed the library
-flame-sheep --generate-genomes 200
-flame-sheep --generate-palettes 400
-flame-sheep --compose-loops 10 --loop-length 6
+# Specify audio device
+python -m flame_sheep --device "Monitor of Built-in Audio"
 
-# Run as wallpaper
-flame-sheep --wallpaper
+# Generate more genomes
+python -m flame_sheep --generate-genomes 500
 
-# Or in a window for development
-flame-sheep --width 1920 --height 1080
+# Compose loops from existing genomes
+python -m flame_sheep --compose-loops 50
 
-# Check library state
-flame-sheep --stats
+# Run evolution (after accumulating likes/dislikes)
+python -m flame_sheep --evolve
 
-# Evolve loops (can run while wallpaper is playing)
-flame-sheep --evolve
-```
-
-### Sway integration
-
-```
-# ~/.config/sway/config
-exec_always ~/.venv/bin/flame-sheep --wallpaper
-
-mode "flame" {
-    bindsym bracketright exec echo like > ~/.local/share/flame-sheep/ctl
-    bindsym bracketleft exec echo dislike > ~/.local/share/flame-sheep/ctl
-    bindsym backslash exec echo swap > ~/.local/share/flame-sheep/ctl
-    bindsym Return mode "default"
-    bindsym Escape mode "default"
-}
-bindsym $mod+g mode "flame"
+# Show library stats
+python -m flame_sheep --stats
 ```
 
 ## Control pipe
 
+Send commands while running:
+
 ```bash
-echo like    > ~/.local/share/flame-sheep/ctl   # rate current loop +1
-echo dislike > ~/.local/share/flame-sheep/ctl   # rate -1, switch loop
-echo swap    > ~/.local/share/flame-sheep/ctl   # force genome swap
-echo song    > ~/.local/share/flame-sheep/ctl   # reset tempo tracker
-echo "tempo 128" > ~/.local/share/flame-sheep/ctl  # hint BPM
-echo quit    > ~/.local/share/flame-sheep/ctl   # clean shutdown
+echo "like" > ~/.local/share/flame-sheep/ctl     # like current genome
+echo "dislike" > ~/.local/share/flame-sheep/ctl   # dislike current genome
+echo "swap" > ~/.local/share/flame-sheep/ctl      # force genome swap
+echo "next" > ~/.local/share/flame-sheep/ctl      # next loop
+echo "config reload" > ~/.local/share/flame-sheep/ctl  # hot-reload config
 ```
 
-## Dependencies
+## Configuration
 
-- `dev-python/moderngl` (Guru, ~amd64)
-- `dev-python/moderngl-window` (Guru, ~amd64)
-- `dev-python/numpy`
-- `dev-python/scipy`
-- `dev-python/sounddevice` (personal-overlay)
-- `media-libs/portaudio` (indirect, via sounddevice)
+Copy the default config and customize:
 
-## Algorithm
+```bash
+mkdir -p ~/.config/flame-sheep
+cp flame_sheep/default_config.toml ~/.config/flame-sheep/config.toml
+```
 
-See the flame fractal algorithm as described in Scott Draves' paper:
-"The Fractal Flame Algorithm" — https://flam3.com/flame_draves.pdf
+All tuning constants are configurable and hot-reloadable. See `default_config.toml` for descriptions of every parameter.
+
+## Tools
+
+```bash
+# Visualize symmetry group transforms
+python tools/view_symmetry_groups.py              # fractal view
+python tools/view_symmetry_groups.py --matrix      # transform operations
+python tools/view_symmetry_groups.py --variation sattractor --param sat_m=6
+
+# Analyze a song's audio characteristics
+python tools/generate_golden_masters.py --verify   # check transform regression
+```
+
+## License
+
+GPL-3.0 — see [LICENSE](LICENSE).
+
+## Acknowledgments
+
+- Variation functions adapted from [JWildfire](https://github.com/thargor6/JWildfire) by Andreas Maschke
+- Symmetry groups from McGregor & Watt, "The Art of Graphics for the IBM PC"
+- Flame fractal algorithm by Scott Draves
