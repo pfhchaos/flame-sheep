@@ -66,12 +66,27 @@ PARAMETRIC_VARIATIONS = {
     Variation.WALLPAPER, Variation.FRIEZE,
 }
 
-# GPU var_params layout: 32 floats per transform
-# [0] julian_power  [1] julian_dist  [2] splits_x   [3] splits_y
-# [4] curl_c1       [5] curl_c2      [6] rect_x     [7] rect_y
-# [8] check_size    [9] check_x      [10] check_y   [11] hex_size
-# [12] kal_pull     [13] kal_rotate  [14] kal_n      [15] reserved
-# [16] icon_degree  [17] icon_lambda [18] icon_alpha [19] icon_beta
-# [20] icon_gamma   [21] icon_omega  [22] sat_m
-# [23] wallpaper_group  [24] frieze_group  [25-31] reserved
-MAX_VAR_PARAMS = 32
+# Per-variation parameter spec: ordered list of param names.
+# Params are packed alongside each active variation in the GPU buffer.
+# Max 6 params per variation (icon has 6, the most).
+MAX_PARAMS_PER_VAR = 6
+SLOT_SIZE = 2 + MAX_PARAMS_PER_VAR  # var_idx, weight, p0..p5
+
+VAR_PARAMS_SPEC = {
+    Variation.JULIAN:       ['julian_power', 'julian_dist'],
+    Variation.JULIASCOPE:   ['julian_power', 'julian_dist'],
+    Variation.SPLITS:       ['splits_x', 'splits_y'],
+    Variation.CURL:         ['curl_c1', 'curl_c2'],
+    Variation.RECTANGLES:   ['rect_x', 'rect_y'],
+    Variation.CHECKS:       ['check_size', 'check_x', 'check_y'],
+    Variation.HEX_MODULUS:  ['hex_size'],
+    Variation.KALEIDOSCOPE: ['kal_pull', 'kal_rotate', 'kal_n'],
+    Variation.ICON:         ['icon_degree', 'icon_lambda', 'icon_alpha',
+                             'icon_beta', 'icon_gamma', 'icon_omega'],
+    Variation.SATTRACTOR:   ['sat_m'],
+    Variation.WALLPAPER:    ['wallpaper_group'],
+    Variation.FRIEZE:       ['frieze_group'],
+}
+
+# Backwards compat — old code may reference this
+MAX_VAR_PARAMS = MAX_PARAMS_PER_VAR

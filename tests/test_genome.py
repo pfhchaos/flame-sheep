@@ -9,7 +9,7 @@ from flame_sheep.genome import (
     Genome, Transform, _apply_variation_cpu, _score_from_histogram,
     MAX_TRANSFORMS, MAX_ACTIVE_VARS, NUM_VARIATIONS
 )
-from flame_sheep.variations import Variation
+from flame_sheep.variations import Variation, SLOT_SIZE
 
 
 RNG = np.random.default_rng(42)  # fixed seed for reproducibility
@@ -193,28 +193,28 @@ class TestToGpuArrays:
     def test_weights_sum_to_one(self):
         rng = np.random.default_rng(40)
         g = Genome.random(rng)
-        _, _, _, weights, _ = g.to_gpu_arrays()
+        _, _, _, weights = g.to_gpu_arrays()
         n = len(g.transforms)
         assert abs(weights[:n].sum() - 1.0) < 1e-5
 
     def test_affines_shape(self):
         rng = np.random.default_rng(41)
         g = Genome.random(rng)
-        affines, _, _, _, _ = g.to_gpu_arrays()
+        affines, _, _, _ = g.to_gpu_arrays()
         assert affines.shape == (MAX_TRANSFORMS, 6)
         assert affines.dtype == np.float32
 
     def test_variations_shape(self):
         rng = np.random.default_rng(42)
         g = Genome.random(rng)
-        _, active_vars, _, _, _ = g.to_gpu_arrays()
-        assert active_vars.shape == (MAX_TRANSFORMS, MAX_ACTIVE_VARS, 2)
+        _, active_vars, _, _ = g.to_gpu_arrays()
+        assert active_vars.shape == (MAX_TRANSFORMS, MAX_ACTIVE_VARS * SLOT_SIZE)
 
     def test_unused_transform_slots_zero(self):
         """Transforms beyond n_transforms should be zero."""
         rng = np.random.default_rng(43)
         g = Genome.random(rng, n_transforms=2)
-        affines, _, _, weights, _ = g.to_gpu_arrays()
+        affines, _, _, weights = g.to_gpu_arrays()
         assert np.all(affines[2:] == 0.0)
         assert np.all(weights[2:] == 0.0)
 
@@ -388,43 +388,44 @@ class TestGpuPacking:
         t.variations[Variation.CURL] = 0.7
         t.variations[Variation.SPLITS] = 0.3
         g.transforms = [t]
-        _, active_vars, _, _, _ = g.to_gpu_arrays()
-        # First transform, first two active vars
-        indices = sorted([int(active_vars[0, 0, 0]), int(active_vars[0, 1, 0])])
+        _, active_vars, _, _ = g.to_gpu_arrays()
+        # First transform — two active vars at slot 0 and slot 1
+        idx0 = int(active_vars[0, 0 * SLOT_SIZE])
+        idx1 = int(active_vars[0, 1 * SLOT_SIZE])
+        indices = sorted([idx0, idx1])
         assert Variation.SPLITS in indices
         assert Variation.CURL in indices
 
-    def test_var_params_packed_at_correct_slots(self):
-        """Var params should land at the correct slot indices."""
-        from flame_sheep.genome import _VAR_PARAM_SLOTS
+    def test_params_packed_inline_with_variation(self):
+        """Params should be packed right after (index, weight) in each slot."""
         g = Genome()
         t = Transform()
         t.variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
         t.variations[Variation.CURL] = 1.0
         t.var_params = {'curl_c1': 0.42, 'curl_c2': -0.77}
         g.transforms = [t]
-        _, _, _, _, var_params = g.to_gpu_arrays()
-        c1_slot = _VAR_PARAM_SLOTS['curl_c1'][0]
-        c2_slot = _VAR_PARAM_SLOTS['curl_c2'][0]
-        assert abs(var_params[0, c1_slot] - 0.42) < 1e-6
-        assert abs(var_params[0, c2_slot] - (-0.77)) < 1e-6
+        _, active_vars, _, _ = g.to_gpu_arrays()
+        # Curl is the only active variation, so it's at slot 0
+        assert int(active_vars[0, 0]) == Variation.CURL
+        assert abs(active_vars[0, 1] - 1.0) < 1e-6  # weight
+        assert abs(active_vars[0, 2] - 0.42) < 1e-6  # curl_c1 = param 0
+        assert abs(active_vars[0, 3] - (-0.77)) < 1e-6  # curl_c2 = param 1
 
-    def test_unused_slots_have_defaults(self):
-        """Unused variation params should have default values."""
-        from flame_sheep.genome import _VAR_PARAM_SLOTS
+    def test_unused_slots_negative(self):
+        """Unused variation slots should have index < 0."""
         g = Genome()
         t = Transform()
         t.variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
-        t.variations[Variation.LINEAR] = 1.0  # non-parametric
+        t.variations[Variation.LINEAR] = 1.0
         g.transforms = [t]
-        _, _, _, _, var_params = g.to_gpu_arrays()
-        # Julian defaults should be present even though not active
-        jp_slot, jp_default = _VAR_PARAM_SLOTS['julian_power']
-        assert abs(var_params[0, jp_slot] - jp_default) < 1e-6
+        _, active_vars, _, _ = g.to_gpu_arrays()
+        # Slot 0 has LINEAR
+        assert int(active_vars[0, 0]) == Variation.LINEAR
+        # Slot 1 should be unused (index < 0)
+        assert active_vars[0, 1 * SLOT_SIZE] < 0
 
     def test_icon_params_packed(self):
-        """Icon variation should have all 6 params packed."""
-        from flame_sheep.genome import _VAR_PARAM_SLOTS
+        """Icon variation should have all 6 params packed inline."""
         g = Genome()
         t = Transform()
         t.variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
@@ -435,11 +436,15 @@ class TestGpuPacking:
             'icon_gamma': 0.1, 'icon_omega': -0.2,
         }
         g.transforms = [t]
-        _, _, _, _, var_params = g.to_gpu_arrays()
-        for name, value in t.var_params.items():
-            slot = _VAR_PARAM_SLOTS[name][0]
-            assert abs(var_params[0, slot] - value) < 1e-6, \
-                f'{name} at slot {slot}: expected {value}, got {var_params[0, slot]}'
+        _, active_vars, _, _ = g.to_gpu_arrays()
+        # Icon at slot 0, params at offsets 2-7
+        assert int(active_vars[0, 0]) == Variation.ICON
+        assert abs(active_vars[0, 2] - 5.0) < 1e-6   # degree
+        assert abs(active_vars[0, 3] - 1.5) < 1e-6   # lambda
+        assert abs(active_vars[0, 4] - (-0.3)) < 1e-6 # alpha
+        assert abs(active_vars[0, 5] - 0.7) < 1e-6   # beta
+        assert abs(active_vars[0, 6] - 0.1) < 1e-6   # gamma
+        assert abs(active_vars[0, 7] - (-0.2)) < 1e-6 # omega
 
     def test_weights_normalized(self):
         """Transform weights should sum to 1.0 after packing."""
@@ -448,7 +453,7 @@ class TestGpuPacking:
         g.transforms[0].weight = 2.0
         g.transforms[1].weight = 3.0
         g.transforms[2].weight = 5.0
-        _, _, _, weights, _ = g.to_gpu_arrays()
+        _, _, _, weights = g.to_gpu_arrays()
         assert abs(weights[:3].sum() - 1.0) < 1e-6
 
 

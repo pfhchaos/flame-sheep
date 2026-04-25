@@ -14,7 +14,10 @@ from ._registry import (
     Variation,
     NUM_VARIATIONS,
     MAX_VAR_PARAMS,
+    MAX_PARAMS_PER_VAR,
+    SLOT_SIZE,
     PARAMETRIC_VARIATIONS,
+    VAR_PARAMS_SPEC,
 )
 
 from ._params import random_var_params

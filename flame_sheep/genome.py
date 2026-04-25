@@ -20,7 +20,8 @@ import numpy as np
 from dataclasses import dataclass, field
 
 from .variations import (
-    Variation, NUM_VARIATIONS, MAX_VAR_PARAMS, PARAMETRIC_VARIATIONS,
+    Variation, NUM_VARIATIONS, MAX_VAR_PARAMS, MAX_PARAMS_PER_VAR,
+    SLOT_SIZE, PARAMETRIC_VARIATIONS, VAR_PARAMS_SPEC,
     random_var_params, apply_variation_cpu, apply_variations_cpu,
 )
 
@@ -30,23 +31,6 @@ _apply_variation_cpu = apply_variation_cpu
 
 MAX_TRANSFORMS = 6
 MAX_ACTIVE_VARS = 8  # max active variations per transform (for GPU loop)
-
-# GPU var_params slot table: {param_name: (slot_index, default_value)}
-# Must match the layout in flame.comp
-_VAR_PARAM_SLOTS = {
-    'julian_power': (0, 3.0), 'julian_dist': (1, 1.0),
-    'splits_x': (2, 0.5), 'splits_y': (3, 0.5),
-    'curl_c1': (4, 0.0), 'curl_c2': (5, 0.0),
-    'rect_x': (6, 0.5), 'rect_y': (7, 0.5),
-    'check_size': (8, 1.0), 'check_x': (9, 0.0), 'check_y': (10, 0.0),
-    'hex_size': (11, 1.0),
-    'kal_pull': (12, 0.0), 'kal_rotate': (13, 0.0), 'kal_n': (14, 6.0),
-    'icon_degree': (16, 4.0), 'icon_lambda': (17, 0.0),
-    'icon_alpha': (18, 0.0), 'icon_beta': (19, 0.0),
-    'icon_gamma': (20, 0.0), 'icon_omega': (21, 0.0),
-    'sat_m': (22, 4.0),
-    'wallpaper_group': (23, 0.0), 'frieze_group': (24, 0.0),
-}
 
 
 @dataclass
@@ -282,49 +266,47 @@ class Genome:
         result.center   = _lerp_arr(self.center,   other.center,   t)
         return result
 
-    def to_gpu_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def to_gpu_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Pack genome into flat arrays for GPU upload.
 
         Returns:
             affines:     (MAX_TRANSFORMS, 6) float32
-            active_vars: (MAX_TRANSFORMS, MAX_ACTIVE_VARS, 2) float32
-                         Each slot is (var_index, weight). Index < 0 = unused.
+            active_vars: (MAX_TRANSFORMS, MAX_ACTIVE_VARS * SLOT_SIZE) float32
+                         Each slot is (var_index, weight, p0..p5). Index < 0 = unused.
+                         Params packed per active variation, no global slot table.
             colors:      (MAX_TRANSFORMS,) float32 [color index per transform]
             weights:     (MAX_TRANSFORMS,) float32 [normalized probabilities]
-            var_params:  (MAX_TRANSFORMS, MAX_VAR_PARAMS) float32
-                         Per-transform variation parameters.
         """
         n = len(self.transforms)
         affines     = np.zeros((MAX_TRANSFORMS, 6), dtype=np.float32)
-        # Pack active variations: (index, weight) pairs, -1 marks end
-        active_vars = np.full((MAX_TRANSFORMS, MAX_ACTIVE_VARS, 2), -1.0, dtype=np.float32)
+        active_vars = np.full((MAX_TRANSFORMS, MAX_ACTIVE_VARS * SLOT_SIZE),
+                              -1.0, dtype=np.float32)
         colors      = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
         weights     = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
-        var_params  = np.zeros((MAX_TRANSFORMS, MAX_VAR_PARAMS), dtype=np.float32)
 
         for i, tr in enumerate(self.transforms[:MAX_TRANSFORMS]):
             affines[i] = tr.affine
             colors[i]  = tr.color
             weights[i] = tr.weight
 
-            # Find active variations (weight > 0) and pack them
+            # Find active variations and pack with their params
             active_indices = np.where(tr.variations > 1e-6)[0]
             for j, var_idx in enumerate(active_indices[:MAX_ACTIVE_VARS]):
-                active_vars[i, j, 0] = float(var_idx)
-                active_vars[i, j, 1] = tr.variations[var_idx]
-
-            # Pack variation parameters into fixed layout (slot table)
-            vp = tr.var_params
-            for name, (slot, default) in _VAR_PARAM_SLOTS.items():
-                var_params[i, slot] = vp.get(name, default)
+                base = j * SLOT_SIZE
+                active_vars[i, base + 0] = float(var_idx)
+                active_vars[i, base + 1] = tr.variations[var_idx]
+                # Pack params in spec order
+                spec = VAR_PARAMS_SPEC.get(int(var_idx), [])
+                for k, param_name in enumerate(spec[:MAX_PARAMS_PER_VAR]):
+                    active_vars[i, base + 2 + k] = tr.var_params.get(param_name, 0.0)
 
         # normalize weights to probabilities
         w_sum = weights[:n].sum()
         if w_sum > 0:
             weights[:n] /= w_sum
 
-        return affines, active_vars, colors, weights, var_params
+        return affines, active_vars, colors, weights
 
 
     def aesthetic_score(self, renderer=None, n_test: int = 5000) -> dict[str, float]:
