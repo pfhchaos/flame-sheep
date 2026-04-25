@@ -339,48 +339,127 @@ class FlameSheepApp(mglw.WindowConfig):
 DEFAULT_MONITOR_SIZE = 27.0  # fallback — works for most monitors
 
 
-def _get_sway_layout() -> dict[str, dict]:
+def _get_output_layout() -> dict[str, dict]:
     """
-    Query swaymsg for active output geometry and compute PPI.
+    Query Wayland outputs for geometry via the wl_output protocol.
+    Compositor-agnostic — works on sway, Hyprland, river, etc.
+
     Returns {name: {x, y, w, h, ppi, phys_w_mm, phys_h_mm}}.
     """
+    import math
+    from pywayland.client import Display
+    from pywayland.protocol.wayland import WlOutput
+
+    display = Display()
+    display.connect()
+    registry = display.get_registry()
+    outputs = []
+
+    def _on_global(reg, name, interface, version):
+        if interface == WlOutput.name:
+            out = reg.bind(name, WlOutput, min(version, 4))
+            outputs.append(out)
+
+    registry.dispatcher['global'] = _on_global
+    display.roundtrip()
+
+    # Collect output info via events
+    output_info = {}
+
+    def _make_handlers(out):
+        info = {'name': None, 'x': 0, 'y': 0, 'phys_w_mm': 0, 'phys_h_mm': 0,
+                'mode_w': 0, 'mode_h': 0}
+        output_info[id(out)] = info
+
+        def _on_geometry(output, x, y, phys_w, phys_h, subpixel, make, model, transform):
+            info['x'] = x
+            info['y'] = y
+            info['phys_w_mm'] = phys_w
+            info['phys_h_mm'] = phys_h
+
+        def _on_mode(output, flags, width, height, refresh):
+            if flags & 0x1:  # WL_OUTPUT_MODE_CURRENT
+                info['mode_w'] = width
+                info['mode_h'] = height
+
+        def _on_name(output, name):
+            info['name'] = name
+
+        out.dispatcher['geometry'] = _on_geometry
+        out.dispatcher['mode'] = _on_mode
+        out.dispatcher['name'] = _on_name
+
+    for out in outputs:
+        _make_handlers(out)
+
+    display.roundtrip()
+    display.disconnect()
+
+    result = {}
+    for info in output_info.values():
+        name = info['name']
+        if not name:
+            continue
+        w = info['mode_w']
+        h = info['mode_h']
+        if w == 0 or h == 0:
+            continue
+
+        # Compute PPI from physical size or fallback
+        if info['phys_w_mm'] > 0 and info['phys_h_mm'] > 0:
+            phys_w_mm = info['phys_w_mm']
+            phys_h_mm = info['phys_h_mm']
+            diag_mm = math.sqrt(phys_w_mm**2 + phys_h_mm**2)
+            diag_px = math.sqrt(w**2 + h**2)
+            ppi = diag_px / (diag_mm / 25.4) if diag_mm > 0 else 96.0
+        else:
+            # Headless or unknown — use default
+            diag_px = math.sqrt(w**2 + h**2)
+            ppi = diag_px / DEFAULT_MONITOR_SIZE
+            phys_w_mm = w / ppi * 25.4
+            phys_h_mm = h / ppi * 25.4
+
+        result[name] = {
+            'x': info['x'], 'y': info['y'],
+            'w': w, 'h': h,
+            'ppi': ppi,
+            'phys_w_mm': phys_w_mm,
+            'phys_h_mm': phys_h_mm,
+        }
+
+    return result
+
+
+def _get_sway_layout() -> dict[str, dict]:
+    """Legacy wrapper — try Wayland protocol first, fall back to swaymsg."""
+    result = _get_output_layout()
+    if result:
+        return result
+
+    # Fallback to swaymsg for older setups
     import json, subprocess, math
     try:
         raw = subprocess.check_output(['swaymsg', '-t', 'get_outputs'], timeout=3)
         outputs = json.loads(raw)
-        result = {}
         for o in outputs:
             if not o.get('active'):
                 continue
             r = o['rect']
             mode = o.get('current_mode', {})
-            model = o.get('model', '')
-            
-            # Native resolution (before rotation)
             native_w = mode.get('width', r['width'])
             native_h = mode.get('height', r['height'])
-            
-            # Get diagonal size for this model
-            diag_inches = DEFAULT_MONITOR_SIZE
-            
-            # Calculate PPI from native resolution and diagonal
             diag_px = math.sqrt(native_w**2 + native_h**2)
-            ppi = diag_px / diag_inches
-            
-            # Physical size in mm (display coords, after rotation)
-            phys_w_mm = r['width'] / ppi * 25.4
-            phys_h_mm = r['height'] / ppi * 25.4
-            
+            ppi = diag_px / DEFAULT_MONITOR_SIZE
             result[o['name']] = {
                 'x': r['x'], 'y': r['y'],
                 'w': r['width'], 'h': r['height'],
                 'ppi': ppi,
-                'phys_w_mm': phys_w_mm,
-                'phys_h_mm': phys_h_mm,
+                'phys_w_mm': r['width'] / ppi * 25.4,
+                'phys_h_mm': r['height'] / ppi * 25.4,
             }
         return result
     except Exception as e:
-        log.error(f'swaymsg failed: {e}')
+        log.error(f'Output layout query failed: {e}')
         return {}
 
 

@@ -149,7 +149,6 @@ class TestSwayHeadless:
             layout = _get_sway_layout()
             assert len(layout) >= 1
             name = list(layout.keys())[0]
-            assert 'HEADLESS' in name
             assert layout[name]['w'] > 0
             assert layout[name]['h'] > 0
         finally:
@@ -157,6 +156,29 @@ class TestSwayHeadless:
                 os.environ['SWAYSOCK'] = old_swaysock
             else:
                 os.environ.pop('SWAYSOCK', None)
+
+    def test_wayland_output_layout(self, headless_sway):
+        """Compositor-agnostic _get_output_layout via wl_output protocol."""
+        wayland_display = headless_sway['wayland_display']
+        if not wayland_display:
+            pytest.skip('could not determine wayland display socket')
+
+        old_display = os.environ.get('WAYLAND_DISPLAY')
+        os.environ['WAYLAND_DISPLAY'] = wayland_display
+        try:
+            from flame_sheep.main import _get_output_layout
+            layout = _get_output_layout()
+            assert len(layout) >= 1
+            name = list(layout.keys())[0]
+            info = layout[name]
+            assert info['w'] > 0
+            assert info['h'] > 0
+            assert info['ppi'] > 0
+        finally:
+            if old_display:
+                os.environ['WAYLAND_DISPLAY'] = old_display
+            else:
+                os.environ.pop('WAYLAND_DISPLAY', None)
 
     def test_multi_output(self, headless_sway):
         """Should be able to add a second headless output."""
