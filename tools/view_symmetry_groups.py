@@ -152,10 +152,10 @@ def show_matrix_wallpaper():
     from matplotlib.patches import Polygon
     from matplotlib.collections import PatchCollection
 
-    # Teardrop centered near origin — fully asymmetric, no hidden overlaps
-    t = np.linspace(0, 2*np.pi, 30)
-    r = 0.04 * (1 + np.cos(t))  # cardioid-ish, small
-    L = np.column_stack([r * np.cos(t) + 0.02, r * np.sin(t)])
+    # Large teardrop — big enough to show transforms clearly
+    t = np.linspace(0, 2*np.pi, 40)
+    r = 0.8 * (1 + 0.6 * np.cos(t))  # cardioid, fills most of the viewport
+    L = np.column_stack([r * np.cos(t) + 0.3, r * np.sin(t)])
 
     fig, axes = plt.subplots(3, 6, figsize=(18, 9))
     fig.suptitle('17 Wallpaper Groups — Transform Elements', fontsize=14)
