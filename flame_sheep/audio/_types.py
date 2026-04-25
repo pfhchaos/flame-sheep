@@ -17,6 +17,19 @@ class BeatEvent:
 
 
 @dataclass
+class BandState:
+    """Per-band audio metrics — same structure for every band."""
+    rms: float = 0.0
+    harmonic_rms: float = 0.0
+    onset_density: float = 0.0
+
+
+def _default_bands() -> dict[str, BandState]:
+    return {name: BandState() for name in
+            ('subbass', 'kick', 'snare', 'clap', 'hihat')}
+
+
+@dataclass
 class AudioState:
     """Per-frame audio state passed to visual axes.
 
@@ -24,17 +37,21 @@ class AudioState:
     everything through one interface.
     """
     events: list[BeatEvent] = field(default_factory=list)
-    rms: float = 0.0
-    percussiveness: float = 0.5
+
+    # Per-band metrics (subbass, kick, snare, clap, hihat)
+    bands: dict[str, BandState] = field(default_factory=_default_bands)
+
+    # Centroid (dynamic band — follows dominant frequency)
     centroid: float = 1000.0
     centroid_delta: float = 0.0
     centroid_rms: float = 0.0
-    harmonic_rms: float = 0.0
-    harmonic_centroid_rms: float = 0.0
+    centroid_harmonic_rms: float = 0.0
+
+    # Global
+    percussiveness: float = 0.5
     bpm: float = 0.0
-    breaking: bool = False
-    onset_density: dict = field(default_factory=lambda: {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0})
     kick_density_delta: float = 0.0
+    break_intensity: float = 0.0     # 0=normal, 1=deep break
 
 
 @dataclass
@@ -46,15 +63,18 @@ class AudioSnapshot:
     """
     events: list[BeatEvent] = field(default_factory=list)
     spectrum: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
-    rms: float = 0.0
     waveform: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+
+    # Per-band metrics
+    bands: dict[str, BandState] = field(default_factory=_default_bands)
+
+    # Centroid
     centroid: float = 1000.0
     centroid_delta: float = 0.0
     centroid_rms: float = 0.0
+    centroid_harmonic_rms: float = 0.0
+
+    # Global
     percussiveness: float = 0.5
-    harmonic_rms: float = 0.0
-    harmonic_centroid_rms: float = 0.0
-    band_rms: dict = field(default_factory=lambda: {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0})
     bpm: float = 0.0
-    onset_density: dict = field(default_factory=lambda: {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0})
     kick_density_delta: float = 0.0

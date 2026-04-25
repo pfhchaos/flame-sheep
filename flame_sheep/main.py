@@ -118,24 +118,22 @@ class FlameSheepCore:
             events, snap.centroid_rms,
             snap.bpm, self._drift_mode.active, frame_time)
         self._bass_drop_detector.detect(
-            events, snap.rms,
+            events, snap.bands['subbass'].rms,
             snap.bpm, self._drift_mode.active, frame_time)
 
         # Build AudioState for axes
         audio = AudioState(
             events=events,
-            rms=snap.rms,
-            percussiveness=snap.percussiveness,
+            bands=snap.bands,
             centroid=snap.centroid,
             centroid_delta=snap.centroid_delta,
             centroid_rms=snap.centroid_rms,
-            harmonic_rms=snap.harmonic_rms,
-            harmonic_centroid_rms=snap.harmonic_centroid_rms,
+            centroid_harmonic_rms=snap.centroid_harmonic_rms,
+            percussiveness=snap.percussiveness,
             bpm=snap.bpm,
-            breaking=(self._drop_detector.breaking
-                      or self._bass_drop_detector.breaking),
-            onset_density=snap.onset_density,
             kick_density_delta=snap.kick_density_delta,
+            break_intensity=max(self._drop_detector.break_intensity,
+                                self._bass_drop_detector.break_intensity),
         )
 
         # --- Mode transitions ---

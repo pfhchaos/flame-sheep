@@ -23,7 +23,7 @@ from ._constants import (
     SAMPLE_RATE, DEFAULT_DEVICE, BLOCK_SIZE, FFT_SIZE, N_BINS, HISTORY_LEN,
     HOP_SIZE, FREQS,
 )
-from ._types import BeatEvent, AudioSnapshot
+from ._types import BeatEvent, BandState, AudioSnapshot
 from ._spectrum import SpectrumEngine, SpectrumFrame
 from .beat_detector import FluxBeatDetector
 from .energy import EnergyAnalyzer
@@ -81,16 +81,14 @@ class AudioProcessor:
         self._lock     = threading.Lock()
         self._spectrum = np.zeros(N_BINS, dtype=np.float32)
         self._waveform = np.zeros(FFT_SIZE, dtype=np.float32)
-        self._rms      = 0.0
         self._centroid = 1000.0
         self._centroid_delta = 0.0
         self._centroid_rms = 0.0
+        self._centroid_harmonic_rms = 0.0
         self._percussiveness = 0.5
-        self._harmonic_rms = 0.0
-        self._harmonic_centroid_rms = 0.0
-        self._band_rms = {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0}
+        self._bands = {name: BandState() for name in
+                       ('subbass', 'kick', 'snare', 'clap', 'hihat')}
         self._bpm = 0.0
-        self._onset_density = {'kick': 0.0, 'snare': 0.0, 'clap': 0.0, 'hihat': 0.0}
         self._kick_density_delta = 0.0
         self._pending_events: list[BeatEvent] = []
 
@@ -166,17 +164,23 @@ class AudioProcessor:
                 self._pending_events.extend(events)
                 self._spectrum[:] = frame.magnitude
                 self._waveform[:] = frame.waveform
-                self._rms = self._energy.rms
                 self._centroid = self._energy.centroid
                 self._centroid_delta = self._energy.centroid_delta
                 self._centroid_rms = self._energy.centroid_rms
+                self._centroid_harmonic_rms = self._energy.harmonic_centroid_rms
                 self._percussiveness = self._energy.percussiveness
-                self._harmonic_rms = self._energy.harmonic_rms
-                self._harmonic_centroid_rms = self._energy.harmonic_centroid_rms
-                self._band_rms = self._energy.band_rms
                 self._bpm = self._tempo.bpm
-                self._onset_density = self._density.densities
                 self._kick_density_delta = self._density.kick_density_delta
+                # Build per-band state
+                band_rms = self._energy.band_rms_all
+                band_hrms = self._energy.band_harmonic_rms_all
+                densities = self._density.densities
+                for name in self._bands:
+                    self._bands[name] = BandState(
+                        rms=band_rms.get(name, 0.0),
+                        harmonic_rms=band_hrms.get(name, 0.0),
+                        onset_density=densities.get(name, 0.0),
+                    )
 
     def drain(self) -> AudioSnapshot:
         """Atomically read and clear accumulated audio state.
@@ -186,42 +190,31 @@ class AudioProcessor:
         """
         if not self._threaded:
             events = self.process()
-            return AudioSnapshot(
-                events=events,
-                spectrum=self._spectrum.copy(),
-                rms=self._rms,
-                waveform=self._waveform.copy(),
-                centroid=self._centroid,
-                centroid_delta=self._centroid_delta,
-                centroid_rms=self._centroid_rms,
-                percussiveness=self._percussiveness,
-                harmonic_rms=self._harmonic_rms,
-                harmonic_centroid_rms=self._harmonic_centroid_rms,
-                band_rms=self._band_rms.copy(),
-                bpm=self._bpm,
-                onset_density=self._onset_density.copy(),
-                kick_density_delta=self._kick_density_delta,
-            )
+            return self._build_snapshot(events)
 
         with self._lock:
-            snap = AudioSnapshot(
-                events=self._pending_events,
-                spectrum=self._spectrum.copy(),
-                rms=self._rms,
-                waveform=self._waveform.copy(),
-                centroid=self._centroid,
-                centroid_delta=self._centroid_delta,
-                centroid_rms=self._centroid_rms,
-                percussiveness=self._percussiveness,
-                harmonic_rms=self._harmonic_rms,
-                harmonic_centroid_rms=self._harmonic_centroid_rms,
-                band_rms=self._band_rms.copy(),
-                bpm=self._bpm,
-                onset_density=self._onset_density.copy(),
-                kick_density_delta=self._kick_density_delta,
-            )
+            snap = self._build_snapshot(self._pending_events)
             self._pending_events = []
             return snap
+
+    def _build_snapshot(self, events: list[BeatEvent]) -> AudioSnapshot:
+        """Build AudioSnapshot from current shared state (call under lock)."""
+        bands = {name: BandState(rms=bs.rms, harmonic_rms=bs.harmonic_rms,
+                                 onset_density=bs.onset_density)
+                 for name, bs in self._bands.items()}
+        return AudioSnapshot(
+            events=events,
+            spectrum=self._spectrum.copy(),
+            waveform=self._waveform.copy(),
+            bands=bands,
+            centroid=self._centroid,
+            centroid_delta=self._centroid_delta,
+            centroid_rms=self._centroid_rms,
+            centroid_harmonic_rms=self._centroid_harmonic_rms,
+            percussiveness=self._percussiveness,
+            bpm=self._bpm,
+            kick_density_delta=self._kick_density_delta,
+        )
 
     # ------------------------------------------------------------------
     # Synchronous mode: process (for FeedSource / tests)
@@ -244,13 +237,18 @@ class AudioProcessor:
         with self._lock:
             self._spectrum[:] = frame.magnitude
             self._waveform[:] = frame.waveform
-            self._rms = self._energy.rms
             self._centroid = self._energy.centroid
             self._centroid_delta = self._energy.centroid_delta
             self._centroid_rms = self._energy.centroid_rms
+            self._centroid_harmonic_rms = self._energy.harmonic_centroid_rms
             self._percussiveness = self._energy.percussiveness
-            self._harmonic_rms = self._energy.harmonic_rms
-            self._harmonic_centroid_rms = self._energy.harmonic_centroid_rms
+            band_rms = self._energy.band_rms_all
+            band_hrms = self._energy.band_harmonic_rms_all
+            for name in self._bands:
+                self._bands[name] = BandState(
+                    rms=band_rms.get(name, 0.0),
+                    harmonic_rms=band_hrms.get(name, 0.0),
+                )
 
         return self._detector.detect(frame)
 
@@ -374,11 +372,15 @@ class SyntheticAudioProcessor:
     def drain(self) -> AudioSnapshot:
         """Wrap process() into AudioSnapshot for uniform API with AudioProcessor."""
         events = self.process()
+        # Synthetic: put fake RMS in subbass band so drift detection works
+        bands = {name: BandState() for name in
+                 ('subbass', 'kick', 'snare', 'clap', 'hihat')}
+        bands['subbass'] = BandState(rms=self._rms, harmonic_rms=self._rms)
         return AudioSnapshot(
             events=events,
             spectrum=self._spectrum.copy(),
-            rms=self._rms,
             waveform=np.zeros(FFT_SIZE, dtype=np.float32),
+            bands=bands,
         )
 
     @property

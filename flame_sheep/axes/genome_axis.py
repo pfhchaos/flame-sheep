@@ -100,7 +100,7 @@ class GenomeAxis:
                       f'perc={audio.percussiveness:.2f}')
 
         # Break damping: exponential slowdown during breaks, symmetric recovery
-        if audio.breaking:
+        if audio.break_intensity > 0:
             self._break_damping *= self.BREAK_DECAY
         else:
             self._break_damping = min(1.0, self._break_damping / self.BREAK_DECAY)
@@ -121,7 +121,7 @@ class GenomeAxis:
 
         # Ramp morph speed toward density-driven baseline
         density_speed = (self.DRIFT_MORPH_SPEED
-                         + audio.onset_density.get('kick', 0) * self.DENSITY_MORPH_SCALE)
+                         + audio.bands['kick'].onset_density * self.DENSITY_MORPH_SCALE)
         # Blend toward baseline — ramps up after swap, decays down after pulse
         self.morph_speed = 0.95 * self.morph_speed + 0.05 * density_speed
 

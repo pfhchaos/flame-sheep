@@ -56,7 +56,7 @@ class DriftMode:
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
         """Monitor RMS for activation; advance morph when active."""
-        if audio.rms < self.RMS_THRESHOLD:
+        if audio.bands['subbass'].rms < self.RMS_THRESHOLD:
             self._quiet_frames += 1
             if self._quiet_frames >= self.ENTER_FRAMES and not self.active:
                 self.active = True

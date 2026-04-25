@@ -10,7 +10,7 @@ import pytest
 
 from flame_sheep.audio._spectrum import SpectrumEngine, SpectrumFrame
 from flame_sheep.audio._constants import FFT_SIZE, HOP_SIZE, N_BINS, SAMPLE_RATE
-from flame_sheep.audio._types import BeatEvent, AudioState
+from flame_sheep.audio._types import BeatEvent, BandState, AudioState
 from flame_sheep.audio.beat_detector import FluxBeatDetector
 from flame_sheep.audio.drop_detector import DropDetector
 from flame_sheep.audio.bass_drop_detector import BassDropDetector
@@ -24,6 +24,32 @@ from flame_sheep.drift_mode import DriftMode
 from flame_sheep.axes.genome_axis import GenomeAxis
 
 from .conftest import trivial_genome
+
+
+def _audio(events=None, rms=0.0, harmonic_rms=0.0, breaking=False,
+           percussiveness=0.5, centroid_delta=0.0, onset_density=None,
+           **kwargs):
+    """Helper to construct AudioState with convenience kwargs."""
+    bands = {name: BandState() for name in
+             ('subbass', 'kick', 'snare', 'clap', 'hihat')}
+    bands['subbass'] = BandState(rms=rms, harmonic_rms=harmonic_rms)
+    if onset_density:
+        for name, val in onset_density.items():
+            if name in bands:
+                bands[name] = BandState(
+                    rms=bands[name].rms,
+                    harmonic_rms=bands[name].harmonic_rms,
+                    onset_density=val)
+    return AudioState(
+        events=events or [],
+        bands=bands,
+        percussiveness=percussiveness,
+        centroid_delta=centroid_delta,
+        centroid_harmonic_rms=harmonic_rms,
+        break_intensity=1.0 if breaking else 0.0,
+        **kwargs,
+    )
+
 
 
 # -------------------------------------------------------------------
@@ -204,25 +230,25 @@ class TestZoomAxisUnit:
 
     def test_hihat_adds_boost(self):
         axis = ZoomAxis()
-        axis.tick(AudioState(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
+        axis.tick(_audio(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost > 0
 
     def test_non_hihat_ignored(self):
         axis = ZoomAxis()
-        axis.tick(AudioState(events=[BeatEvent('kick', 1.0)], rms=0.0), 1/60, 0.0)
+        axis.tick(_audio(events=[BeatEvent('kick', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost == 0.0
 
     def test_boost_decays(self):
         axis = ZoomAxis()
-        axis.tick(AudioState(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
+        axis.tick(_audio(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
         peak = axis.zoom_boost
-        axis.tick(AudioState(rms=0.0), 1/60, 0.0)  # no events, just decay
+        axis.tick(_audio(rms=0.0), 1/60, 0.0)  # no events, just decay
         assert axis.zoom_boost < peak
 
     def test_boost_bounded(self):
         axis = ZoomAxis()
         for _ in range(100):
-            axis.tick(AudioState(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
+            axis.tick(_audio(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost <= axis.ZOOM_BOOST_MAX
 
 
@@ -234,17 +260,17 @@ class TestBrightnessAxisUnit:
 
     def test_silence_returns_floor(self):
         axis = BrightnessAxis(floor=0.7, ceiling=12.0)
-        axis.tick(AudioState(rms=0.0), 1/60, 0.0)
+        axis.tick(_audio(rms=0.0), 1/60, 0.0)
         assert axis.brightness == 0.7
 
     def test_loud_returns_ceiling(self):
         axis = BrightnessAxis(floor=0.7, ceiling=12.0, rms_scale=0.01)
-        axis.tick(AudioState(harmonic_rms=1.0), 1/60, 0.0)
+        axis.tick(_audio(harmonic_rms=1.0), 1/60, 0.0)
         assert axis.brightness == pytest.approx(12.0)
 
     def test_mid_rms_between_floor_and_ceiling(self):
         axis = BrightnessAxis(floor=0.7, ceiling=12.0, rms_scale=0.01)
-        axis.tick(AudioState(harmonic_rms=0.005), 1/60, 0.0)
+        axis.tick(_audio(harmonic_rms=0.005), 1/60, 0.0)
         assert 0.7 < axis.brightness < 12.0
 
 
@@ -256,12 +282,12 @@ class TestDetailAxisUnit:
 
     def test_silence_returns_min(self):
         axis = DetailAxis(min_iters=100, max_iters=500)
-        axis.tick(AudioState(rms=0.0), 1/60, 0.0)
+        axis.tick(_audio(rms=0.0), 1/60, 0.0)
         assert axis.iterations == 100
 
     def test_loud_returns_max(self):
         axis = DetailAxis(min_iters=100, max_iters=500, rms_scale=0.01)
-        axis.tick(AudioState(harmonic_rms=1.0), 1/60, 0.0)
+        axis.tick(_audio(harmonic_rms=1.0), 1/60, 0.0)
         assert axis.iterations == 500
 
 
@@ -283,17 +309,17 @@ class TestGenomeAxisUnit:
 
     def test_morph_advances(self):
         axis = self._make_axis()
-        axis.tick(AudioState(rms=0.0), 1/60, 0.0)
+        axis.tick(_audio(rms=0.0), 1/60, 0.0)
         assert axis.morph_t > 0.0
 
     def test_strong_beat_triggers_swap(self):
         axis = self._make_axis()
         # Build up low energy average with quiet kicks
         for i in range(10):
-            axis.tick(AudioState(events=[BeatEvent('kick', 0.2)]), 1/60, float(i))
+            axis.tick(_audio(events=[BeatEvent('kick', 0.2)]), 1/60, float(i))
         initial_target = id(axis.target_genome)
         # One loud kick should trigger a swap
-        axis.tick(AudioState(events=[BeatEvent('kick', 1.0)]), 1/60, 20.0)
+        axis.tick(_audio(events=[BeatEvent('kick', 1.0)]), 1/60, 20.0)
         assert id(axis.target_genome) != initial_target
 
     def test_even_kicks_no_swap(self):
@@ -302,17 +328,17 @@ class TestGenomeAxisUnit:
         initial_target = id(axis.target_genome)
         # 10 kicks all at same energy
         for i in range(10):
-            axis.tick(AudioState(events=[BeatEvent('kick', 0.5)]), 1/60, float(i))
+            axis.tick(_audio(events=[BeatEvent('kick', 0.5)]), 1/60, float(i))
         # No swap — energy never exceeds threshold
         assert id(axis.target_genome) == initial_target
 
     def test_density_drives_morph_speed(self):
         axis = self._make_axis()
         # Low density → slow baseline
-        axis.tick(AudioState(onset_density={'kick': 1.0, 'snare': 0, 'clap': 0, 'hihat': 0}), 1/60, 0.0)
+        axis.tick(_audio(onset_density={'kick': 1.0, 'snare': 0, 'clap': 0, 'hihat': 0}), 1/60, 0.0)
         slow_speed = axis.morph_speed
         # High density → faster baseline
-        axis.tick(AudioState(onset_density={'kick': 5.0, 'snare': 0, 'clap': 0, 'hihat': 0}), 1/60, 1.0)
+        axis.tick(_audio(onset_density={'kick': 5.0, 'snare': 0, 'clap': 0, 'hihat': 0}), 1/60, 1.0)
         fast_speed = axis.morph_speed
         assert fast_speed > slow_speed
 
@@ -434,13 +460,13 @@ class TestDriftModeUnit:
     def test_not_active_when_loud(self):
         drift, _ = self._make()
         for i in range(600):
-            drift.tick(AudioState(rms=0.1), 1/60, float(i))
+            drift.tick(_audio(rms=0.1), 1/60, float(i))
         assert not drift.active
 
     def test_activates_after_quiet(self):
         drift, genome_axis = self._make()
         for i in range(drift.ENTER_FRAMES + 1):
-            drift.tick(AudioState(rms=0.0), 1/60, float(i))
+            drift.tick(_audio(rms=0.0), 1/60, float(i))
             if drift.active:
                 drift.enter(genome_axis)
                 break
@@ -450,20 +476,20 @@ class TestDriftModeUnit:
         drift, genome_axis = self._make()
         # Enter drift
         for i in range(drift.ENTER_FRAMES + 1):
-            drift.tick(AudioState(rms=0.0), 1/60, float(i))
+            drift.tick(_audio(rms=0.0), 1/60, float(i))
             if drift.active:
                 drift.enter(genome_axis)
                 break
         assert drift.active
         # Loud frame exits
-        drift.tick(AudioState(rms=0.1), 1/60, 999.0)
+        drift.tick(_audio(rms=0.1), 1/60, 999.0)
         assert not drift.active
 
     def test_loud_resets_quiet_counter(self):
         drift, _ = self._make()
         for i in range(drift.ENTER_FRAMES - 10):
-            drift.tick(AudioState(rms=0.0), 1/60, float(i))
-        drift.tick(AudioState(rms=0.1), 1/60, 999.0)
+            drift.tick(_audio(rms=0.0), 1/60, float(i))
+        drift.tick(_audio(rms=0.1), 1/60, 999.0)
         assert drift._quiet_frames == 0
 
     def test_morph_completes_in_reasonable_time(self):
@@ -478,7 +504,7 @@ class TestDriftModeUnit:
         genome_axis.morph_t = 0.5
         expected = genome_axis.current_genome.lerp(
             genome_axis.target_genome, 0.5)
-        drift.tick(AudioState(rms=0.0), 1/60, 0.0)
+        drift.tick(_audio(rms=0.0), 1/60, 0.0)
         # Force activation for test
         drift.active = True
         drift.enter(genome_axis)
@@ -490,7 +516,7 @@ class TestDriftModeUnit:
         drift.enter(genome_axis)
         # Advance morph partway
         for i in range(100):
-            drift.tick(AudioState(rms=0.0), 1/60, float(i))
+            drift.tick(_audio(rms=0.0), 1/60, float(i))
         expected = drift.current_genome.lerp(drift.target_genome, drift.morph_t)
         result = drift.exit()
         assert result.distance(expected) < 1e-6
@@ -728,8 +754,9 @@ class TestMagnitudeStability:
         for _ in range(50):
             ms.update(mag)
         ms.reset()
-        assert ms._mag_ema.sum() == 0.0
-        assert ms._mag_var.sum() == 0.0
+        assert ms._fast._mag_ema.sum() == 0.0
+        assert ms._fast._mag_var.sum() == 0.0
+        assert ms._slow._mag_ema.sum() == 0.0
 
 
 # -------------------------------------------------------------------
@@ -897,7 +924,7 @@ class TestGenomeAxisEvents:
 
     def test_ignores_unknown_events(self):
         axis = self._make_axis()
-        audio = AudioState(events=[BeatEvent('alien_signal', 1.0)])
+        audio = _audio(events=[BeatEvent('alien_signal', 1.0)])
         # Should not raise
         axis.tick(audio, 1/60, 0.0)
 
@@ -905,7 +932,7 @@ class TestGenomeAxisEvents:
         axis = self._make_axis()
         axis.morph_speed = 0.1
         # Normal tick — morph advances
-        axis.tick(AudioState(), 1/60, 0.0)
+        axis.tick(_audio(), 1/60, 0.0)
         mt_normal = axis.morph_t
         assert mt_normal > 0
 
@@ -913,13 +940,13 @@ class TestGenomeAxisEvents:
         axis.morph_t = 0.0
         axis._break_damping = 1.0
         for i in range(60):
-            axis.tick(AudioState(breaking=True), 1/60, float(i))
+            axis.tick(_audio(breaking=True), 1/60, float(i))
         mt_breaking = axis.morph_t
         # Should advance much less than 60 normal frames would
         axis2 = self._make_axis()
         axis2.morph_speed = 0.1
         for i in range(60):
-            axis2.tick(AudioState(), 1/60, float(i))
+            axis2.tick(_audio(), 1/60, float(i))
         assert mt_breaking < axis2.morph_t * 0.5, \
             "Break should slow morph to less than half normal speed"
 
@@ -929,7 +956,7 @@ class TestGenomeAxisEvents:
         axis.morph_speed = 0.1
         # 10 frames of break
         for i in range(10):
-            axis.tick(AudioState(breaking=True), 1/60, float(i))
+            axis.tick(_audio(breaking=True), 1/60, float(i))
         damping_after_brief = axis._break_damping
         # 0.97^10 ≈ 0.74 — still close to 1.0
         assert damping_after_brief > 0.7
@@ -938,32 +965,32 @@ class TestGenomeAxisEvents:
         axis = self._make_axis()
         # Deep break
         for i in range(60):
-            axis.tick(AudioState(breaking=True), 1/60, float(i))
+            axis.tick(_audio(breaking=True), 1/60, float(i))
         assert axis._break_damping < 0.2
         # Recovery
         for i in range(60):
-            axis.tick(AudioState(breaking=False), 1/60, float(60 + i))
+            axis.tick(_audio(breaking=False), 1/60, float(60 + i))
         assert axis._break_damping > 0.8
 
     def test_song_start_resets(self):
         axis = self._make_axis()
         # Build some state
         for i in range(10):
-            axis.tick(AudioState(events=[BeatEvent('kick', 0.5)]), 1/60, float(i))
+            axis.tick(_audio(events=[BeatEvent('kick', 0.5)]), 1/60, float(i))
         # Song start should reset energy tracking
-        axis.tick(AudioState(events=[BeatEvent('song_start', 0.0)]), 1/60, 20.0)
+        axis.tick(_audio(events=[BeatEvent('song_start', 0.0)]), 1/60, 20.0)
         assert axis._recent_kick_energy == 0.5
 
     def test_low_percussiveness_slows_morph(self):
         axis = self._make_axis()
         axis.morph_speed = 0.1
         # High percussiveness
-        axis.tick(AudioState(percussiveness=0.8), 1/60, 0.0)
+        axis.tick(_audio(percussiveness=0.8), 1/60, 0.0)
         mt_fast = axis.morph_t
         # Reset
         axis.morph_t = 0.0
         # Low percussiveness
-        axis.tick(AudioState(percussiveness=0.1), 1/60, 1.0)
+        axis.tick(_audio(percussiveness=0.1), 1/60, 1.0)
         mt_slow = axis.morph_t
         assert mt_slow < mt_fast
 
@@ -971,7 +998,7 @@ class TestGenomeAxisEvents:
         axis = self._make_axis()
         axis.morph_t = 0.5  # must be > 0.3
         initial_target = id(axis.target_genome)
-        audio = AudioState(
+        audio = _audio(
             percussiveness=0.1,
             centroid_delta=600.0,  # big shift
         )

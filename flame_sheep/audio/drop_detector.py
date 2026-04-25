@@ -38,6 +38,7 @@ class DropDetector:
         self._centroid_rms_avg = 0.0
         self._warmup_frames = 0
         self.breaking = False
+        self._break_start_frame = 0
 
     def reset(self):
         """Reset state — call on song change."""
@@ -96,5 +97,14 @@ class DropDetector:
                 and self._cooldown <= 0
                 and not drifting):
             self.breaking = True
+            self._break_start_frame = self._quiet_frames
             log.info(f'[BREAK] centroid_rms={centroid_rms:.4f} '
                      f'avg={self._centroid_rms_avg:.4f}')
+
+    @property
+    def break_intensity(self) -> float:
+        """0.0 = not breaking, ramps to 1.0 over ~1s after activation."""
+        if not self.breaking:
+            return 0.0
+        frames_since = self._quiet_frames - self._break_start_frame
+        return min(1.0, frames_since / 60.0)
