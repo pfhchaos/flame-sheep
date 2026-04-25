@@ -14,8 +14,19 @@ from flame_sheep.audio import AudioProcessor, SAMPLE_RATE, FFT_SIZE, HOP_SIZE
 from flame_sheep.audio.source import FeedSource
 from flame_sheep.audio._types import BeatEvent
 
-from .synths import synth_kick, synth_vocal, synth_snare, synth_hihat
+from .synths import synth_kick, synth_vocal, synth_snare, synth_hihat, synth_808_kick
 from .conftest import make_processor, make_silence, make_sine, feed_audio
+
+
+def _sustained_bass(duration_s: float, freq: float = 60.0,
+                    amplitude: float = 0.6) -> np.ndarray:
+    """Sustained bass tone — simulates bass synth pad."""
+    n = int(SAMPLE_RATE * duration_s)
+    t = np.arange(n, dtype=np.float32) / SAMPLE_RATE
+    # Slightly detuned harmonics for richness
+    sig = amplitude * np.sin(2 * np.pi * freq * t).astype(np.float32)
+    sig += amplitude * 0.3 * np.sin(2 * np.pi * freq * 2 * t).astype(np.float32)
+    return sig
 
 
 WARMUP_FRAMES = 20  # silence frames before signal for detector warmup
@@ -213,3 +224,79 @@ class TestPipelineHarmonicEnergy:
         if total_rms > 0.001:
             assert max_hrms < total_rms, \
                 "Kick transient should have harmonic_rms < total rms"
+
+
+class TestPipelineWallOfBass:
+    """Galaxy Collapse scenario: kicks over sustained bass."""
+
+    def test_kicks_over_sustained_bass_detected(self):
+        """Kicks on top of sustained bass should still fire events.
+
+        The Galaxy Collapse problem: sustained bass keeps the kick band
+        magnitude high, making flux spikes relatively small. Stability
+        + headroom scaling should allow real kicks through.
+        """
+        bass = _sustained_bass(4.0, freq=60, amplitude=0.6)
+        kicks = _place_hits(4.0, 0.5, synth_kick, amplitude=0.9)
+        signal = bass + kicks
+        events, _ = _run_pipeline(signal)
+        kick_count = _count_events(events, 'kick')
+        assert kick_count >= 2, \
+            f"Kicks over sustained bass produced only {kick_count} events"
+
+    def test_sustained_bass_alone_low_kicks(self):
+        """Sustained bass with no kicks should produce few or no kick events."""
+        signal = _sustained_bass(4.0, freq=60, amplitude=0.6)
+        events, _ = _run_pipeline(signal)
+        kick_count = _count_events(events, 'kick')
+        assert kick_count < 5, \
+            f"Sustained bass produced {kick_count} false kicks"
+
+    def test_808_bass_with_hihat(self):
+        """808 sub-bass + hihats — bands shouldn't interfere."""
+        bass = _sustained_bass(4.0, freq=40, amplitude=0.7)
+        hihats = _place_hits(4.0, 0.25, synth_hihat, amplitude=0.4)
+        signal = bass + hihats
+        events, _ = _run_pipeline(signal)
+        hihat_count = _count_events(events, 'hihat')
+        kick_count = _count_events(events, 'kick')
+        # Hihats should dominate, bass shouldn't trigger kicks
+        assert hihat_count > kick_count, \
+            f"Expected hihats ({hihat_count}) > kicks ({kick_count})"
+
+
+class TestPipelineDensityTracking:
+    """Verify onset density responds to different patterns."""
+
+    def test_fast_kicks_many_events(self):
+        """Rapid kicks should produce many kick events."""
+        signal = _place_hits(4.0, 0.15, synth_kick, amplitude=0.8)
+        events, _ = _run_pipeline(signal)
+        kicks = _count_events(events, 'kick')
+        # 4s at ~6.7 kicks/s = ~27 kicks, minus warmup/cooldown
+        assert kicks >= 5, \
+            f"Fast kicks should produce many events, got {kicks}"
+
+    def test_slow_kicks_fewer_events(self):
+        """Slow kicks should produce fewer events than fast kicks."""
+        fast = _place_hits(4.0, 0.15, synth_kick, amplitude=0.8)
+        slow = _place_hits(4.0, 1.0, synth_kick, amplitude=0.8)
+        fast_events, _ = _run_pipeline(fast)
+        slow_events, _ = _run_pipeline(slow)
+        fast_kicks = _count_events(fast_events, 'kick')
+        slow_kicks = _count_events(slow_events, 'kick')
+        assert fast_kicks > slow_kicks, \
+            f"Fast ({fast_kicks}) should have more kicks than slow ({slow_kicks})"
+
+
+class TestPipelineWaltz:
+    """Non-4/4 time signature — density-driven should handle it."""
+
+    def test_waltz_kicks_detected(self):
+        """3/4 time: kicks on beat 1 of each bar should be detected."""
+        # 120 BPM waltz: kick every 1.5s (3 beats × 0.5s)
+        signal = _place_hits(6.0, 1.5, synth_kick, amplitude=0.8)
+        events, _ = _run_pipeline(signal)
+        kicks = _count_events(events, 'kick')
+        assert kicks >= 2, \
+            f"Waltz pattern produced only {kicks} kicks (expected >= 2)"
