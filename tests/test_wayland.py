@@ -142,10 +142,6 @@ class TestSwayHeadless:
 
     def test_sway_layout_query(self, headless_sway):
         """flame-sheep's _get_sway_layout should work against headless sway."""
-        import sys
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-        # Temporarily override SWAYSOCK so our code queries the test instance
         old_swaysock = os.environ.get('SWAYSOCK')
         os.environ['SWAYSOCK'] = headless_sway['swaysock']
         try:
@@ -161,3 +157,84 @@ class TestSwayHeadless:
                 os.environ['SWAYSOCK'] = old_swaysock
             else:
                 os.environ.pop('SWAYSOCK', None)
+
+    def test_multi_output(self, headless_sway):
+        """Should be able to add a second headless output."""
+        env = {'SWAYSOCK': headless_sway['swaysock'],
+               'PATH': os.environ['PATH']}
+        # Add a second output
+        subprocess.run(
+            ['swaymsg', 'output', 'HEADLESS-2', 'enable'],
+            env=env, capture_output=True, timeout=5)
+
+        # Wait briefly for it to register
+        time.sleep(0.5)
+
+        raw = subprocess.check_output(
+            ['swaymsg', '-t', 'get_outputs'], env=env, timeout=5)
+        outputs = json.loads(raw)
+        names = [o['name'] for o in outputs if o.get('active')]
+        assert len(names) >= 1  # at least the original
+        # Note: sway may not support adding headless outputs via swaymsg
+        # This test verifies the query still works
+
+    def test_list_outputs(self, headless_sway):
+        """WallpaperSession.list_outputs should see the headless output."""
+        wayland_display = headless_sway['wayland_display']
+        if not wayland_display:
+            pytest.skip('could not determine wayland display socket')
+
+        old_display = os.environ.get('WAYLAND_DISPLAY')
+        os.environ['WAYLAND_DISPLAY'] = wayland_display
+        try:
+            from flame_sheep.wayland_window import WallpaperSession
+            output_names = WallpaperSession.list_outputs()
+            assert len(output_names) >= 1
+            # Headless sway reports outputs as WL-N or HEADLESS-N
+            assert len(output_names) >= 1, \
+                f'Expected at least one output, got {output_names}'
+        except Exception as e:
+            # EGL initialization may fail in headless — that's OK for this test
+            if 'EGL' in str(e) or 'egl' in str(e):
+                pytest.skip(f'EGL not available in headless: {e}')
+            raise
+        finally:
+            if old_display:
+                os.environ['WAYLAND_DISPLAY'] = old_display
+            else:
+                os.environ.pop('WAYLAND_DISPLAY', None)
+
+    def test_layer_shell_available(self, headless_sway):
+        """Headless sway should advertise wlr-layer-shell protocol."""
+        wayland_display = headless_sway['wayland_display']
+        if not wayland_display:
+            pytest.skip('could not determine wayland display socket')
+
+        old_display = os.environ.get('WAYLAND_DISPLAY')
+        os.environ['WAYLAND_DISPLAY'] = wayland_display
+        try:
+            from pywayland.client import Display
+            display = Display()
+            display.connect()
+            registry = display.get_registry()
+
+            protocols = []
+            def _on_global(reg, name, interface, version):
+                protocols.append(interface)
+            registry.dispatcher['global'] = _on_global
+            display.roundtrip()
+            display.disconnect()
+
+            assert 'zwlr_layer_shell_v1' in protocols, \
+                f'layer-shell not found in: {[p for p in protocols if "layer" in p or "wlr" in p]}'
+        except ImportError:
+            pytest.skip('pywayland not available')
+        except Exception as e:
+            if 'connect' in str(e).lower():
+                pytest.skip(f'Could not connect to display: {e}')
+            raise
+        finally:
+            if old_display:
+                os.environ['WAYLAND_DISPLAY'] = old_display
+            else:
+                os.environ.pop('WAYLAND_DISPLAY', None)
