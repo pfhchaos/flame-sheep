@@ -193,8 +193,9 @@ def show_matrix_frieze():
     from matplotlib.patches import Polygon
     from matplotlib.collections import PatchCollection
 
-    L = np.array([[-0.15, -0.15], [0.15, -0.15], [0.15, -0.05],
-                  [-0.05, -0.05], [-0.05, 0.15], [-0.15, 0.15]])
+    t = np.linspace(0, 2*np.pi, 40)
+    r = 0.8 * (1 + 0.6 * np.cos(t))
+    L = np.column_stack([r * np.cos(t) + 0.3, r * np.sin(t)])
 
     fig, axes = plt.subplots(1, 7, figsize=(21, 3))
     fig.suptitle('7 Frieze Groups — Transform Elements', fontsize=14)
