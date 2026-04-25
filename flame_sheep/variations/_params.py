@@ -187,4 +187,55 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
             'rings3_n': float(rng.uniform(-2.5, 2.5)),
         }
 
+    elif var_idx == Variation.MOBIUS:
+        # Complex 2x2 matrix (az+b)/(cz+d) — small values to keep bounded
+        return {
+            'mobius_re_a': float(rng.uniform(-0.5, 0.5)),
+            'mobius_re_b': float(rng.uniform(-0.5, 0.5)),
+            'mobius_re_c': float(rng.uniform(-0.5, 0.5)),
+            'mobius_re_d': float(rng.uniform(-0.5, 0.5)),
+            'mobius_im_a': float(rng.uniform(-0.5, 0.5)),
+            'mobius_im_b': float(rng.uniform(-0.5, 0.5)),
+            'mobius_im_c': float(rng.uniform(-0.5, 0.5)),
+            'mobius_im_d': float(rng.uniform(-0.5, 0.5)),
+        }
+
+    elif var_idx == Variation.CPOW:
+        return {
+            'cpow_r': float(rng.uniform(0.5, 2.0)),
+            'cpow_i': float(rng.uniform(-0.5, 0.5)),
+            'cpow_power': float(rng.integers(2, 8)),
+        }
+
+    elif var_idx == Variation.NGON:
+        return {
+            'ngon_circle': float(rng.uniform(0.5, 2.0)),
+            'ngon_corners': float(rng.uniform(0.5, 4.0)),
+            'ngon_power': float(rng.uniform(1.0, 5.0)),
+            'ngon_sides': float(rng.integers(3, 9)),
+        }
+
+    elif var_idx == Variation.EPISPIRAL:
+        # From JWildfire randomize()
+        if rng.random() < 0.5:
+            n = float(int(rng.uniform(3, 20)))
+        else:
+            n = float(rng.uniform(2.0, 50.0))
+        thickness = 0.0 if rng.random() < 0.2 else float(rng.uniform(-2.5, 2.5))
+        return {
+            'epispiral_n': n,
+            'epispiral_thickness': thickness,
+            'epispiral_holes': float(rng.uniform(-5.0, 5.0)),
+        }
+
+    elif var_idx == Variation.WAVES3:
+        return {
+            'waves3_scalex': float(rng.uniform(0.01, 0.2)),
+            'waves3_scaley': float(rng.uniform(0.01, 0.2)),
+            'waves3_freqx': float(rng.uniform(2.0, 15.0)),
+            'waves3_freqy': float(rng.uniform(2.0, 15.0)),
+            'waves3_sx_freq': float(rng.uniform(0.0, 4.0)),
+            'waves3_sy_freq': float(rng.uniform(0.0, 4.0)),
+        }
+
     return {}

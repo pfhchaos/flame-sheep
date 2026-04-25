@@ -101,6 +101,86 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         k = int((r / _dx + 1) / 2)
         rr = 2.0 - _dx * (k * 2.0 / r + 1.0) - n * (k * c - 1.0) / r
         return w*rr*x, w*rr*y
+    elif var_idx == 47: # mobius — (az+b)/(cz+d), can blow up at poles
+        re_a = _current_var_params.get('mobius_re_a', 0.1)
+        re_b = _current_var_params.get('mobius_re_b', 0.2)
+        re_c = _current_var_params.get('mobius_re_c', -0.15)
+        re_d = _current_var_params.get('mobius_re_d', 0.21)
+        im_a = _current_var_params.get('mobius_im_a', 0.2)
+        im_b = _current_var_params.get('mobius_im_b', -0.12)
+        im_c = _current_var_params.get('mobius_im_c', -0.15)
+        im_d = _current_var_params.get('mobius_im_d', 0.1)
+        re_u = re_a * x - im_a * y + re_b
+        im_u = re_a * y + im_a * x + im_b
+        re_v = re_c * x - im_c * y + re_d
+        im_v = re_c * y + im_c * x + im_d
+        d = re_v * re_v + im_v * im_v
+        if d < 1e-10:
+            return w*x, w*y
+        inv_d = w / d
+        return inv_d * (re_u * re_v + im_u * im_v), inv_d * (im_u * re_v - re_u * im_v)
+    elif var_idx == 48: # cpow — complex power, can blow up
+        cr = _current_var_params.get('cpow_r', 1.0)
+        ci = _current_var_params.get('cpow_i', 0.1)
+        power = _current_var_params.get('cpow_power', 1.5)
+        a = np.arctan2(x, y)  # flam3 convention
+        lnr = 0.5 * np.log(max(x*x + y*y, 1e-10))
+        va = 2 * np.pi / power
+        vc = cr / power
+        vd = ci / power
+        ang = vc * a + vd * lnr + va * int(power * np.random.random())
+        m = w * np.exp(min(vc * lnr - vd * a, 10.0))
+        return m * np.cos(ang), m * np.sin(ang)
+    elif var_idx == 49: # ngon
+        circle = _current_var_params.get('ngon_circle', 1.0)
+        corners = _current_var_params.get('ngon_corners', 2.0)
+        power = _current_var_params.get('ngon_power', 3.0)
+        sides = _current_var_params.get('ngon_sides', 5.0)
+        rf = max(r, 1e-10) ** power
+        th_std = np.arctan2(y, x)
+        b = 2 * np.pi / sides
+        ph = th_std - b * int(th_std / b)
+        if ph > b * 0.5:
+            ph -= b
+        amp = (corners * (1.0 / max(abs(np.cos(ph)), 1e-6) - 1.0) + circle) / max(rf, 1e-6)
+        return w * amp * x, w * amp * y
+    elif var_idx == 50: # loonie
+        rr = x*x + y*y
+        if rr < 1.0 and rr > 1e-10:
+            s = np.sqrt(1.0 / rr - 1.0)
+            return w * s * x, w * s * y
+        return w*x, w*y
+    elif var_idx == 51: # scry
+        rr = x*x + y*y
+        ri = np.sqrt(rr)
+        d = ri * (rr + 1.0)
+        if d < 1e-10:
+            return w*x, w*y
+        return w * x / d, w * y / d
+    elif var_idx == 52: # epispiral
+        n = _current_var_params.get('epispiral_n', 6.0)
+        thickness = _current_var_params.get('epispiral_thickness', 0.0)
+        holes = _current_var_params.get('epispiral_holes', 1.0)
+        th_std = np.arctan2(y, x)
+        d = np.cos(n * th_std)
+        if abs(d) < 1e-6:
+            return w*x, w*y
+        t = -holes
+        if abs(thickness) > 1e-6:
+            t += (np.random.random() * thickness) / d
+        else:
+            t += 1.0 / d
+        return w * t * np.cos(th_std), w * t * np.sin(th_std)
+    elif var_idx == 53: # waves3
+        scalex = _current_var_params.get('waves3_scalex', 0.05)
+        scaley = _current_var_params.get('waves3_scaley', 0.05)
+        freqx = _current_var_params.get('waves3_freqx', 7.0)
+        freqy = _current_var_params.get('waves3_freqy', 13.0)
+        sx_freq = _current_var_params.get('waves3_sx_freq', 0.0)
+        sy_freq = _current_var_params.get('waves3_sy_freq', 2.0)
+        scalexx = 0.5 * scalex * (1.0 + np.sin(y * sx_freq))
+        scaleyy = 0.5 * scaley * (1.0 + np.sin(x * sy_freq))
+        return w * (x + np.sin(y * freqx) * scalexx), w * (y + np.sin(x * freqy) * scaleyy)
     elif var_idx == 2: # spherical — 1/r², can blow up near origin
         r2 = x*x + y*y + 1e-10
         return w*x/r2, w*y/r2

@@ -395,6 +395,115 @@ vec2 var_rings3(vec2 p, int slot) {
     return rr * p;
 }
 
+// --- Conformal / complex variations ---
+
+vec2 var_mobius(vec2 p, int slot) {
+    // Mobius transform: (az+b)/(cz+d) in complex arithmetic
+    float re_a = u_active_vars[slot + PARAM_OFFSET + 0];
+    float re_b = u_active_vars[slot + PARAM_OFFSET + 1];
+    float re_c = u_active_vars[slot + PARAM_OFFSET + 2];
+    float re_d = u_active_vars[slot + PARAM_OFFSET + 3];
+    float im_a = u_active_vars[slot + PARAM_OFFSET + 4];
+    float im_b = u_active_vars[slot + PARAM_OFFSET + 5];
+    float im_c = u_active_vars[slot + PARAM_OFFSET + 6];
+    float im_d = u_active_vars[slot + PARAM_OFFSET + 7];
+    // numerator: a*z + b
+    float re_u = re_a * p.x - im_a * p.y + re_b;
+    float im_u = re_a * p.y + im_a * p.x + im_b;
+    // denominator: c*z + d
+    float re_v = re_c * p.x - im_c * p.y + re_d;
+    float im_v = re_c * p.y + im_c * p.x + im_d;
+    float d = max(re_v * re_v + im_v * im_v, 1e-6);
+    float inv_d = 1.0 / d;
+    return vec2((re_u * re_v + im_u * im_v) * inv_d,
+                (im_u * re_v - re_u * im_v) * inv_d);
+}
+
+vec2 var_cpow(vec2 p, int slot) {
+    // Complex power: z^(r+i*i) with n-fold symmetry from power
+    float cr = u_active_vars[slot + PARAM_OFFSET + 0];
+    float ci = u_active_vars[slot + PARAM_OFFSET + 1];
+    float power = u_active_vars[slot + PARAM_OFFSET + 2];
+    float a = theta(p);
+    float lnr = 0.5 * log(max(r2(p), 1e-10));
+    float va = 6.28318530 / power;
+    float vc = cr / power;
+    float vd = ci / power;
+    float ang = vc * a + vd * lnr + va * floor(power * rng_float());
+    float m = exp(vc * lnr - vd * a);
+    return m * vec2(cos(ang), sin(ang));
+}
+
+// --- Geometric variations ---
+
+vec2 var_ngon(vec2 p, int slot) {
+    float circle = u_active_vars[slot + PARAM_OFFSET + 0];
+    float corners = u_active_vars[slot + PARAM_OFFSET + 1];
+    float power = u_active_vars[slot + PARAM_OFFSET + 2];
+    float sides = u_active_vars[slot + PARAM_OFFSET + 3];
+    float rf = pow(max(r2(p), 1e-10), power * 0.5);
+    float th = atan(p.y, p.x);  // standard atan2 for ngon
+    float b = 6.28318530 / sides;
+    float ph = th - b * floor(th / b);
+    if (ph > b * 0.5) ph -= b;
+    float amp = (corners * (1.0 / max(cos(ph), 1e-6) - 1.0) + circle)
+                / max(rf, 1e-6);
+    return amp * p;
+}
+
+vec2 var_loonie(vec2 p) {
+    // Bubble/lens effect — magnifies points inside weight radius
+    float rr = r2(p);
+    // Weight is baked into the caller, but loonie uses w² as threshold.
+    // With weight=1 (normalized), w²=1 so threshold = r²<1
+    float w2 = 1.0;  // effective weight² (caller applies actual weight)
+    if (rr < w2 && rr > 1e-10) {
+        return sqrt(w2 / rr - 1.0) * p;
+    }
+    return p;
+}
+
+vec2 var_scry(vec2 p) {
+    // Crystal ball effect — 1/(r*(r²+1))
+    float rr = r2(p);
+    float ri = r(p);
+    float d = ri * (rr + 1.0);
+    if (d < 1e-10) return p;
+    return (1.0 / d) * p;
+}
+
+vec2 var_epispiral(vec2 p, int slot) {
+    float n = u_active_vars[slot + PARAM_OFFSET + 0];
+    float thickness = u_active_vars[slot + PARAM_OFFSET + 1];
+    float holes = u_active_vars[slot + PARAM_OFFSET + 2];
+    float th = atan(p.y, p.x);
+    float d = cos(n * th);
+    if (abs(d) < 1e-6) return p;
+    float t = -holes;
+    if (abs(thickness) > 1e-6) {
+        t += (rng_float() * thickness) / d;
+    } else {
+        t += 1.0 / d;
+    }
+    return t * vec2(cos(th), sin(th));
+}
+
+// --- Wave variations ---
+
+vec2 var_waves3(vec2 p, int slot) {
+    // waves3: waves2 + amplitude modulation via secondary sine
+    float scalex  = u_active_vars[slot + PARAM_OFFSET + 0];
+    float scaley  = u_active_vars[slot + PARAM_OFFSET + 1];
+    float freqx   = u_active_vars[slot + PARAM_OFFSET + 2];
+    float freqy   = u_active_vars[slot + PARAM_OFFSET + 3];
+    float sx_freq = u_active_vars[slot + PARAM_OFFSET + 4];
+    float sy_freq = u_active_vars[slot + PARAM_OFFSET + 5];
+    float scalexx = 0.5 * scalex * (1.0 + sin(p.y * sx_freq));
+    float scaleyy = 0.5 * scaley * (1.0 + sin(p.x * sy_freq));
+    return vec2(p.x + sin(p.y * freqx) * scalexx,
+                p.y + sin(p.x * freqy) * scaleyy);
+}
+
 // ------------------------------------------------------------
 // Apply single variation by index (switch-based dispatch)
 // ------------------------------------------------------------
@@ -447,6 +556,13 @@ vec2 apply_single_variation(int var_idx, vec2 p, int slot) {
         case 44: return var_wallpaper(p, slot);
         case 45: return var_frieze(p, slot);
         case 46: return var_rings3(p, slot);
+        case 47: return var_mobius(p, slot);
+        case 48: return var_cpow(p, slot);
+        case 49: return var_ngon(p, slot);
+        case 50: return var_loonie(p);
+        case 51: return var_scry(p);
+        case 52: return var_epispiral(p, slot);
+        case 53: return var_waves3(p, slot);
         default: return p;
     }
 }

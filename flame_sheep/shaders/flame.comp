@@ -61,7 +61,7 @@ layout(std430, binding = 2) readonly buffer Affines {
 // Active variations with inline params:
 // Each slot = (var_idx, weight, p0, p1, p2, p3, p4, p5)
 // var_idx < 0 marks end of active variations for this transform
-#define SLOT_SIZE 8
+#define SLOT_SIZE 10
 #define PARAM_OFFSET 2
 
 layout(std430, binding = 3) readonly buffer ActiveVariations {

@@ -53,9 +53,17 @@ class Variation:
     WALLPAPER   = 44
     FRIEZE      = 45
     RINGS3      = 46
+    # --- new batch ---
+    MOBIUS      = 47
+    CPOW        = 48
+    NGON        = 49
+    LOONIE      = 50
+    SCRY        = 51
+    EPISPIRAL   = 52
+    WAVES3      = 53
 
 
-NUM_VARIATIONS = 47
+NUM_VARIATIONS = 54
 
 # Variations that require per-transform parameters (var_params dict)
 PARAMETRIC_VARIATIONS = {
@@ -68,13 +76,15 @@ PARAMETRIC_VARIATIONS = {
     Variation.ICON, Variation.SATTRACTOR,
     Variation.WALLPAPER, Variation.FRIEZE,
     Variation.RINGS3,
+    Variation.MOBIUS, Variation.CPOW, Variation.NGON,
+    Variation.EPISPIRAL, Variation.WAVES3,
 }
 
 # Per-variation parameter spec: ordered list of param names.
 # Params are packed alongside each active variation in the GPU buffer.
 # Max 6 params per variation (icon has 6, the most).
-MAX_PARAMS_PER_VAR = 6
-SLOT_SIZE = 2 + MAX_PARAMS_PER_VAR  # var_idx, weight, p0..p5
+MAX_PARAMS_PER_VAR = 8
+SLOT_SIZE = 2 + MAX_PARAMS_PER_VAR  # var_idx, weight, p0..p7
 
 VAR_PARAMS_SPEC = {
     Variation.WAVES:        ['waves_freq_x', 'waves_freq_y',
@@ -100,6 +110,13 @@ VAR_PARAMS_SPEC = {
     Variation.WALLPAPER:    ['wallpaper_group'],
     Variation.FRIEZE:       ['frieze_group'],
     Variation.RINGS3:       ['rings3_val', 'rings3_n'],
+    Variation.MOBIUS:        ['mobius_re_a', 'mobius_re_b', 'mobius_re_c', 'mobius_re_d',
+                              'mobius_im_a', 'mobius_im_b', 'mobius_im_c', 'mobius_im_d'],
+    Variation.CPOW:         ['cpow_r', 'cpow_i', 'cpow_power'],
+    Variation.NGON:         ['ngon_circle', 'ngon_corners', 'ngon_power', 'ngon_sides'],
+    Variation.EPISPIRAL:    ['epispiral_n', 'epispiral_thickness', 'epispiral_holes'],
+    Variation.WAVES3:       ['waves3_scalex', 'waves3_scaley', 'waves3_freqx',
+                              'waves3_freqy', 'waves3_sx_freq', 'waves3_sy_freq'],
 }
 
 # Backwards compat — old code may reference this
