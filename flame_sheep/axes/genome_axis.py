@@ -37,6 +37,7 @@ class GenomeAxis:
     BREAK_DECAY         = 0.97   # damping per frame during break (~half speed in 0.4s)
     DENSITY_MORPH_SCALE = 0.003  # morph_speed baseline += kick_density * this
     STRONG_BEAT_THRESHOLD = 2.0  # swap when energy > recent_avg * this
+    DENSITY_DAMPING     = 0.3    # per-kick effect scales as 1/(1+density*this)
 
     # Centroid delta threshold for triggering a swap in low-percussiveness mode
     CENTROID_SWAP_THRESHOLD = 500.0
@@ -83,7 +84,7 @@ class GenomeAxis:
         # Handle discrete events
         for event in audio.events:
             if event.kind == 'kick':
-                self._handle_kick(event, clock)
+                self._handle_kick(event, clock, audio)
             elif event.kind == 'song_start':
                 self._handle_song_start()
 
@@ -130,15 +131,20 @@ class GenomeAxis:
 
     # --- Event handlers ---
 
-    def _handle_kick(self, event: BeatEvent, clock: float):
+    def _handle_kick(self, event: BeatEvent, clock: float, audio=None):
         since = clock - self._last_kick_time
         self._last_kick_time = clock
 
         self._recent_kick_energy = (
             self._recent_kick_energy * 0.8 + event.energy * 0.2)
 
-        # Strong beat → swap direction (downbeat detection)
-        if event.energy > self._recent_kick_energy * self.STRONG_BEAT_THRESHOLD:
+        kick_density = (audio.bands['kick'].onset_density
+                        if audio else 0.0)
+        density_scale = 1.0 / (1.0 + kick_density * self.DENSITY_DAMPING)
+
+        # Strong beat → swap direction (harder to trigger at high density)
+        swap_thresh = self.STRONG_BEAT_THRESHOLD * (1.0 + kick_density * 0.5)
+        if event.energy > self._recent_kick_energy * swap_thresh:
             self.current_genome = self.current_genome.lerp(
                 self.target_genome, self.morph_t)
             self._swap_next_genome()
@@ -147,9 +153,9 @@ class GenomeAxis:
             log.debug(f'[SWAP]  +{since:.3f}s  energy={event.energy:.2f}  '
                       f'avg={self._recent_kick_energy:.2f}  dist={dist:.3f}')
         else:
-            # Normal kick — pulse morph speed
+            # Normal kick — pulse morph speed (scaled by density)
             self.morph_speed = min(0.15,
-                self.morph_speed + event.energy * self.KICK_MORPH_PULSE)
+                self.morph_speed + event.energy * self.KICK_MORPH_PULSE * density_scale)
             log.debug(f'[kick]  +{since:.3f}s  energy={event.energy:.2f}')
 
     def _handle_song_start(self):

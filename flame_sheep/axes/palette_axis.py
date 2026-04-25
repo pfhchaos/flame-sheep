@@ -15,6 +15,7 @@ class PaletteAxis:
     """Snare -> palette walk. Energy controls jump distance."""
 
     DRIFT_MORPH_SPEED = 0.001
+    DENSITY_DAMPING   = 0.2    # snare density scales speed boost
 
     PALETTE_HISTORY_SIZE = 8
 
@@ -39,7 +40,9 @@ class PaletteAxis:
             self.palette_t       = 0.0
             self.palette_speed   = self.DRIFT_MORPH_SPEED
 
-        # Handle snare events
+        # Handle snare events (scaled by density)
+        snare_density = audio.bands['snare'].onset_density
+        density_scale = 1.0 / (1.0 + snare_density * self.DENSITY_DAMPING)
         for event in audio.events:
             if event.kind == 'snare':
                 self.palette_current = _lerp_arr(
@@ -48,7 +51,7 @@ class PaletteAxis:
                 if next_palette is not None:
                     self.palette_target = next_palette
                 self.palette_t     = 0.0
-                self.palette_speed = 0.03 + event.energy * 0.1
+                self.palette_speed = 0.03 + event.energy * 0.1 * density_scale
                 log.debug(f'[snare] energy={event.energy:.2f}')
 
         # Decay speed toward drift
