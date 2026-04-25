@@ -40,6 +40,7 @@ class FluxBeatDetector:
         self._adaptive = adaptive
         self._sharpness = sharpness
         self._stability = stability  # MagnitudeStability reference (optional)
+        self._bpm = 0.0
 
         # Static band masks (from shared definitions)
         self._bands = {k: BAND_MASKS[k] for k in ('kick', 'snare', 'clap', 'hihat')}
@@ -113,7 +114,12 @@ class FluxBeatDetector:
             recent.append(band_flux)
 
             self._frame_count[band] += 1
-            cd = self.KICK_COOLDOWN if band == 'kick' else self.COOLDOWN
+            if band == 'kick' and self._bpm > 0:
+                # Tempo-scaled cooldown: 40% of beat period, min 4 frames
+                beat_frames = (60.0 / self._bpm) / (HOP_SIZE / SAMPLE_RATE)
+                cd = max(4, int(beat_frames * 0.4))
+            else:
+                cd = self.KICK_COOLDOWN if band == 'kick' else self.COOLDOWN
             in_cooldown = (self._frame_count[band]
                            - self._cooldown_frames[band]) < cd
 
@@ -126,9 +132,14 @@ class FluxBeatDetector:
                 if (self._sharpness and band in ('kick', 'snare', 'clap', 'hihat')
                         and len(recent) > self.SHARPNESS_LOOKBACK):
                     pre_attack = float(np.median(list(recent)[:-1]))
-                    if pre_attack > self.MIN_FLUX and band_flux / pre_attack < self.SHARPNESS:
-                        hist.append(band_flux)
-                        continue
+                    if pre_attack > self.MIN_FLUX:
+                        # Scale sharpness threshold down when baseline is loud —
+                        # less headroom means smaller attack ratios for real events
+                        sharpness_headroom = 1.0 / (1.0 + pre_attack * 10.0)
+                        effective_sharpness = 1.0 + (self.SHARPNESS - 1.0) * sharpness_headroom
+                        if band_flux / pre_attack < effective_sharpness:
+                            hist.append(band_flux)
+                            continue
 
                 # Snare: corroborate with confirmation band
                 if band == 'snare':

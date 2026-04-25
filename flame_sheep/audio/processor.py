@@ -159,6 +159,7 @@ class AudioProcessor:
                     self._tempo.process_onset(event.kind, now)
                     self._density.process_onset(event.kind, now)
             self._density.update(now)
+            self._detector._bpm = self._tempo.bpm
 
             with self._lock:
                 self._pending_events.extend(events)
