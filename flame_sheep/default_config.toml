@@ -33,7 +33,7 @@ max_bpm = 400                  # highest BPM (octave preference folds above 200)
 default_bpm = 120              # assumed BPM when confidence is low
 
 [breaks]
-enabled = true                 # set false to disable break detection entirely
+enabled = false                # disabled pending adaptive system tuning
 quiet_threshold_frames = 60    # frames of quiet before break activates (~1s)
 bass_quiet_threshold_frames = 45  # bass-only break threshold (~0.75s)
 drop_energy_ratio = 0.15       # centroid_rms must drop below avg × this

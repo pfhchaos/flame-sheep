@@ -50,7 +50,7 @@ DEFAULTS = {
         'default_bpm': 120,
     },
     'breaks': {
-        'enabled': True,
+        'enabled': False,
         'quiet_threshold_frames': 60,
         'bass_quiet_threshold_frames': 45,
         'drop_energy_ratio': 0.15,

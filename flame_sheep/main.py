@@ -24,6 +24,7 @@ import numpy as np
 import moderngl_window as mglw
 from moderngl_window import settings
 
+from .config import cfg
 from .genome import Genome, _lerp_arr
 from .audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent, AudioState, DEFAULT_DEVICE
 from .audio.drop_detector import DropDetector
@@ -122,13 +123,14 @@ class FlameSheepCore:
             events.insert(0, BeatEvent(kind='song_start', energy=0.0))
             self._pending_song_start = False
 
-        # Run break detectors — update breaking state
-        self._drop_detector.detect(
-            events, snap.centroid_rms,
-            snap.bpm, self._drift_mode.active, frame_time)
-        self._bass_drop_detector.detect(
-            events, snap.bands['subbass'].rms,
-            snap.bpm, self._drift_mode.active, frame_time)
+        # Run break detectors — update breaking state (if enabled)
+        if cfg.breaks.enabled:
+            self._drop_detector.detect(
+                events, snap.centroid_rms,
+                snap.bpm, self._drift_mode.active, frame_time)
+            self._bass_drop_detector.detect(
+                events, snap.bands['subbass'].rms,
+                snap.bpm, self._drift_mode.active, frame_time)
 
         # Build AudioState for axes
         audio = AudioState(
