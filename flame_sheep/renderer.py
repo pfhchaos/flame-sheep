@@ -44,6 +44,15 @@ from .genome import Genome, MAX_TRANSFORMS, NUM_VARIATIONS, MAX_ACTIVE_VARS, SLO
 
 SHADER_DIR = Path(__file__).parent / 'shaders'
 
+
+def _resolve_includes(source: str, shader_dir: Path) -> str:
+    """Resolve #include "file.glsl" directives by inlining file contents."""
+    import re
+    def _replace(m):
+        path = shader_dir / m.group(1)
+        return path.read_text()
+    return re.sub(r'#include\s+"(.+?)"', _replace, source)
+
 # ---------------------------------------------------------------------------
 # Walker / iteration tuning
 #
@@ -88,6 +97,7 @@ class FlameRenderer:
     def _load_shaders(self):
         from .variations._symmetry_groups import generate_glsl
         flame_src = (SHADER_DIR / 'flame.comp').read_text()
+        flame_src = _resolve_includes(flame_src, SHADER_DIR)
         flame_src = flame_src.replace('// {{SYMMETRY_GROUPS}}', generate_glsl())
         self.compute_shader = self.ctx.compute_shader(flame_src)
         self.clear_shader = self.ctx.compute_shader(
