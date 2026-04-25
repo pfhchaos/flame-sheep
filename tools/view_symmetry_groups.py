@@ -233,7 +233,16 @@ def main():
     parser.add_argument('--variation', type=str, help='Show a single variation by name')
     parser.add_argument('--param', type=str, action='append',
                         help='Set param as key=value (can repeat)')
+    parser.add_argument('--step', type=float, default=None,
+                        help='Override symmetry group step size (default 0.5)')
     args = parser.parse_args()
+
+    if args.step is not None:
+        import flame_sheep.variations._symmetry_groups as sg
+        sg.S = args.step / 2.0
+        # Rebuild the group tables with new S
+        sg._rebuild()
+
 
     if args.variation:
         params = {}

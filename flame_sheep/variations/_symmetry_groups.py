@@ -13,8 +13,10 @@ pp 162-205, via JWildfire SymNetG/SymBandG implementations.
 # step/2 baked into translations
 S = 0.25
 
-# 17 wallpaper groups (plane symmetry)
-WALLPAPER_GROUPS = [
+
+def _build_wallpaper(S):
+    """Build wallpaper group tables with given step/2 value."""
+    return [
     # 0: p1 — identity with translation
     [(1, 0, -S, 0, 1, -S),
      (1, 0, S, 0, 1, S)],
@@ -164,10 +166,12 @@ WALLPAPER_GROUPS = [
      (-0.5, -0.866, S, -0.866, 0.5, S),
      (0.5, 0.866, S, -0.866, 0.5, S),
      (0.5, -0.866, S, -0.866, -0.5, S)],
-]
+    ]
 
-# 7 frieze groups (band symmetry)
-FRIEZE_GROUPS = [
+
+def _build_frieze(S):
+    """Build frieze group tables with given step/2 value."""
+    return [
     # 0: p1 — translation only
     [(1, 0, -S-1, 0, 1, -S),
      (1, 0, S, 0, 1, S)],
@@ -199,7 +203,20 @@ FRIEZE_GROUPS = [
      (-1, 0, S+2, 0, 1, S-0.5),
      (1, 0, S, 0, -1, S+0.5),
      (-1, 0, -S, 0, -1, -S+0.5)],
-]
+    ]
+
+
+# Initialize with default S
+WALLPAPER_GROUPS = _build_wallpaper(S)
+FRIEZE_GROUPS = _build_frieze(S)
+
+
+def _rebuild():
+    """Rebuild group tables with current S value. Call after changing S."""
+    global WALLPAPER_GROUPS, FRIEZE_GROUPS
+    WALLPAPER_GROUPS[:] = _build_wallpaper(S)
+    FRIEZE_GROUPS[:] = _build_frieze(S)
+
 
 # Group names for display
 WALLPAPER_NAMES = [
