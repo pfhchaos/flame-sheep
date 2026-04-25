@@ -27,7 +27,7 @@ class FluxBeatDetector:
 
     # Detection constants
     THRESHOLD = 1.5       # flux must exceed this × local average to fire
-    KICK_THRESHOLD = 3.5  # higher threshold for kick (2-bin band has high variance)
+    KICK_THRESHOLD = 2.5  # flux must exceed this × local average for kick (4 bins)
     COOLDOWN  = 12    # audio frames between onsets (~128ms at HOP_SIZE=512)
     KICK_COOLDOWN = 10 # shorter for kick to allow fast patterns (~107ms)
     STABILITY_SCALING = 1.0  # how much stability raises the kick threshold

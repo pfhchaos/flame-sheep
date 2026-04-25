@@ -16,7 +16,7 @@ class ZoomAxis:
 
     ZOOM_BOOST_MAX     = 0.3
     ZOOM_DECAY         = 0.95
-    DENSITY_DAMPING    = 0.15   # pulse magnitude scales as 1/(1+density*this)
+    DENSITY_DAMPING    = 0.05   # pulse magnitude scales as 1/(1+density*this)
     DENSITY_DECAY_SCALE = 0.15  # decay exponent scales with density
 
     def __init__(self):
