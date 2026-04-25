@@ -4,6 +4,7 @@ import numpy as np
 from collections import deque
 
 from ._constants import SAMPLE_RATE, N_BINS, HISTORY_LEN, FREQS, FFT_SIZE, HOP_SIZE
+from ..config import cfg
 from ._types import BeatEvent
 from ._spectrum import SpectrumFrame
 from ._bands import (
@@ -25,15 +26,24 @@ class FluxBeatDetector:
         events = detector.detect(spectrum_frame)
     """
 
-    # Detection constants
-    THRESHOLD = 1.5       # flux must exceed this × local average to fire
-    KICK_THRESHOLD = 3.5  # flux must exceed this × local average for kick
-    COOLDOWN  = 12    # audio frames between onsets (~128ms at HOP_SIZE=512)
-    KICK_COOLDOWN = 8  # fallback when no tempo locked (~85ms)
-    STABILITY_SCALING = 1.0  # how much stability raises the kick threshold
-    MIN_FLUX  = 1e-7  # gates out DC/numerical noise
-    SHARPNESS = 3.0   # min flux ratio (current vs pre-attack) for snare/hihat
+    # Non-configurable constants
     SHARPNESS_LOOKBACK = FFT_SIZE // HOP_SIZE  # span the full overlap attack ramp
+
+    # Configurable constants read from cfg at access time
+    @property
+    def THRESHOLD(self): return cfg.detection.base_threshold
+    @property
+    def KICK_THRESHOLD(self): return cfg.detection.kick_threshold
+    @property
+    def COOLDOWN(self): return cfg.detection.cooldown_frames
+    @property
+    def KICK_COOLDOWN(self): return cfg.detection.kick_cooldown_frames
+    @property
+    def STABILITY_SCALING(self): return cfg.detection.stability_scaling
+    @property
+    def MIN_FLUX(self): return cfg.detection.min_flux
+    @property
+    def SHARPNESS(self): return cfg.detection.sharpness
 
     def __init__(self, adaptive: bool = False, sharpness: bool = True,
                  stability=None):

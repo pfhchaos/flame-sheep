@@ -1,0 +1,76 @@
+# flame-sheep configuration
+# Copy to ~/.config/flame-sheep/config.toml to override defaults.
+# Only include values you want to change — missing values use defaults.
+# Reload at runtime: echo "config reload" > ~/.local/share/flame-sheep/ctl
+
+[detection]
+base_threshold = 1.5          # flux/avg ratio for snare/clap/hihat onset
+kick_threshold = 3.5           # flux/avg ratio for kick onset (higher = fewer false kicks)
+cooldown_frames = 12           # min frames between snare/clap/hihat events (~128ms)
+kick_cooldown_frames = 8       # kick cooldown fallback when tempo unknown (~85ms)
+kick_cooldown_beat_fraction = 0.4  # adaptive: cooldown = this × beat period
+stability_scaling = 1.0        # how much stability raises detection threshold
+sharpness = 3.0                # attack ratio gate (current / pre-attack median)
+min_flux = 1e-7                # noise gate — ignore flux below this
+
+[stability]
+fast_alpha = 0.95              # beat-level stability EMA (~200ms window)
+slow_alpha = 0.995             # section-level stability EMA (~2s window)
+
+[energy]
+rms_alpha = 0.9                # per-band RMS smoothing (~107ms)
+centroid_alpha = 0.85          # spectral centroid tracking (~71ms)
+percussiveness_alpha = 0.92    # flux/magnitude ratio smoothing (~134ms)
+
+[density]
+window = 1.0                   # onset density rolling window (seconds)
+delta_window = 2.0             # accelerando comparison window (seconds)
+alpha = 0.9                    # density EMA smoothing
+
+[tempo]
+min_bpm = 60                   # lowest BPM the tracker will estimate
+max_bpm = 400                  # highest BPM (octave preference folds above 200)
+default_bpm = 120              # assumed BPM when confidence is low
+
+[breaks]
+enabled = true                 # set false to disable break detection entirely
+quiet_threshold_frames = 60    # frames of quiet before break activates (~1s)
+bass_quiet_threshold_frames = 45  # bass-only break threshold (~0.75s)
+drop_energy_ratio = 0.15       # centroid_rms must drop below avg × this
+subbass_drop_ratio = 0.10      # sub-bass must drop below avg × this
+min_kicks_before_break = 8     # kicks needed before break detection arms
+cooldown_seconds = 15.0        # seconds between breaks
+
+[genome]
+drift_morph_speed = 0.001      # morph speed floor in silence
+density_morph_scale = 0.003    # morph speed += density × this
+kick_morph_pulse = 0.008       # per-kick morph speed boost
+strong_beat_threshold = 2.0    # energy/avg ratio to trigger swap
+break_decay = 0.97             # exponential damping per frame during breaks
+density_damping = 0.3          # kick pulse scales as 1/(1+density×this)
+centroid_swap_threshold = 500.0  # Hz delta to trigger centroid swap
+centroid_swap_perc_gate = 0.15 # percussiveness must be below this
+
+[zoom]
+boost_max = 0.3                # maximum zoom pulse magnitude
+decay = 0.95                   # zoom decay rate (per frame)
+density_damping = 0.05         # pulse scales as 1/(1+density×this)
+density_decay_scale = 0.15     # decay speeds up with density
+
+[palette]
+drift_morph_speed = 0.001      # palette morph speed floor
+density_damping = 0.2          # snare speed boost scales as 1/(1+density×this)
+
+[drift]
+rms_threshold = 0.0001         # sub-bass RMS below this = silence
+enter_frames = 480             # frames of silence before drift activates (~8s)
+morph_speed = 0.001            # drift morph speed (fixed, no perc_scale)
+min_genome_distance = 0.15     # min distance for prefetched genomes
+cycles_per_loop = 3            # loop cycles before switching in drift
+
+[adaptive]
+enabled = false                # enable adaptive band tracking
+update_interval = 9            # frames between band updates (~10/s at 94fps)
+anchor_strength = 0.3          # spring constant pulling band to default position
+repulsion_strength = 0.1       # repulsive force between adjacent band centers
+flux_pull_strength = 0.5       # how strongly flux centroid pulls band center
