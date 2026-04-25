@@ -107,7 +107,7 @@ def _ensure_schema(conn: sqlite3.Connection):
 
     # Add symmetry columns if they don't exist (no migration system yet)
     existing = {r[1] for r in conn.execute('PRAGMA table_info(genomes)').fetchall()}
-    for col in ('symmetry_max', 'rotational', 'reflective', 'radial', 'periodic', 'fractal_dim', 'self_similarity'):
+    for col in ('symmetry_max', 'rotational', 'reflective', 'radial', 'periodic', 'fractal_dim', 'self_similarity', 'detail_sensitivity'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} REAL')
 

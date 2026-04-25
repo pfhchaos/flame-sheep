@@ -43,6 +43,7 @@ def _scorer_main(db_path: str, stop_event):
             row = conn.execute(
                 'SELECT id, params FROM genomes '
                 'WHERE symmetry_max IS NULL OR self_similarity IS NULL '
+                'OR detail_sensitivity IS NULL '
                 'LIMIT 1'
             ).fetchone()
 
@@ -57,12 +58,13 @@ def _scorer_main(db_path: str, stop_event):
                     '''UPDATE genomes
                        SET symmetry_max=?, rotational=?, reflective=?,
                            radial=?, periodic=?, fractal_dim=?,
-                           self_similarity=?
+                           self_similarity=?, detail_sensitivity=?
                        WHERE id=?''',
                     (scores['symmetry_max'], scores['rotational'],
                      scores['reflective'], scores['radial'],
                      scores['periodic'], scores['fractal_dim'],
-                     scores['self_similarity'], gid),
+                     scores['self_similarity'], scores['detail_sensitivity'],
+                     gid),
                 )
                 conn.commit()
                 log.debug(f'genome #{gid}  '
@@ -75,7 +77,7 @@ def _scorer_main(db_path: str, stop_event):
                     '''UPDATE genomes
                        SET symmetry_max=0, rotational=0, reflective=0,
                            radial=0, periodic=0, fractal_dim=0,
-                           self_similarity=0
+                           self_similarity=0, detail_sensitivity=0
                        WHERE id=?''',
                     (gid,),
                 )
@@ -107,6 +109,8 @@ def _score_genome(params_json: str) -> dict[str, float]:
     cumw = np.cumsum(weights)
 
     x, y, c = 0.0, 0.0, 0.5
+    half_iter = n_iter // 2
+    hit_grid_half = None
 
     for i in range(fuse + n_iter):
         r = rng.random()
@@ -133,8 +137,28 @@ def _score_genome(params_json: str) -> dict[str, float]:
             hit_grid[gy, gx] += 1.0
             color_grid[gy, gx] += c
 
+        # Snapshot at half iterations for density sensitivity
+        if i == fuse + half_iter:
+            hit_grid_half = hit_grid.copy()
+
     scores = _score_from_histogram(hit_grid, color_grid)
     scores.update(_score_symmetry(hit_grid))
+
+    # Density sensitivity: how much does the image change with more iterations?
+    if hit_grid_half is not None and hit_grid.sum() > 0 and hit_grid_half.sum() > 0:
+        # Normalize both to distributions
+        h1 = hit_grid_half / hit_grid_half.sum()
+        h2 = hit_grid / hit_grid.sum()
+        # Jensen-Shannon divergence (symmetric, bounded 0..1)
+        m = (h1 + h2) / 2
+        eps = 1e-10
+        kl1 = np.sum(np.where(h1 > eps, h1 * np.log(h1 / (m + eps) + eps), 0))
+        kl2 = np.sum(np.where(h2 > eps, h2 * np.log(h2 / (m + eps) + eps), 0))
+        jsd = float((kl1 + kl2) / 2)
+        scores['detail_sensitivity'] = min(1.0, jsd * 10.0)  # scale to 0..1
+    else:
+        scores['detail_sensitivity'] = 0.0
+
     return scores
 
 
