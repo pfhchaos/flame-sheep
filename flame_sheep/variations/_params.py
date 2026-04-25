@@ -77,6 +77,44 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
             dist = -dist
         return {'julian_power': power, 'julian_dist': dist}
 
+    elif var_idx == Variation.BLOB:
+        # From JWildfire BlobFunc.randomize():
+        # 75%: low = rand*rand, high = low + rand
+        # 25%: low = rand*2-1, high = low + rand*2
+        # waves: 50% [3,9], 50% [1,31], 75% rounded to int
+        if rng.random() < 0.75:
+            low = float(rng.random() * rng.random())
+            high = float(low + rng.random())
+        else:
+            low = float(rng.uniform(-1.0, 1.0))
+            high = float(low + rng.uniform(0.0, 2.0))
+        if rng.random() < 0.5:
+            waves = float(rng.uniform(3.0, 9.0))
+        else:
+            waves = float(rng.uniform(1.0, 31.0))
+        if rng.random() < 0.75:
+            waves = round(waves)
+        return {'blob_low': low, 'blob_high': high, 'blob_waves': waves}
+
+    elif var_idx == Variation.PDJ:
+        return {
+            'pdj_a': float(rng.uniform(-2.5, 2.5)),
+            'pdj_b': float(rng.uniform(-2.5, 2.5)),
+            'pdj_c': float(rng.uniform(-2.5, 2.5)),
+            'pdj_d': float(rng.uniform(-2.5, 2.5)),
+        }
+
+    elif var_idx == Variation.FAN2:
+        return {
+            'fan2_x': float(rng.uniform(-2.5, 2.5)),
+            'fan2_y': float(rng.uniform(-2.5, 2.5)),
+        }
+
+    elif var_idx == Variation.RINGS2:
+        return {
+            'rings2_val': float(rng.uniform(-2.5, 2.5)),
+        }
+
     elif var_idx == Variation.SPLITS:
         return {
             'splits_x': float(rng.uniform(-2.5, 2.5)),
@@ -141,6 +179,12 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
     elif var_idx == Variation.FRIEZE:
         return {
             'frieze_group': float(rng.integers(0, 7)),
+        }
+
+    elif var_idx == Variation.RINGS3:
+        return {
+            'rings3_val': float(rng.uniform(-2.5, 2.5)),
+            'rings3_n': float(rng.uniform(-2.5, 2.5)),
         }
 
     return {}

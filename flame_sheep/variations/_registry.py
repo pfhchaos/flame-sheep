@@ -52,19 +52,22 @@ class Variation:
     SATTRACTOR  = 43
     WALLPAPER   = 44
     FRIEZE      = 45
+    RINGS3      = 46
 
 
-NUM_VARIATIONS = 46
+NUM_VARIATIONS = 47
 
 # Variations that require per-transform parameters (var_params dict)
 PARAMETRIC_VARIATIONS = {
     Variation.WAVES, Variation.POPCORN, Variation.RINGS, Variation.FAN,
+    Variation.BLOB, Variation.PDJ, Variation.FAN2, Variation.RINGS2,
     Variation.JULIAN, Variation.JULIASCOPE,
     Variation.SPLITS, Variation.CURL,
     Variation.RECTANGLES, Variation.CHECKS,
     Variation.HEX_MODULUS, Variation.KALEIDOSCOPE,
     Variation.ICON, Variation.SATTRACTOR,
     Variation.WALLPAPER, Variation.FRIEZE,
+    Variation.RINGS3,
 }
 
 # Per-variation parameter spec: ordered list of param names.
@@ -79,6 +82,10 @@ VAR_PARAMS_SPEC = {
     Variation.POPCORN:      ['popcorn_cx', 'popcorn_cy'],
     Variation.RINGS:        ['rings_c'],
     Variation.FAN:          ['fan_c', 'fan_f'],
+    Variation.BLOB:         ['blob_low', 'blob_high', 'blob_waves'],
+    Variation.PDJ:          ['pdj_a', 'pdj_b', 'pdj_c', 'pdj_d'],
+    Variation.FAN2:         ['fan2_x', 'fan2_y'],
+    Variation.RINGS2:       ['rings2_val'],
     Variation.JULIAN:       ['julian_power', 'julian_dist'],
     Variation.JULIASCOPE:   ['julian_power', 'julian_dist'],
     Variation.SPLITS:       ['splits_x', 'splits_y'],
@@ -92,6 +99,7 @@ VAR_PARAMS_SPEC = {
     Variation.SATTRACTOR:   ['sat_m'],
     Variation.WALLPAPER:    ['wallpaper_group'],
     Variation.FRIEZE:       ['frieze_group'],
+    Variation.RINGS3:       ['rings3_val', 'rings3_n'],
 }
 
 # Backwards compat — old code may reference this

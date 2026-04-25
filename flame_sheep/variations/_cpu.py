@@ -63,6 +63,44 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         t = np.pi * c*c + 1e-6
         th2 = th - t if ((th + f) % (2*t)) > t else th + t
         return w*r*np.cos(th2), w*r*np.sin(th2)
+    elif var_idx == 23: # blob
+        low = _current_var_params.get('blob_low', 0.3)
+        high = _current_var_params.get('blob_high', 1.2)
+        waves = _current_var_params.get('blob_waves', 6.0)
+        rr = r * (low + (high - low) * (0.5 + 0.5 * np.sin(waves * th)))
+        return w*rr*np.sin(th), w*rr*np.cos(th)
+    elif var_idx == 24: # pdj
+        a = _current_var_params.get('pdj_a', 1.4)
+        b = _current_var_params.get('pdj_b', 2.3)
+        c = _current_var_params.get('pdj_c', 2.4)
+        d = _current_var_params.get('pdj_d', 2.2)
+        return w*(np.sin(a*y) - np.cos(b*x)), w*(np.sin(c*x) - np.cos(d*y))
+    elif var_idx == 25: # fan2
+        fx = _current_var_params.get('fan2_x', 0.5)
+        fy = _current_var_params.get('fan2_y', 1.2)
+        dx = np.pi * fx * fx + 1e-6
+        dx2 = dx * 0.5
+        t = th + fy - int((th + fy) / dx) * dx
+        a = th - dx2 if t > dx2 else th + dx2
+        return w*r*np.sin(a), w*r*np.cos(a)
+    elif var_idx == 26: # rings2
+        val = _current_var_params.get('rings2_val', 0.01)
+        _dx = val * val + 1e-6
+        if r < 1e-10:
+            return w*x, w*y
+        k = int((r / _dx + 1) / 2)
+        rr = 2.0 - _dx * (k * 2.0 / r + 1.0)
+        return w*rr*x, w*rr*y
+    elif var_idx == 46: # rings3
+        val = _current_var_params.get('rings3_val', 0.01)
+        n = _current_var_params.get('rings3_n', 0.0)
+        _dx = val * val + 1e-6
+        c = 2.0 * (_dx - _dx * _dx)
+        if r < 1e-10:
+            return w*x, w*y
+        k = int((r / _dx + 1) / 2)
+        rr = 2.0 - _dx * (k * 2.0 / r + 1.0) - n * (k * c - 1.0) / r
+        return w*rr*x, w*rr*y
     elif var_idx == 2: # spherical — 1/r², can blow up near origin
         r2 = x*x + y*y + 1e-10
         return w*x/r2, w*y/r2
