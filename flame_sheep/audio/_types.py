@@ -50,6 +50,8 @@ class AudioState:
     # Global
     percussiveness: float = 0.5
     bpm: float = 0.0
+    effective_bpm: float = 120.0     # blended with default based on confidence
+    tempo_saturated: bool = False    # True when onset rate exceeds tracking range
     kick_density_delta: float = 0.0
     break_intensity: float = 0.0     # 0=normal, 1=deep break
 
@@ -77,4 +79,6 @@ class AudioSnapshot:
     # Global
     percussiveness: float = 0.5
     bpm: float = 0.0
+    effective_bpm: float = 120.0
+    tempo_saturated: bool = False
     kick_density_delta: float = 0.0

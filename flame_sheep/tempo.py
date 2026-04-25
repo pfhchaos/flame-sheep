@@ -77,6 +77,7 @@ class TempoTracker:
         self._has_hypothesis = False
 
         self._hint_bpm: float | None = None
+        self._saturated = False  # True when kicks are faster than MAX_BPM
 
     def reset(self):
         """Clear all state — call on song change."""
@@ -89,6 +90,7 @@ class TempoTracker:
         self._last_beat_time = 0.0
         self._has_hypothesis = False
         self._hint_bpm = None
+        self._saturated = False
 
     def hint_tempo(self, bpm: float):
         """Provide a tempo hint — seeds hypothesis directly."""
@@ -109,6 +111,12 @@ class TempoTracker:
         if kind == 'kick':
             self._kick_times.append(timestamp)
             self._onset_count += 1
+
+            # Check for tempo saturation: many kicks but intervals too short
+            if len(self._kick_times) >= 4:
+                recent = sorted(self._kick_times)[-4:]
+                median_ioi = sorted(recent[i+1] - recent[i] for i in range(3))[1]
+                self._saturated = median_ioi < IOI_MIN and len(self._kick_times) >= MIN_ONSETS_FOR_ESTIMATE
 
             # Periodically estimate BPM from IOIs
             if (self._onset_count >= MIN_ONSETS_FOR_ESTIMATE
@@ -280,6 +288,25 @@ class TempoTracker:
     @property
     def bpm(self) -> float:
         return self._bpm
+
+    @property
+    def effective_bpm(self) -> float:
+        """BPM blended with default based on confidence.
+
+        When confident: uses measured BPM.
+        When lost: drifts toward default (120).
+        When saturated (fast content beyond MAX_BPM): uses MAX_BPM.
+        """
+        from .config import cfg
+        if self._saturated:
+            return float(cfg.tempo.max_bpm)
+        default = cfg.tempo.default_bpm
+        return default * (1 - self._confidence) + self._bpm * self._confidence
+
+    @property
+    def saturated(self) -> bool:
+        """True when onset rate exceeds MAX_BPM tracking range."""
+        return self._saturated
 
     @property
     def confidence(self) -> float:

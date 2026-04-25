@@ -140,6 +140,8 @@ class FlameSheepCore:
             centroid_harmonic_rms=snap.centroid_harmonic_rms,
             percussiveness=snap.percussiveness,
             bpm=snap.bpm,
+            effective_bpm=snap.effective_bpm,
+            tempo_saturated=snap.tempo_saturated,
             kick_density_delta=snap.kick_density_delta,
             break_intensity=max(self._drop_detector.break_intensity,
                                 self._bass_drop_detector.break_intensity),

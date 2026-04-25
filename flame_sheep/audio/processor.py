@@ -89,6 +89,8 @@ class AudioProcessor:
         self._bands = {name: BandState() for name in
                        ('subbass', 'kick', 'snare', 'clap', 'hihat')}
         self._bpm = 0.0
+        self._effective_bpm = 120.0
+        self._tempo_saturated = False
         self._kick_density_delta = 0.0
         self._pending_events: list[BeatEvent] = []
 
@@ -171,6 +173,8 @@ class AudioProcessor:
                 self._centroid_harmonic_rms = self._energy.harmonic_centroid_rms
                 self._percussiveness = self._energy.percussiveness
                 self._bpm = self._tempo.bpm
+                self._effective_bpm = self._tempo.effective_bpm
+                self._tempo_saturated = self._tempo.saturated
                 self._kick_density_delta = self._density.kick_density_delta
                 # Build per-band state
                 band_rms = self._energy.band_rms_all
@@ -214,6 +218,8 @@ class AudioProcessor:
             centroid_harmonic_rms=self._centroid_harmonic_rms,
             percussiveness=self._percussiveness,
             bpm=self._bpm,
+            effective_bpm=self._effective_bpm,
+            tempo_saturated=self._tempo_saturated,
             kick_density_delta=self._kick_density_delta,
         )
 
