@@ -45,7 +45,6 @@ def headless_sway():
     env = dict(os.environ)
     env.update({
         'WLR_BACKENDS': 'headless',
-        'WLR_RENDERER': 'pixman',
         'XDG_CONFIG_HOME': tmpdir,
         'SWAYSOCK': swaysock,
     })
@@ -67,24 +66,18 @@ def headless_sway():
         proc.wait()
         pytest.skip('headless sway failed to start')
 
-    # Find the wayland display socket
+    # Find the wayland display socket — newest wayland-N created after sway started
     runtime_dir = os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
     wayland_display = None
     try:
-        raw = subprocess.check_output(
-            ['swaymsg', '-t', 'get_outputs'],
-            env={'SWAYSOCK': swaysock, 'PATH': os.environ['PATH']},
-            timeout=5,
+        sockets = sorted(
+            [f for f in os.listdir(runtime_dir)
+             if f.startswith('wayland-') and not f.endswith('.lock')],
+            key=lambda f: os.path.getmtime(os.path.join(runtime_dir, f)),
+            reverse=True,
         )
-        outputs = json.loads(raw)
-        if outputs:
-            # Find the wayland socket this sway is listening on
-            # sway creates wayland-N in XDG_RUNTIME_DIR
-            # We need to find which one belongs to this instance
-            for name in sorted(os.listdir(runtime_dir)):
-                if name.startswith('wayland-') and not name.endswith('.lock'):
-                    wayland_display = name
-            # Use the last one (most recently created)
+        if sockets:
+            wayland_display = sockets[0]
     except Exception:
         pass
 
@@ -227,7 +220,25 @@ class TestSwayHeadless:
                 os.environ.pop('WAYLAND_DISPLAY', None)
 
     def test_create_wallpaper_session(self, headless_sway):
-        """Should be able to create a WallpaperSession and add a surface."""
+        """Should be able to create a WallpaperSession, add a surface, and get configure."""
+        def run():
+            from flame_sheep.wayland_window import WallpaperSession
+            session = WallpaperSession()
+            outputs = list(session._wl_outputs.keys())
+            assert len(outputs) >= 1, 'No outputs in session'
+
+            surf = session.add_output(outputs[0])
+            assert surf is not None, 'Failed to create surface'
+            assert surf._configured, 'Surface not configured after add_output'
+            assert surf.width > 0 and surf.height > 0, \
+                f'Invalid size: {surf.width}x{surf.height}'
+
+            session.destroy()
+
+        self._with_display(headless_sway, run)
+
+    def _with_display(self, headless_sway, fn):
+        """Run fn with WAYLAND_DISPLAY set to headless sway."""
         wayland_display = headless_sway['wayland_display']
         if not wayland_display:
             pytest.skip('could not determine wayland display socket')
@@ -235,16 +246,7 @@ class TestSwayHeadless:
         old_display = os.environ.get('WAYLAND_DISPLAY')
         os.environ['WAYLAND_DISPLAY'] = wayland_display
         try:
-            from flame_sheep.wayland_window import WallpaperSession
-            session = WallpaperSession()
-            outputs = list(session._wl_outputs.keys())
-            assert len(outputs) >= 1, 'No outputs in session'
-
-            # Create a layer-shell surface
-            surf = session.add_output(outputs[0])
-            assert surf is not None, 'Failed to create surface'
-
-            session.destroy()
+            fn()
         except Exception as e:
             if 'EGL' in str(e) or 'egl' in str(e):
                 pytest.skip(f'EGL not available: {e}')
@@ -254,6 +256,63 @@ class TestSwayHeadless:
                 os.environ['WAYLAND_DISPLAY'] = old_display
             else:
                 os.environ.pop('WAYLAND_DISPLAY', None)
+
+    def test_frame_callback(self, headless_sway):
+        """Frame callback should fire after swap on headless compositor."""
+        def run():
+            from flame_sheep.wayland_window import WallpaperSession
+            session = WallpaperSession()
+            outputs = list(session._wl_outputs.keys())
+            surf = session.add_output(outputs[0])
+
+            # make_current before creating GL context
+            session.make_current(surf)
+            ctx = session.create_moderngl_context()
+
+            assert surf._configured, 'Surface should be configured after add_output'
+            assert surf._frame_pending, '_frame_pending should start True'
+
+            # Swap resets _frame_pending and requests callback
+            ctx.clear(0.0, 0.0, 0.0, 1.0)
+            session.swap(surf)
+            assert not surf._frame_pending
+
+            # Dispatch — compositor should deliver the frame callback
+            for _ in range(20):
+                session._wl_display.dispatch(block=False)
+                session._wl_display.roundtrip()
+                if surf._frame_pending:
+                    break
+                time.sleep(0.01)
+
+            assert surf._frame_pending, \
+                'Frame callback not delivered after swap + dispatch'
+            session.destroy()
+
+        self._with_display(headless_sway, run)
+
+    def test_surface_lifecycle(self, headless_sway):
+        """Surface should survive create → render → destroy cycle."""
+        def run():
+            from flame_sheep.wayland_window import WallpaperSession
+            session = WallpaperSession()
+            outputs = list(session._wl_outputs.keys())
+            surf = session.add_output(outputs[0])
+            session.make_current(surf)
+            ctx = session.create_moderngl_context()
+
+            # Render a few frames
+            for _ in range(3):
+                session.make_current(surf)
+                ctx.clear(0.1, 0.2, 0.3, 1.0)
+                session.swap(surf)
+                session._wl_display.dispatch(block=False)
+                session._wl_display.roundtrip()
+
+            # Clean destroy should not crash
+            session.destroy()
+
+        self._with_display(headless_sway, run)
 
     def test_layer_shell_available(self, headless_sway):
         """Headless sway should advertise wlr-layer-shell protocol."""
