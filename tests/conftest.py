@@ -5,8 +5,8 @@ Shared test fixtures and helpers for flame-sheep tests.
 import numpy as np
 import pytest
 
-from flame_sheep.audio import AudioProcessor, SAMPLE_RATE, FFT_SIZE, N_BINS, HISTORY_LEN
-from flame_sheep.audio.source import FeedSource
+from flame_sheep_audio import AudioProcessor, SAMPLE_RATE, FFT_SIZE, N_BINS, HISTORY_LEN
+from flame_sheep_audio.source import FeedSource
 from flame_sheep.genome import Genome, Transform, NUM_VARIATIONS, _random_palette
 
 

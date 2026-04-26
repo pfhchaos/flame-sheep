@@ -8,7 +8,7 @@ import math
 
 import pytest
 
-from flame_sheep.audio.tempo_scaler import TempoScaler, _FRAMES_PER_SECOND
+from flame_sheep_audio.tempo_scaler import TempoScaler, _FRAMES_PER_SECOND
 
 
 class TestSigmoid:

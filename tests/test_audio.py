@@ -5,7 +5,7 @@ Uses synthetic audio — no hardware or PipeWire required.
 
 import numpy as np
 import pytest
-from flame_sheep.audio import SAMPLE_RATE, FFT_SIZE, N_BINS
+from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE, N_BINS
 
 from .conftest import make_processor, make_sine, make_silence, feed_audio
 

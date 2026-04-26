@@ -21,7 +21,7 @@ import musdb
 
 sys.path.insert(0, '.')
 
-from flame_sheep.audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE
+from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE
 
 # Coincidence window: onsets within this of a drum hit are ignorable
 COINCIDENCE_MS = 250
@@ -76,10 +76,10 @@ def _collect_fine_hop(pcm_mono: np.ndarray, adaptive: bool = False,
                       sharpness: bool = True,
                       ) -> list[float]:
     """512-hop path using push_hop for finer temporal resolution."""
-    from flame_sheep.audio._spectrum import SpectrumEngine
-    from flame_sheep.audio.beat_detector import FluxBeatDetector
-    from flame_sheep.audio.energy import EnergyAnalyzer
-    from flame_sheep.audio.stability import MagnitudeStability
+    from flame_sheep_audio._spectrum import SpectrumEngine
+    from flame_sheep_audio.beat_detector import FluxBeatDetector
+    from flame_sheep_audio.energy import EnergyAnalyzer
+    from flame_sheep_audio.stability import MagnitudeStability
 
     engine = SpectrumEngine()
     stability = MagnitudeStability()

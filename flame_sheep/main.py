@@ -716,8 +716,10 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             elif event.command == 'config':
                 if event.args and event.args[0] == 'reload':
                     from .config import cfg
+                    from flame_sheep_audio.config import cfg as audio_cfg
                     cfg.reload()
-                    log.info('[ctl] config reloaded')
+                    audio_cfg.reload()
+                    log.info('[ctl] config reloaded (viz + audio)')
         return False
 
     last_time = time.perf_counter()

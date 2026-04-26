@@ -22,12 +22,12 @@ import numpy as np
 
 sys.path.insert(0, '.')
 
-from flame_sheep.audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE
-from flame_sheep.audio._spectrum import SpectrumEngine
-from flame_sheep.audio._bands import A_WEIGHTS
-from flame_sheep.audio.beat_detector import FluxBeatDetector
-from flame_sheep.audio.stability import MagnitudeStability
-from flame_sheep.audio.tempo_acf import AutocorrelationTempoTracker
+from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE
+from flame_sheep_audio._spectrum import SpectrumEngine
+from flame_sheep_audio._bands import A_WEIGHTS
+from flame_sheep_audio.beat_detector import FluxBeatDetector
+from flame_sheep_audio.stability import MagnitudeStability
+from flame_sheep_audio.tempo_acf import AutocorrelationTempoTracker
 
 
 def resample_to_48k(audio: np.ndarray, orig_sr: int = 44100) -> np.ndarray:

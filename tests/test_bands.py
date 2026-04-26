@@ -7,12 +7,12 @@ and SpringBand physics.
 import numpy as np
 import pytest
 
-from flame_sheep.audio._constants import SAMPLE_RATE, N_BINS, FREQS
-from flame_sheep.audio._bands import (
+from flame_sheep_audio._constants import SAMPLE_RATE, N_BINS, FREQS
+from flame_sheep_audio._bands import (
     make_mask, make_weights, a_weight_curve, A_WEIGHTS,
     SpringBand,
 )
-from flame_sheep.audio._band_config import (
+from flame_sheep_audio._band_config import (
     BandConfig, EnergyBandDef, DetectionBandDef, default_band_config,
 )
 

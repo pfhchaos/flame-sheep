@@ -88,9 +88,9 @@ class TestConfigDefaults:
         with mock.patch('flame_sheep.config.CONFIG_PATH',
                         Path('/nonexistent/path/config.toml')):
             c = Config()
-        assert c.detection.base_threshold == DEFAULTS['detection']['base_threshold']
-        assert c.stability.fast_alpha == DEFAULTS['stability']['fast_alpha']
-        assert c.energy.rms_alpha == DEFAULTS['energy']['rms_alpha']
+        assert c.genome.drift_morph_speed == DEFAULTS['genome']['drift_morph_speed']
+        assert c.zoom.boost_max == DEFAULTS['zoom']['boost_max']
+        assert c.intensity.attack_alpha == DEFAULTS['intensity']['attack_alpha']
 
     def test_all_sections_accessible(self):
         with mock.patch('flame_sheep.config.CONFIG_PATH',
@@ -115,8 +115,8 @@ class TestConfigUserOverride:
 
     def test_partial_override(self):
         toml_content = textwrap.dedent("""\
-            [detection]
-            base_threshold = 99.0
+            [genome]
+            drift_morph_speed = 99.0
         """)
         with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
             f.write(toml_content)
@@ -127,12 +127,12 @@ class TestConfigUserOverride:
             with mock.patch('flame_sheep.config.CONFIG_PATH', path):
                 c = Config()
             # Overridden value
-            assert c.detection.base_threshold == 99.0
+            assert c.genome.drift_morph_speed == 99.0
             # Non-overridden value preserved
-            assert c.detection.cooldown_frames == \
-                DEFAULTS['detection']['cooldown_frames']
+            assert c.genome.kick_morph_pulse == \
+                DEFAULTS['genome']['kick_morph_pulse']
             # Other section untouched
-            assert c.stability.fast_alpha == DEFAULTS['stability']['fast_alpha']
+            assert c.zoom.boost_max == DEFAULTS['zoom']['boost_max']
         finally:
             path.unlink()
 
@@ -146,8 +146,8 @@ class TestConfigUserOverride:
             with mock.patch('flame_sheep.config.CONFIG_PATH', path):
                 c = Config()
             # Should fall back to defaults
-            assert c.detection.base_threshold == \
-                DEFAULTS['detection']['base_threshold']
+            assert c.genome.drift_morph_speed == \
+                DEFAULTS['genome']['drift_morph_speed']
         finally:
             path.unlink()
 
@@ -156,8 +156,8 @@ class TestConfigReload:
     """Test hot-reload behavior."""
 
     def test_reload_picks_up_changes(self):
-        toml_v1 = '[detection]\nbase_threshold = 10.0\n'
-        toml_v2 = '[detection]\nbase_threshold = 20.0\n'
+        toml_v1 = '[genome]\ndrift_morph_speed = 10.0\n'
+        toml_v2 = '[genome]\ndrift_morph_speed = 20.0\n'
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
             f.write(toml_v1)
@@ -167,17 +167,17 @@ class TestConfigReload:
         try:
             with mock.patch('flame_sheep.config.CONFIG_PATH', path):
                 c = Config()
-                assert c.detection.base_threshold == 10.0
+                assert c.genome.drift_morph_speed == 10.0
 
                 # Update the file
                 path.write_text(toml_v2)
                 c.reload()
-                assert c.detection.base_threshold == 20.0
+                assert c.genome.drift_morph_speed == 20.0
         finally:
             path.unlink()
 
     def test_reload_resets_to_defaults_if_file_removed(self):
-        toml = '[detection]\nbase_threshold = 10.0\n'
+        toml = '[genome]\ndrift_morph_speed = 10.0\n'
         with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
             f.write(toml)
             f.flush()
@@ -186,11 +186,11 @@ class TestConfigReload:
         try:
             with mock.patch('flame_sheep.config.CONFIG_PATH', path):
                 c = Config()
-                assert c.detection.base_threshold == 10.0
+                assert c.genome.drift_morph_speed == 10.0
 
                 path.unlink()
                 c.reload()
-                assert c.detection.base_threshold == \
-                    DEFAULTS['detection']['base_threshold']
+                assert c.genome.drift_morph_speed == \
+                    DEFAULTS['genome']['drift_morph_speed']
         finally:
             path.unlink(missing_ok=True)
