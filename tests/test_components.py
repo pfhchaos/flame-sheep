@@ -31,7 +31,7 @@ def _audio(events=None, rms=0.0, harmonic_rms=0.0, breaking=False,
            **kwargs):
     """Helper to construct AudioState with convenience kwargs."""
     bands = {name: BandState() for name in
-             ('subbass', 'kick', 'snare', 'clap', 'hihat')}
+             ('subbass', 'kick', 'snare', 'hihat')}
     bands['subbass'] = BandState(rms=rms, harmonic_rms=harmonic_rms)
     if onset_density:
         for name, val in onset_density.items():
@@ -335,10 +335,10 @@ class TestGenomeAxisUnit:
     def test_density_drives_morph_speed(self):
         axis = self._make_axis()
         # Low density → slow baseline
-        axis.tick(_audio(onset_density={'kick': 1.0, 'snare': 0, 'clap': 0, 'hihat': 0}), 1/60, 0.0)
+        axis.tick(_audio(onset_density={'kick': 1.0, 'snare': 0, 'hihat': 0}), 1/60, 0.0)
         slow_speed = axis.morph_speed
         # High density → faster baseline
-        axis.tick(_audio(onset_density={'kick': 5.0, 'snare': 0, 'clap': 0, 'hihat': 0}), 1/60, 1.0)
+        axis.tick(_audio(onset_density={'kick': 5.0, 'snare': 0, 'hihat': 0}), 1/60, 1.0)
         fast_speed = axis.morph_speed
         assert fast_speed > slow_speed
 
@@ -619,7 +619,7 @@ class TestEnergyAnalyzerContinuous:
         spectrum = np.ones(N_BINS, dtype=np.float32) * 0.1
         ea.update(spectrum)
         band = ea.band_rms
-        assert set(band.keys()) == {'kick', 'snare', 'clap', 'hihat'}
+        assert set(band.keys()) == {'kick', 'snare', 'hihat'}
         assert all(v >= 0 for v in band.values())
 
     def test_centroid_delta(self):

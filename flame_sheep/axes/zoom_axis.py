@@ -9,7 +9,7 @@ from flame_sheep.config import cfg
 
 
 class ZoomAxis:
-    """Hihat/clap -> zoom pulse. Decays back to baseline between events.
+    """Hihat -> zoom pulse. Decays back to baseline between events.
 
     At high density, decay speeds up and pulses shrink — producing a
     buzzy shimmer instead of discrete throbs.
@@ -30,22 +30,21 @@ class ZoomAxis:
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
         # Faster decay at high density = rapid vibration
-        combined_density = (audio.bands['hihat'].onset_density
-                            + audio.bands['clap'].onset_density)
-        decay = self.ZOOM_DECAY ** (1.0 + combined_density * self.DENSITY_DECAY_SCALE)
+        hihat_density = audio.bands['hihat'].onset_density
+        decay = self.ZOOM_DECAY ** (1.0 + hihat_density * self.DENSITY_DECAY_SCALE)
         self.zoom_boost *= decay
         if self.zoom_boost < 0.001:
             self.zoom_boost = 0.0
 
         # Pulse magnitude scales down with density
-        density_scale = 1.0 / (1.0 + combined_density * self.DENSITY_DAMPING)
+        density_scale = 1.0 / (1.0 + hihat_density * self.DENSITY_DAMPING)
 
         for event in audio.events:
-            if event.kind in ('hihat', 'clap'):
+            if event.kind == 'hihat':
                 self.zoom_boost = min(
                     self.ZOOM_BOOST_MAX,
                     self.zoom_boost + event.energy * 0.15 * density_scale)
-                log.debug(f'[{event.kind}] energy={event.energy:.2f}  '
+                log.debug(f'[hihat] energy={event.energy:.2f}  '
                           f'zoom={self.zoom_boost:.3f}')
 
     def contribute(self, frame) -> None:

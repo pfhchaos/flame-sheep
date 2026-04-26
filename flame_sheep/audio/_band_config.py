@@ -54,7 +54,17 @@ class BandConfig:
 
 
 def default_band_config() -> BandConfig:
-    """The default band layout for flame-sheep's visualization."""
+    """The default band layout for flame-sheep's visualization.
+
+    3 detection bands matching the 3 visual axes:
+      kick  → GenomeAxis (morph/swap)
+      snare → PaletteAxis (palette walk)
+      hihat → ZoomAxis (zoom pulse)
+
+    hihat covers the old clap+hihat range (1000Hz+) since both
+    fed the same axis anyway. The adaptive spring system will float
+    each band to wherever the percussion actually is for a given song.
+    """
     return BandConfig(
         energy_bands=(
             EnergyBandDef('subbass', (20, 200)),
@@ -62,8 +72,7 @@ def default_band_config() -> BandConfig:
         detection_bands=(
             DetectionBandDef('kick',  (30, 200),   (25, 150)),
             DetectionBandDef('snare', (200, 1000),  (150, 2000)),
-            DetectionBandDef('clap',  (1000, 8000), (800, 8000)),
-            DetectionBandDef('hihat', (8000, SAMPLE_RATE / 2),
-                             (5000, SAMPLE_RATE / 2)),
+            DetectionBandDef('hihat', (1000, SAMPLE_RATE / 2),
+                             (800, SAMPLE_RATE / 2)),
         ),
     )

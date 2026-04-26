@@ -12,7 +12,7 @@ class BeatEvent:
     Axes should ignore event kinds they don't recognize — new kinds
     can be added without updating every consumer.
     """
-    kind: str       # 'kick' | 'snare' | 'clap' | 'hihat' | 'song_start'
+    kind: str       # detection band name (e.g. 'kick' | 'snare' | 'hihat') or 'song_start'
     energy: float   # normalized 0..1, how strong the onset was
 
 

@@ -345,7 +345,7 @@ class SyntheticAudioProcessor:
         self._clock         = clock  # callable returning seconds, or None for perf_counter
 
         self._start_time: float | None = None
-        self._last: dict[str, float]   = {'kick': -1.0, 'snare': -1.0, 'clap': -1.0, 'hihat': -1.0}
+        self._last: dict[str, float]   = {'kick': -1.0, 'snare': -1.0, 'hihat': -1.0}
         self._spectrum = np.zeros(N_BINS, dtype=np.float32)
         self._rms      = 0.5  # synthetic audio is "always playing"
 

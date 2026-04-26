@@ -18,7 +18,7 @@ def _make_palette(seed=0):
 
 def _audio(events=None, snare_density=0.0, **kw):
     bands = {name: BandState() for name in
-             ('subbass', 'kick', 'snare', 'clap', 'hihat')}
+             ('subbass', 'kick', 'snare', 'hihat')}
     bands['snare'] = BandState(onset_density=snare_density)
     return AudioState(events=events or [], bands=bands, **kw)
 
