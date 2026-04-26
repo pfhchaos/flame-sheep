@@ -2,37 +2,8 @@
 
 import numpy as np
 from ._constants import SAMPLE_RATE, N_BINS, FREQS
+from ._band_config import default_band_config
 
-
-# Allowed ranges: hard clamps beyond which a band can never drift
-ALLOWED_RANGES = {
-    'kick':           (25, 150),
-    'snare':          (150, 2000),
-    'clap':           (800, 8000),
-    'hihat':          (5000, SAMPLE_RATE / 2),
-    '_snare_confirm': (800, 5000),
-}
-
-# Default (static) ranges: what the bands start at and anchor toward
-DEFAULT_RANGES = {
-    'kick':           (30, 200),
-    'snare':          (200, 1000),
-    'clap':           (1000, 8000),
-    'hihat':          (8000, SAMPLE_RATE / 2),
-    '_snare_confirm': (1000, 3000),
-}
-
-# All analysis bands including sub-bass (shared by all analyzers)
-BAND_RANGES = {
-    'subbass': (20, 200),
-    'kick':    (30, 200),
-    'snare':   (200, 1000),
-    'clap':    (1000, 8000),
-    'hihat':   (8000, SAMPLE_RATE / 2),
-}
-
-# Detection bands (subset used by beat detector + onset density)
-DETECTION_BANDS = ('kick', 'snare', 'clap', 'hihat')
 
 # Adaptation constants
 ADAPT_ALPHA        = 0.98   # EMA decay per frame (~0.6s half-life at 60fps)
@@ -81,7 +52,19 @@ def a_weight_curve(freqs: np.ndarray) -> np.ndarray:
 # Precomputed A-weighting for our FFT bins
 A_WEIGHTS = a_weight_curve(FREQS)
 
-# Precomputed masks for all analysis bands (must be after make_mask definition)
+
+# --- Deprecated module-level constants (derived from default config) ---
+# Use BandConfig / default_band_config() for new code.
+_default_cfg = default_band_config()
+
+BAND_RANGES = _default_cfg.all_band_ranges
+
+DETECTION_BANDS = _default_cfg.detection_band_names
+
+ALLOWED_RANGES = {b.name: b.allowed_range for b in _default_cfg.detection_bands}
+
+DEFAULT_RANGES = {b.name: b.freq_range for b in _default_cfg.detection_bands}
+
 BAND_MASKS = {name: make_mask(*rng) for name, rng in BAND_RANGES.items()}
 
 
@@ -98,10 +81,17 @@ class SpringBand:
     __slots__ = ('name', 'center', 'width', 'default_center', 'default_width',
                  'lo_allowed', 'hi_allowed', 'mask', '_flux_ema')
 
-    def __init__(self, name: str):
+    def __init__(self, name: str,
+                 default_range: tuple[float, float] | None = None,
+                 allowed_range: tuple[float, float] | None = None):
         self.name = name
-        lo_a, hi_a = ALLOWED_RANGES[name]
-        lo_d, hi_d = DEFAULT_RANGES[name]
+        # Fall back to deprecated module-level dicts for backward compat
+        if allowed_range is None:
+            allowed_range = ALLOWED_RANGES[name]
+        if default_range is None:
+            default_range = DEFAULT_RANGES[name]
+        lo_a, hi_a = allowed_range
+        lo_d, hi_d = default_range
         self.lo_allowed = lo_a
         self.hi_allowed = hi_a
         self.default_center = (lo_d + hi_d) / 2.0
@@ -128,39 +118,20 @@ class SpringBand:
 
     def apply_forces(self, anchor_k: float, flux_k: float,
                      neighbors: list['SpringBand'], repulsion_k: float):
-        """Update center position from spring forces.
-
-        Args:
-            anchor_k: spring constant pulling toward default center
-            flux_k: spring constant pulling toward flux centroid
-            neighbors: adjacent bands for repulsion
-            repulsion_k: repulsive force strength
-        """
-        # Force 1: anchor spring — pull toward default
+        """Update center position from spring forces."""
         f_anchor = anchor_k * (self.default_center - self.center)
-
-        # Force 2: flux pull — pull toward percussive energy centroid
         target = self.flux_centroid()
         f_flux = flux_k * (target - self.center)
-
-        # Force 3: repulsion from neighbors
         f_repulsion = 0.0
         for nb in neighbors:
             dist = self.center - nb.center
             if abs(dist) < 1e-6:
-                dist = 1.0  # avoid division by zero
-            # Repulsive force inversely proportional to distance
+                dist = 1.0
             f_repulsion += repulsion_k / dist
-
-        # Apply net force (overdamped — no velocity, just position update)
         self.center += f_anchor + f_flux + f_repulsion
-
-        # Clamp to allowed range
         half = self.width
         self.center = max(self.lo_allowed + half,
                           min(self.hi_allowed - half, self.center))
-
-        # Rebuild mask from new center/width
         lo = max(self.lo_allowed, self.center - half)
         hi = min(self.hi_allowed, self.center + half)
         self.mask = make_mask(lo, hi)
@@ -183,10 +154,16 @@ class AdaptiveBand:
     __slots__ = ('weights', 'flux_accum', 'allowed_mask', 'default_weights',
                  'name')
 
-    def __init__(self, name: str):
+    def __init__(self, name: str,
+                 default_range: tuple[float, float] | None = None,
+                 allowed_range: tuple[float, float] | None = None):
         self.name = name
-        lo_a, hi_a = ALLOWED_RANGES[name]
-        lo_d, hi_d = DEFAULT_RANGES[name]
+        if allowed_range is None:
+            allowed_range = ALLOWED_RANGES[name]
+        if default_range is None:
+            default_range = DEFAULT_RANGES[name]
+        lo_a, hi_a = allowed_range
+        lo_d, hi_d = default_range
         self.allowed_mask    = make_mask(lo_a, hi_a)
         self.default_weights = make_weights(lo_d, hi_d)
         self.weights         = self.default_weights.copy()

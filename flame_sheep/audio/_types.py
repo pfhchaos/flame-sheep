@@ -22,11 +22,14 @@ class BandState:
     rms: float = 0.0
     harmonic_rms: float = 0.0
     onset_density: float = 0.0
+    density_delta: float = 0.0   # first derivative of onset density
 
 
-def _default_bands() -> dict[str, BandState]:
-    return {name: BandState() for name in
-            ('subbass', 'kick', 'snare', 'clap', 'hihat')}
+def _default_bands(band_config=None) -> dict[str, BandState]:
+    if band_config is not None:
+        return {name: BandState() for name in band_config.all_band_names}
+    from ._band_config import default_band_config
+    return {name: BandState() for name in default_band_config().all_band_names}
 
 
 @dataclass
@@ -38,7 +41,7 @@ class AudioState:
     """
     events: list[BeatEvent] = field(default_factory=list)
 
-    # Per-band metrics (subbass, kick, snare, clap, hihat)
+    # Per-band metrics (names determined by BandConfig)
     bands: dict[str, BandState] = field(default_factory=_default_bands)
 
     # Centroid (dynamic band — follows dominant frequency)
@@ -52,7 +55,6 @@ class AudioState:
     bpm: float = 0.0
     effective_bpm: float = 120.0     # blended with default based on confidence
     tempo_saturated: bool = False    # True when onset rate exceeds tracking range
-    kick_density_delta: float = 0.0
     break_intensity: float = 0.0     # 0=normal, 1=deep break
 
 
@@ -81,4 +83,3 @@ class AudioSnapshot:
     bpm: float = 0.0
     effective_bpm: float = 120.0
     tempo_saturated: bool = False
-    kick_density_delta: float = 0.0

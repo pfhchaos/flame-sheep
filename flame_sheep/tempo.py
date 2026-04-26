@@ -107,6 +107,9 @@ class TempoTracker:
 
         Only kick onsets contribute to BPM estimation.
         All onsets are tested against the grid for confidence tracking.
+
+        NOTE: hardcodes 'kick' by name — requires a detection band named
+        'kick' to exist in BandConfig for tempo tracking to work.
         """
         if kind == 'kick':
             self._kick_times.append(timestamp)

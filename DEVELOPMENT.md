@@ -2,47 +2,97 @@
 
 ## Architecture
 
+### Audio subsystem
+
+The audio engine runs in a daemon thread. All components receive a
+`BandConfig` at construction time — the visualization declares what
+bands it needs, the engine doesn't know what they're for.
+
 ```
-PipeWire → Signal Source
-              │
-         Spectrum Engine (FFT + spectral flux)
-              │
-     ┌────────┼────────────────┐
-     ▼        ▼                ▼
- Magnitude  Energy Analyzer  Flux Beat Detector
- Stability  (per-band RMS,   (onset events per band,
- (per-bin    harmonic RMS)    stability-scaled thresholds,
-  variance)       │          tempo-adaptive cooldown)
-     │            │                │
-     │            │           ┌────┼──────┐
-     │            │           ▼    ▼      ▼
-     │            │     Tempo    Onset    Beat Events
-     │            │    Tracker  Density   (per-band)
-     │            │           Tracker
-     │            │               │
-     └────────────┴───────────────┘
-              │
-         AudioSnapshot (all features under one lock)
-              │
-         drain() → render thread
-              │
-         AudioState → Visual Axes
-         ├─ GenomeAxis     low-band beats → genome morph/swap
-         ├─ PaletteAxis    mid-band beats → palette walk
-         ├─ ZoomAxis       high-band beats → zoom pulse
-         ├─ BrightnessAxis harmonic RMS → display gamma
-         ├─ DetailAxis     harmonic RMS → iteration count
-         └─ DriftMode      silence → slow morph (independent state machine)
-              │
-         Renderer (GPU compute shaders)
-              │
-         Display (Wayland layer-shell)
+PipeWire ─→ Signal Source ─→ SpectrumEngine
+                                  │
+                           magnitude + flux
+                                  │
+               ┌──────────────────┼──────────────────┐
+               ▼                  ▼                   ▼
+        MagnitudeStability   EnergyAnalyzer      A-weighted
+        (per-bin variance,   (per-band RMS,      flux sum
+         fast + slow EMA)    harmonic RMS)           │
+               │                  │                   ▼
+               │                  │          ACF Tempo Tracker
+               │                  │          (autocorrelation of
+               │                  │           onset strength,
+               │                  │           independent of beat
+               │                  │           detection)
+               │                  │                   │
+     stability │    harmonic      │            effective_bpm
+      scaling  │    RMS weighting │                   │
+               │                  │          tunes cooldowns
+               ▼                  │                   │
+        FluxBeatDetector ←────────┘───────────────────┘
+        (per-band onset detection,
+         stability-scaled thresholds,
+         tempo-adaptive cooldown)
+               │
+          BeatEvents
+               │
+               ▼
+        OnsetDensityTracker
+        (per-band onset rate,
+         per-band density delta)
+               │
+               ▼
+        ┌──────────────────────────────────┐
+        │         AudioSnapshot            │
+        │  (all features under one lock)   │
+        │                                  │
+        │  bands[name].rms                 │
+        │  bands[name].harmonic_rms        │
+        │  bands[name].onset_density       │
+        │  bands[name].density_delta       │
+        │  centroid, centroid_delta         │
+        │  centroid_rms, centroid_hrms      │
+        │  percussiveness                  │
+        │  bpm, effective_bpm              │
+        │  spectrum, waveform              │
+        │  events[]                        │
+        └──────────────────────────────────┘
+```
+
+Two paths through the audio engine:
+- **Detection bands**: onset detection + density tracking + spring adaptation
+- **Energy bands**: RMS + harmonic RMS tracking only
+
+Tempo estimation is decoupled from beat detection — the ACF tracker
+reads the continuous A-weighted flux sum, not discrete beat events.
+The only feedback is tempo → beat detector cooldown tuning (one-way).
+
+### Visual pipeline
+
+```
+AudioSnapshot
+     │
+drain() → render thread
+     │
+AudioState → Visual Axes
+├─ GenomeAxis     kick/snare density → genome morph/swap
+├─ PaletteAxis    snare density → palette walk
+├─ ZoomAxis       hihat/clap density → zoom pulse
+├─ BrightnessAxis harmonic RMS (slow envelope) → display gamma
+├─ DetailAxis     harmonic RMS (slow envelope) → iteration count
+└─ DriftMode      silence → slow morph (independent state machine)
+     │
+Renderer (GPU compute shaders)
+     │
+Display (Wayland layer-shell)
 ```
 
 ### Key design principles
 
 - **No audio analysis in render thread** — all analysis runs in the audio thread, render thread just reads snapshots
 - **Density-driven, not event-counting** — morph speed is a continuous function of onset density, not a kick counter. Time-signature-agnostic
+- **Independent tempo estimation** — autocorrelation of raw onset strength, decoupled from beat detection. No circular feedback.
+- **Configurable bands** — BandConfig defines detection vs energy bands. The visualization declares what it needs.
 - **Energy-based swaps** — genome direction changes on high-energy beats (strong beat detection), not fixed intervals
 - **Harmonic/percussive separation** — per-bin magnitude variance (HPSS-lite) separates sustained content from transients. Brightness tracks harmonic energy only
 - **Exponential break damping** — morph slows proportionally to break duration, brief false positives barely visible

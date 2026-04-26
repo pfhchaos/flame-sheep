@@ -85,6 +85,10 @@ DEFAULTS = {
         'min_genome_distance': 0.15,
         'cycles_per_loop': 3,
     },
+    'intensity': {
+        'attack_alpha': 0.98,    # slow attack ~0.8s half-life at 60fps
+        'release_alpha': 0.95,   # faster release ~0.25s half-life
+    },
     'adaptive': {
         'enabled': False,
         'update_interval': 9,

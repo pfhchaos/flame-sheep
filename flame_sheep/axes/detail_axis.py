@@ -1,14 +1,15 @@
-"""Detail axis — maps audio energy to chaos game iteration count."""
+"""Detail axis — maps audio energy to chaos game iteration count.
+
+Uses the same slow-attack / fast-release envelope as brightness so
+that sustained musical energy drives detail, not individual hits.
+"""
 
 from flame_sheep.audio._types import AudioState
+from flame_sheep.config import cfg
 
 
 class DetailAxis:
-    """Energy -> iterations. Quiet=sparse, loud=dense and detailed.
-
-    Uses centroid RMS (energy around the dominant frequency) so that
-    any strong musical content drives detail, not just bass.
-    """
+    """Energy -> iterations. Quiet=sparse, loud=dense and detailed."""
 
     def __init__(self, min_iters: int = 100, max_iters: int = 500,
                  rms_scale: float = 0.01):
@@ -17,11 +18,19 @@ class DetailAxis:
         self.max_iters = max_iters
         self.rms_scale = rms_scale
         self.iterations = min_iters
+        self._envelope = 0.0
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
         energy = max(audio.bands['subbass'].harmonic_rms,
                      audio.centroid_harmonic_rms)
-        t = min(energy / self.rms_scale, 1.0) ** 0.5
+        # Asymmetric envelope: slow attack, faster release
+        if energy > self._envelope:
+            alpha = cfg.intensity.attack_alpha
+        else:
+            alpha = cfg.intensity.release_alpha
+        self._envelope = alpha * self._envelope + (1 - alpha) * energy
+
+        t = min(self._envelope / self.rms_scale, 1.0) ** 0.5
         self.iterations = int(self.min_iters + t * (self.max_iters - self.min_iters))
 
     def contribute(self, frame) -> None:

@@ -31,6 +31,8 @@ from .source import PipeWireSource, FeedSource
 from .onset_density import OnsetDensityTracker
 from .stability import MagnitudeStability
 from ..tempo import TempoTracker
+from .tempo_acf import AutocorrelationTempoTracker
+from ._band_config import BandConfig, default_band_config
 from ._bands import (
     AdaptiveBand, make_mask, make_weights, a_weight_curve, A_WEIGHTS,
     ALLOWED_RANGES, DEFAULT_RANGES,
@@ -64,15 +66,22 @@ class AudioProcessor:
     """
 
     def __init__(self, device: str | int | None = None, adaptive: bool = False,
-                 sharpness: bool = True, source=None):
+                 sharpness: bool = True, source=None,
+                 band_config: BandConfig | None = None):
+        if band_config is None:
+            band_config = default_band_config()
+        self._band_config = band_config
+
         self._source = source or PipeWireSource(device=device)
         self._spectrum_engine = SpectrumEngine()
         self._stability = MagnitudeStability()
         self._detector = FluxBeatDetector(adaptive=adaptive, sharpness=sharpness,
-                                          stability=self._stability)
-        self._energy = EnergyAnalyzer()
-        self._tempo = TempoTracker()
-        self._density = OnsetDensityTracker()
+                                          stability=self._stability,
+                                          band_config=band_config)
+        self._energy = EnergyAnalyzer(band_config=band_config)
+        self._tempo = AutocorrelationTempoTracker(
+            hop_duration=HOP_SIZE / SAMPLE_RATE)
+        self._density = OnsetDensityTracker(band_config=band_config)
 
         # Auto-detect: FeedSource is synchronous, everything else is threaded
         self._threaded = not isinstance(self._source, FeedSource)
@@ -86,12 +95,10 @@ class AudioProcessor:
         self._centroid_rms = 0.0
         self._centroid_harmonic_rms = 0.0
         self._percussiveness = 0.5
-        self._bands = {name: BandState() for name in
-                       ('subbass', 'kick', 'snare', 'clap', 'hihat')}
+        self._bands = {name: BandState() for name in band_config.all_band_names}
         self._bpm = 0.0
         self._effective_bpm = 120.0
         self._tempo_saturated = False
-        self._kick_density_delta = 0.0
         self._pending_events: list[BeatEvent] = []
 
         # Thread state
@@ -143,6 +150,7 @@ class AudioProcessor:
 
     def _audio_loop(self):
         """Runs in daemon thread. Reads hops, analyses, publishes."""
+        detection_names = set(self._band_config.detection_band_names)
         while self._running:
             hop = self._source.read_hop(HOP_SIZE)
             if hop is None:
@@ -155,10 +163,13 @@ class AudioProcessor:
                                 stability=self._stability)
             events = self._detector.detect(frame)
 
-            # Feed tempo + density trackers
+            # Feed ACF tempo tracker with onset strength (A-weighted flux sum)
+            onset_strength = float(np.dot(frame.flux, A_WEIGHTS))
+            self._tempo.feed(onset_strength)
+
+            # Feed density tracker
             for event in events:
-                if event.kind in ('kick', 'snare', 'clap', 'hihat'):
-                    self._tempo.process_onset(event.kind, now)
+                if event.kind in detection_names:
                     self._density.process_onset(event.kind, now)
             self._density.update(now)
             self._detector._bpm = self._tempo.effective_bpm
@@ -175,16 +186,17 @@ class AudioProcessor:
                 self._bpm = self._tempo.bpm
                 self._effective_bpm = self._tempo.effective_bpm
                 self._tempo_saturated = self._tempo.saturated
-                self._kick_density_delta = self._density.kick_density_delta
                 # Build per-band state
                 band_rms = self._energy.band_rms_all
                 band_hrms = self._energy.band_harmonic_rms_all
                 densities = self._density.densities
+                density_deltas = self._density.density_deltas
                 for name in self._bands:
                     self._bands[name] = BandState(
                         rms=band_rms.get(name, 0.0),
                         harmonic_rms=band_hrms.get(name, 0.0),
                         onset_density=densities.get(name, 0.0),
+                        density_delta=density_deltas.get(name, 0.0),
                     )
 
     def drain(self) -> AudioSnapshot:
@@ -205,7 +217,8 @@ class AudioProcessor:
     def _build_snapshot(self, events: list[BeatEvent]) -> AudioSnapshot:
         """Build AudioSnapshot from current shared state (call under lock)."""
         bands = {name: BandState(rms=bs.rms, harmonic_rms=bs.harmonic_rms,
-                                 onset_density=bs.onset_density)
+                                 onset_density=bs.onset_density,
+                                 density_delta=bs.density_delta)
                  for name, bs in self._bands.items()}
         return AudioSnapshot(
             events=events,
@@ -220,7 +233,6 @@ class AudioProcessor:
             bpm=self._bpm,
             effective_bpm=self._effective_bpm,
             tempo_saturated=self._tempo_saturated,
-            kick_density_delta=self._kick_density_delta,
         )
 
     # ------------------------------------------------------------------
@@ -241,6 +253,20 @@ class AudioProcessor:
         self._energy.update(frame.magnitude, frame.flux,
                             stability=self._stability)
 
+        events = self._detector.detect(frame)
+
+        # Feed ACF tempo tracker
+        onset_strength = float(np.dot(frame.flux, A_WEIGHTS))
+        self._tempo.feed(onset_strength)
+
+        # Feed density tracker
+        now = time.perf_counter()
+        detection_names = set(self._band_config.detection_band_names)
+        for event in events:
+            if event.kind in detection_names:
+                self._density.process_onset(event.kind, now)
+        self._density.update(now)
+
         with self._lock:
             self._spectrum[:] = frame.magnitude
             self._waveform[:] = frame.waveform
@@ -251,13 +277,17 @@ class AudioProcessor:
             self._percussiveness = self._energy.percussiveness
             band_rms = self._energy.band_rms_all
             band_hrms = self._energy.band_harmonic_rms_all
+            densities = self._density.densities
+            density_deltas = self._density.density_deltas
             for name in self._bands:
                 self._bands[name] = BandState(
                     rms=band_rms.get(name, 0.0),
                     harmonic_rms=band_hrms.get(name, 0.0),
+                    onset_density=densities.get(name, 0.0),
+                    density_delta=density_deltas.get(name, 0.0),
                 )
 
-        return self._detector.detect(frame)
+        return events
 
     @property
     def spectrum(self) -> np.ndarray:
@@ -302,7 +332,12 @@ class SyntheticAudioProcessor:
         hihat_interval: float = 0.25,
         bpm_label:      str   = '120 bpm',
         clock=None,
+        band_config: BandConfig | None = None,
     ):
+        if band_config is None:
+            band_config = default_band_config()
+        self._band_config = band_config
+
         self.kick_interval  = kick_interval
         self.snare_interval = snare_interval
         self.hihat_interval = hihat_interval
@@ -380,9 +415,9 @@ class SyntheticAudioProcessor:
         """Wrap process() into AudioSnapshot for uniform API with AudioProcessor."""
         events = self.process()
         # Synthetic: put fake RMS in subbass band so drift detection works
-        bands = {name: BandState() for name in
-                 ('subbass', 'kick', 'snare', 'clap', 'hihat')}
-        bands['subbass'] = BandState(rms=self._rms, harmonic_rms=self._rms)
+        bands = {name: BandState() for name in self._band_config.all_band_names}
+        if 'subbass' in bands:
+            bands['subbass'] = BandState(rms=self._rms, harmonic_rms=self._rms)
         return AudioSnapshot(
             events=events,
             spectrum=self._spectrum.copy(),

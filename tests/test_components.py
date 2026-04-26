@@ -687,7 +687,7 @@ class TestOnsetDensityTracker:
         for i in range(10):
             dt.process_onset('kick', 2.0 + i * 0.1)
         dt.update(3.0)
-        assert dt.kick_density_delta > 0
+        assert dt.density_deltas['kick'] > 0
 
     def test_delta_near_zero_at_steady_rate(self):
         dt = OnsetDensityTracker()
@@ -697,7 +697,7 @@ class TestOnsetDensityTracker:
             if i % 25 == 0:  # every 250ms = 4/s
                 dt.process_onset('kick', t)
             dt.update(t)
-        assert abs(dt.kick_density_delta) < 1.0
+        assert abs(dt.density_deltas['kick']) < 1.0
 
     def test_reset_clears_state(self):
         dt = OnsetDensityTracker()
@@ -707,7 +707,7 @@ class TestOnsetDensityTracker:
         assert dt.densities['kick'] > 0
         dt.reset()
         assert dt.densities['kick'] == 0.0
-        assert dt.kick_density_delta == 0.0
+        assert dt.density_deltas['kick'] == 0.0
 
 
 # -------------------------------------------------------------------

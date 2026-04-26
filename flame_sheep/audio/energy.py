@@ -3,7 +3,8 @@
 import numpy as np
 
 from ._constants import N_BINS, FREQS, SAMPLE_RATE
-from ._bands import make_mask, A_WEIGHTS, BAND_MASKS, BAND_RANGES
+from ._bands import make_mask, A_WEIGHTS
+from ._band_config import BandConfig, default_band_config
 from ..config import cfg
 
 
@@ -17,12 +18,17 @@ class EnergyAnalyzer:
       - percussiveness: flux/magnitude ratio — drums vs sustain
     """
 
-    def __init__(self, alpha: float = None):
+    def __init__(self, alpha: float = None, band_config: BandConfig | None = None):
         self._alpha = alpha if alpha is not None else cfg.energy.rms_alpha
+        if band_config is None:
+            band_config = default_band_config()
+        self._band_config = band_config
 
-        # Per-band RMS and harmonic RMS (shared masks from _bands.py)
-        self._band_rms = {name: 0.0 for name in BAND_MASKS}
-        self._band_harmonic_rms = {name: 0.0 for name in BAND_MASKS}
+        # Per-band RMS and harmonic RMS (masks built from config)
+        self._masks = {name: make_mask(*rng)
+                       for name, rng in band_config.all_band_ranges.items()}
+        self._band_rms = {name: 0.0 for name in self._masks}
+        self._band_harmonic_rms = {name: 0.0 for name in self._masks}
 
         # Centroid tracking
         self._centroid = 1000.0
@@ -53,7 +59,7 @@ class EnergyAnalyzer:
         alpha = self._alpha
 
         # Per-band RMS and harmonic RMS (unified loop)
-        for name, mask in BAND_MASKS.items():
+        for name, mask in self._masks.items():
             raw = float(np.sqrt(np.mean(spectrum[mask] ** 2)))
             self._band_rms[name] = alpha * self._band_rms[name] + (1 - alpha) * raw
             if stability is not None:
@@ -125,7 +131,9 @@ class EnergyAnalyzer:
     @property
     def band_rms(self) -> dict[str, float]:
         """Per-band RMS for detection bands (backwards compat)."""
-        return {k: self._band_rms[k] for k in ('kick', 'snare', 'clap', 'hihat')}
+        return {k: self._band_rms[k]
+                for k in self._band_config.detection_band_names
+                if k in self._band_rms}
 
     @property
     def percussiveness(self) -> float:

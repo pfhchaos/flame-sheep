@@ -6,6 +6,7 @@ from collections import deque
 from ._constants import SAMPLE_RATE, N_BINS, HISTORY_LEN, FREQS, FFT_SIZE, HOP_SIZE
 from ..config import cfg
 from .tempo_scaler import TempoScaler
+from ._band_config import BandConfig, default_band_config
 
 _scaler = TempoScaler()
 from ._types import BeatEvent
@@ -49,35 +50,37 @@ class FluxBeatDetector:
     def SHARPNESS(self): return cfg.detection.sharpness
 
     def __init__(self, adaptive: bool = False, sharpness: bool = True,
-                 stability=None):
+                 stability=None, band_config: BandConfig | None = None):
         self._adaptive = adaptive
         self._spring_bands_enabled = cfg.adaptive.enabled
         self._sharpness = sharpness
         self._stability = stability  # MagnitudeStability reference (optional)
         self._bpm = 0.0
 
-        # Static band masks (from shared definitions)
-        self._bands = {k: BAND_MASKS[k] for k in ('kick', 'snare', 'clap', 'hihat')}
+        if band_config is None:
+            band_config = default_band_config()
+        self._band_config = band_config
+        self._detection_names = list(band_config.detection_band_names)
+
+        # Static band masks (built from config)
+        self._bands = {b.name: make_mask(*b.freq_range)
+                       for b in band_config.detection_bands}
 
         # Spring-model adaptive bands
         if self._spring_bands_enabled:
             self._spring_bands = {
-                'kick':  SpringBand('kick'),
-                'snare': SpringBand('snare'),
-                'clap':  SpringBand('clap'),
-                'hihat': SpringBand('hihat'),
+                b.name: SpringBand(b.name, default_range=b.freq_range,
+                                   allowed_range=b.allowed_range)
+                for b in band_config.detection_bands
             }
             self._spring_frame = 0
-        self._snare_confirm = make_mask(1000, 3000)
 
         # Adaptive bands
         if adaptive:
             self._adaptive_bands = {
-                'kick':           AdaptiveBand('kick'),
-                'snare':          AdaptiveBand('snare'),
-                'clap':           AdaptiveBand('clap'),
-                'hihat':          AdaptiveBand('hihat'),
-                '_snare_confirm': AdaptiveBand('_snare_confirm'),
+                b.name: AdaptiveBand(b.name, default_range=b.freq_range,
+                                     allowed_range=b.allowed_range)
+                for b in band_config.detection_bands
             }
             self._adapt_frame = 0
             self._adapt_alpha = ADAPT_ALPHA
@@ -85,21 +88,18 @@ class FluxBeatDetector:
 
         # Per-band flux history
         self._flux_history = {
-            'kick':           deque(maxlen=HISTORY_LEN),
-            'snare':          deque(maxlen=HISTORY_LEN),
-            'clap':           deque(maxlen=HISTORY_LEN),
-            'hihat':          deque(maxlen=HISTORY_LEN),
-            '_snare_confirm': deque(maxlen=HISTORY_LEN),
+            name: deque(maxlen=HISTORY_LEN)
+            for name in self._detection_names
         }
 
         # Per-band cooldown
-        self._cooldown_frames = {'kick': 0, 'snare': 0, 'clap': 0, 'hihat': 0}
-        self._frame_count     = {'kick': 0, 'snare': 0, 'clap': 0, 'hihat': 0}
+        self._cooldown_frames = {name: 0 for name in self._detection_names}
+        self._frame_count     = {name: 0 for name in self._detection_names}
 
         # Per-band recent flux (for attack sharpness lookback)
         self._recent_flux = {
-            band: deque(maxlen=self.SHARPNESS_LOOKBACK + 1)
-            for band in ('kick', 'snare', 'clap', 'hihat')
+            name: deque(maxlen=self.SHARPNESS_LOOKBACK + 1)
+            for name in self._detection_names
         }
 
     @property
@@ -119,14 +119,7 @@ class FluxBeatDetector:
                 sb.reset()
 
     def detect(self, frame: SpectrumFrame) -> list[BeatEvent]:
-        """Detect beat onsets from a spectrum frame.
-
-        Args:
-            frame: SpectrumFrame with pre-computed flux.
-
-        Returns:
-            List of BeatEvent for detected onsets.
-        """
+        """Detect beat onsets from a spectrum frame."""
         flux = frame.flux
 
         if self._adaptive:
@@ -137,7 +130,7 @@ class FluxBeatDetector:
 
         events = []
 
-        for band in self._bands:
+        for band in self._detection_names:
             band_flux = self._band_flux(flux, band)
             hist = self._flux_history[band]
             recent = self._recent_flux[band]
@@ -145,7 +138,6 @@ class FluxBeatDetector:
 
             self._frame_count[band] += 1
             if band == 'kick' and self._bpm > 0:
-                # Tempo-scaled: fraction of beat period
                 cd = _scaler.beats_to_frames(
                     self._bpm, cfg.detection.kick_cooldown_beat_fraction)
             else:
@@ -157,7 +149,7 @@ class FluxBeatDetector:
                 local_avg = float(np.mean(hist))
 
                 # Attack sharpness gate
-                if (self._sharpness and band in ('snare', 'clap', 'hihat')
+                if (self._sharpness and band != 'kick'
                         and len(recent) > self.SHARPNESS_LOOKBACK):
                     pre_attack = float(np.median(list(recent)[:-1]))
                     if pre_attack > self.MIN_FLUX:
@@ -167,24 +159,9 @@ class FluxBeatDetector:
                             hist.append(band_flux)
                             continue
 
-                # Snare: corroborate with confirmation band
-                if band == 'snare':
-                    confirm_flux = self._confirm_flux(flux)
-                    confirm_hist = self._flux_history['_snare_confirm']
-                    self._flux_history['_snare_confirm'].append(confirm_flux)
-                    confirm_avg = (float(np.mean(confirm_hist))
-                                   if len(confirm_hist) >= 5 else 0)
-                    if (confirm_avg > 0
-                            and confirm_flux < confirm_avg * self.THRESHOLD):
-                        hist.append(band_flux)
-                        continue
-
                 # Per-band threshold: base scaled by band width
-                # Narrow bands have higher per-bin variance → need higher threshold
-                # Wide bands average out noise → can use lower threshold
                 band_mask = self._bands[band]
                 n_bins = int(band_mask.sum()) if hasattr(band_mask, 'sum') else np.count_nonzero(band_mask)
-                # sqrt scaling: threshold ~ 1/sqrt(n_bins), normalized to 30 bins
                 thresh = self.THRESHOLD * max(1.0, np.sqrt(30.0 / max(n_bins, 1)))
 
                 if self._stability is not None:
@@ -217,15 +194,6 @@ class FluxBeatDetector:
             mask = self._bands[band]
             return float(flux[mask].mean()) if mask.any() else 0.0
 
-    def _confirm_flux(self, flux: np.ndarray) -> float:
-        """Compute snare confirmation band flux."""
-        if self._adaptive:
-            w = self._adaptive_bands['_snare_confirm'].weights
-            s = w.sum()
-            return float(np.dot(flux, w) / s) if s > 0 else 0.0
-        else:
-            return float(flux[self._snare_confirm].mean())
-
     def _update_spring_bands(self, flux: np.ndarray):
         """Update spring band positions from stability-weighted flux."""
         self._spring_frame += 1
@@ -233,21 +201,19 @@ class FluxBeatDetector:
             return
         self._spring_frame = 0
 
-        # Get per-bin stability for weighting
         if self._stability is not None:
             stab = self._stability._fast.stability_per_bin()
         else:
             stab = np.zeros(N_BINS, dtype=np.float32)
 
-        # Update flux EMA for each band
         for sb in self._spring_bands.values():
             sb.update_flux_ema(flux, stab)
 
-        # Apply forces — bands are ordered by default center frequency
-        band_order = ['kick', 'snare', 'clap', 'hihat']
+        # Bands ordered by default center frequency
+        band_order = sorted(self._spring_bands.keys(),
+                            key=lambda n: self._spring_bands[n].default_center)
         for i, name in enumerate(band_order):
             sb = self._spring_bands[name]
-            # Neighbors for repulsion
             neighbors = []
             if i > 0:
                 neighbors.append(self._spring_bands[band_order[i-1]])
@@ -261,7 +227,6 @@ class FluxBeatDetector:
                 repulsion_k=cfg.adaptive.repulsion_strength,
             )
 
-        # Update the static band masks too (for stability computation)
         for name in band_order:
             self._bands[name] = self._spring_bands[name].mask
 
@@ -283,7 +248,7 @@ class FluxBeatDetector:
             return
         self._adapt_frame = 0
 
-        for name in ('kick', 'snare', 'clap', 'hihat'):
+        for name in self._detection_names:
             ab = self._adaptive_bands[name]
             raw = ab.flux_accum * ab.allowed_mask
             peak = raw.max()
@@ -303,18 +268,3 @@ class FluxBeatDetector:
             if shift > SECTION_THRESHOLD:
                 self._adapt_alpha = ADAPT_FAST_ALPHA
                 self._fast_adapt_remaining = FAST_ADAPT_FRAMES
-
-        # Snare confirm: derive from snare band's centroid
-        snare_ab = self._adaptive_bands['snare']
-        snare_centroid = np.average(FREQS, weights=snare_ab.weights + 1e-10)
-        confirm_center = snare_centroid * 2.5
-        confirm_sigma = confirm_center * 0.5
-        confirm_ab = self._adaptive_bands['_snare_confirm']
-        confirm_raw = np.exp(
-            -0.5 * ((FREQS - confirm_center) / (confirm_sigma + 1e-10)) ** 2)
-        confirm_raw *= confirm_ab.allowed_mask
-        s = confirm_raw.sum()
-        if s > 0:
-            confirm_ab.weights = (confirm_raw / s).astype(np.float32)
-        else:
-            confirm_ab.weights = confirm_ab.default_weights.copy()
