@@ -1,31 +1,27 @@
 """
-Audio analysis package for flame-sheep.
+Transition shim — re-exports from the standalone flame_sheep_audio package.
 
-Re-exports public symbols so existing imports like
-`from flame_sheep.audio import AudioProcessor, BeatEvent` continue to work.
+All imports like `from flame_sheep.audio import X` continue to work.
+New code should import from `flame_sheep_audio` directly.
 """
 
-# Constants
-from ._constants import (
+# Re-export everything from the standalone package
+from flame_sheep_audio import *  # noqa: F401,F403
+from flame_sheep_audio import (
+    # Constants
     SAMPLE_RATE, DEFAULT_DEVICE, FFT_SIZE, HOP_SIZE, N_BINS, HISTORY_LEN, FREQS,
+    # Types
+    BeatEvent, BandState, AudioState, AudioSnapshot,
+    SpectrumEngine, SpectrumFrame,
+    # Band configuration
+    BandConfig, EnergyBandDef, DetectionBandDef, default_band_config,
+    make_mask, make_weights, A_WEIGHTS,
+    # Beat detection
+    FluxBeatDetector,
+    # Energy
+    EnergyAnalyzer,
+    # Sources
+    PipeWireSource, FeedSource,
+    # Processors
+    AudioProcessor, SyntheticAudioProcessor, list_monitor_devices,
 )
-
-# Types
-from ._types import BeatEvent, BandState, AudioState, AudioSnapshot
-from ._spectrum import SpectrumEngine, SpectrumFrame
-
-# Band configuration
-from ._band_config import BandConfig, EnergyBandDef, DetectionBandDef, default_band_config
-from ._bands import make_mask, make_weights, A_WEIGHTS
-
-# Beat detection
-from .beat_detector import FluxBeatDetector
-
-# Energy analysis
-from .energy import EnergyAnalyzer
-
-# Signal sources
-from .source import PipeWireSource, FeedSource
-
-# Processor classes
-from .processor import AudioProcessor, SyntheticAudioProcessor, list_monitor_devices
