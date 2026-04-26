@@ -7,7 +7,7 @@ log = logging.getLogger(__name__)
 
 import numpy as np
 
-from flame_sheep.audio._types import AudioState
+from flame_sheep_audio import AudioState
 from flame_sheep.genome import _lerp_arr
 from flame_sheep.config import cfg
 

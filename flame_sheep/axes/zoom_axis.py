@@ -4,7 +4,7 @@ import logging
 
 log = logging.getLogger(__name__)
 
-from flame_sheep.audio._types import AudioState
+from flame_sheep_audio import AudioState
 from flame_sheep.config import cfg
 
 

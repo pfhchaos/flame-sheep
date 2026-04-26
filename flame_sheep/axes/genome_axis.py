@@ -9,7 +9,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-from flame_sheep.audio._types import AudioState, BeatEvent
+from flame_sheep_audio import AudioState, BeatEvent
 from flame_sheep.genome import Genome
 from flame_sheep.variations import Variation
 
