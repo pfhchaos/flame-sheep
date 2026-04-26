@@ -1,7 +1,7 @@
-"""Configuration system — loads tuning constants from TOML.
+"""Visualization configuration — loads tuning constants from TOML.
 
-All audio and visual tuning constants live here. Components read from
-the global `cfg` object instead of defining their own class-level constants.
+Visual axis tuning constants live here. Audio engine has its own config
+in the flame_sheep_audio package (loaded from audio.toml).
 
 Config is loaded from (in order):
   1. Built-in defaults (DEFAULTS dict below)
@@ -20,44 +20,6 @@ log = logging.getLogger(__name__)
 CONFIG_PATH = Path.home() / '.config' / 'flame-sheep' / 'config.toml'
 
 DEFAULTS = {
-    'detection': {
-        'base_threshold': 1.5,
-        'kick_threshold': 3.5,
-        'cooldown_frames': 12,
-        'kick_cooldown_frames': 8,
-        'kick_cooldown_beat_fraction': 0.4,
-        'stability_scaling': 1.0,
-        'sharpness': 3.0,
-        'min_flux': 1e-7,
-    },
-    'stability': {
-        'fast_alpha': 0.95,
-        'slow_alpha': 0.995,
-    },
-    'energy': {
-        'rms_alpha': 0.9,
-        'centroid_alpha': 0.85,
-        'percussiveness_alpha': 0.92,
-    },
-    'density': {
-        'window': 1.0,
-        'delta_window': 2.0,
-        'alpha': 0.9,
-    },
-    'tempo': {
-        'min_bpm': 60,
-        'max_bpm': 400,
-        'default_bpm': 120,
-    },
-    'breaks': {
-        'enabled': False,
-        'quiet_threshold_frames': 60,
-        'bass_quiet_threshold_frames': 45,
-        'drop_energy_ratio': 0.15,
-        'subbass_drop_ratio': 0.10,
-        'min_kicks_before_break': 8,
-        'cooldown_seconds': 15.0,
-    },
     'genome': {
         'drift_morph_speed': 0.001,
         'density_morph_scale': 0.003,
@@ -88,13 +50,6 @@ DEFAULTS = {
     'intensity': {
         'attack_alpha': 0.98,    # slow attack ~0.8s half-life at 60fps
         'release_alpha': 0.95,   # faster release ~0.25s half-life
-    },
-    'adaptive': {
-        'enabled': False,
-        'update_interval': 9,
-        'anchor_strength': 0.3,
-        'repulsion_strength': 0.1,
-        'flux_pull_strength': 0.5,
     },
 }
 

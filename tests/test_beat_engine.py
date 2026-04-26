@@ -11,7 +11,7 @@ import pytest
 from collections import defaultdict
 from dataclasses import dataclass
 
-from flame_sheep.audio import (
+from flame_sheep_audio import (
     AudioProcessor, SAMPLE_RATE, FFT_SIZE, N_BINS, FREQS,
 )
 from .conftest import make_processor

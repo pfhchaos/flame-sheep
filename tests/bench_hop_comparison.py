@@ -15,10 +15,10 @@ import numpy as np
 from collections import defaultdict
 from dataclasses import dataclass
 
-from flame_sheep.audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE, N_BINS
-from flame_sheep.audio._spectrum import SpectrumEngine
-from flame_sheep.audio.beat_detector import FluxBeatDetector
-from flame_sheep.audio.energy import EnergyAnalyzer
+from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE, N_BINS
+from flame_sheep_audio._spectrum import SpectrumEngine
+from flame_sheep_audio.beat_detector import FluxBeatDetector
+from flame_sheep_audio.energy import EnergyAnalyzer
 
 from tests.synths import ALL_PATTERNS, PatternSpec
 

@@ -12,11 +12,11 @@ use the synth drum kit so results are deterministic.
 import numpy as np
 import pytest
 
-from flame_sheep.audio import AudioProcessor, SAMPLE_RATE, FFT_SIZE, HOP_SIZE
-from flame_sheep.audio.source import FeedSource
-from flame_sheep.audio._bands import A_WEIGHTS
-from flame_sheep.audio._spectrum import SpectrumEngine
-from flame_sheep.audio.tempo_acf import AutocorrelationTempoTracker
+from flame_sheep_audio import AudioProcessor, SAMPLE_RATE, FFT_SIZE, HOP_SIZE
+from flame_sheep_audio.source import FeedSource
+from flame_sheep_audio._bands import A_WEIGHTS
+from flame_sheep_audio._spectrum import SpectrumEngine
+from flame_sheep_audio.tempo_acf import AutocorrelationTempoTracker
 from flame_sheep.tempo import TempoTracker
 from tests.synths import (
     DrumPattern, PatternSpec, ALL_PATTERNS,
@@ -36,8 +36,8 @@ def _run_tempo_e2e(pattern: DrumPattern, min_duration: float = 20.0) -> float:
     Bypasses AudioProcessor to use the same HOP_SIZE cadence as the
     threaded path, giving the ACF tracker proper frame rate.
     """
-    from flame_sheep.audio.stability import MagnitudeStability
-    from flame_sheep.audio.beat_detector import FluxBeatDetector
+    from flame_sheep_audio.stability import MagnitudeStability
+    from flame_sheep_audio.beat_detector import FluxBeatDetector
 
     pcm = pattern.render()
 

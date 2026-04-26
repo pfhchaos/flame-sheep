@@ -10,7 +10,7 @@ Pattern library: PatternSpec definitions for parametrized tests.
 import numpy as np
 from dataclasses import dataclass
 
-from flame_sheep.audio import SAMPLE_RATE, FFT_SIZE
+from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE
 
 
 # -------------------------------------------------------------------

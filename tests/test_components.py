@@ -8,15 +8,15 @@ AudioProcessor, just the component under test with direct input.
 import numpy as np
 import pytest
 
-from flame_sheep.audio._spectrum import SpectrumEngine, SpectrumFrame
-from flame_sheep.audio._constants import FFT_SIZE, HOP_SIZE, N_BINS, SAMPLE_RATE
-from flame_sheep.audio._types import BeatEvent, BandState, AudioState, _default_bands
-from flame_sheep.audio.beat_detector import FluxBeatDetector
-from flame_sheep.audio.drop_detector import DropDetector
-from flame_sheep.audio.bass_drop_detector import BassDropDetector
-from flame_sheep.audio.onset_density import OnsetDensityTracker
-from flame_sheep.audio.stability import MagnitudeStability
-from flame_sheep.audio.energy import EnergyAnalyzer
+from flame_sheep_audio._spectrum import SpectrumEngine, SpectrumFrame
+from flame_sheep_audio._constants import FFT_SIZE, HOP_SIZE, N_BINS, SAMPLE_RATE
+from flame_sheep_audio._types import BeatEvent, BandState, AudioState, _default_bands
+from flame_sheep_audio.beat_detector import FluxBeatDetector
+from flame_sheep_audio.drop_detector import DropDetector
+from flame_sheep_audio.bass_drop_detector import BassDropDetector
+from flame_sheep_audio.onset_density import OnsetDensityTracker
+from flame_sheep_audio.stability import MagnitudeStability
+from flame_sheep_audio.energy import EnergyAnalyzer
 from flame_sheep.axes.zoom_axis import ZoomAxis
 from flame_sheep.axes.brightness_axis import BrightnessAxis
 from flame_sheep.axes.detail_axis import DetailAxis
@@ -618,7 +618,7 @@ class TestEnergyAnalyzerContinuous:
         spectrum = np.ones(N_BINS, dtype=np.float32) * 0.1
         ea.update(spectrum)
         band = ea.band_rms_all
-        from flame_sheep.audio._band_config import default_band_config
+        from flame_sheep_audio._band_config import default_band_config
         expected = set(default_band_config().all_band_names)
         assert set(band.keys()) == expected
         assert all(v >= 0 for v in band.values())
