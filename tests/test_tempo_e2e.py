@@ -14,7 +14,6 @@ import pytest
 
 from flame_sheep_audio import AudioProcessor, SAMPLE_RATE, FFT_SIZE, HOP_SIZE
 from flame_sheep_audio.source import FeedSource
-from flame_sheep_audio._bands import A_WEIGHTS
 from flame_sheep_audio._spectrum import SpectrumEngine
 from flame_sheep_audio.tempo_acf import AutocorrelationTempoTracker
 from flame_sheep.tempo import TempoTracker
@@ -66,8 +65,7 @@ def _run_tempo_e2e(pattern: DrumPattern, min_duration: float = 20.0) -> float:
             chunk = np.pad(chunk, (0, HOP_SIZE - len(chunk)))
         frame = engine.push_hop(chunk)
         stability.update(frame.magnitude)
-        onset_strength = float(np.dot(frame.flux, A_WEIGHTS))
-        tracker.feed(onset_strength)
+        tracker.feed(frame.onset_strength)
         pos += HOP_SIZE
 
     return tracker.effective_bpm
