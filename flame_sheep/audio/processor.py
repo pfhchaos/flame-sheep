@@ -1,58 +1,32 @@
 """
-Audio capture, FFT, and beat detection.
+AudioProcessor — orchestrates audio analysis pipeline.
 
-Constants, types, and adaptive band logic live in the audio/ subpackage.
-This module re-exports them for backward compatibility and contains the
-AudioProcessor and SyntheticAudioProcessor classes.
+Wires together spectrum engine, beat detection, energy analysis,
+onset density tracking, and tempo estimation. Runs in a daemon thread
+(PipeWireSource) or synchronously (FeedSource for tests).
 """
 
 import logging
 
 log = logging.getLogger(__name__)
 
-
 import threading
 import time
+
 import numpy as np
 import sounddevice as sd
-from collections import deque
-from scipy.signal import windows
 
-# Import from sibling modules within audio package
-from ._constants import (
-    SAMPLE_RATE, DEFAULT_DEVICE, BLOCK_SIZE, FFT_SIZE, N_BINS, HISTORY_LEN,
-    HOP_SIZE, FREQS,
-)
+from ._constants import SAMPLE_RATE, FFT_SIZE, N_BINS, HOP_SIZE
 from ._types import BeatEvent, BandState, AudioSnapshot
-from ._spectrum import SpectrumEngine, SpectrumFrame
+from ._spectrum import SpectrumEngine
 from .beat_detector import FluxBeatDetector
 from .energy import EnergyAnalyzer
 from .source import PipeWireSource, FeedSource
 from .onset_density import OnsetDensityTracker
 from .stability import MagnitudeStability
-from ..tempo import TempoTracker
 from .tempo_acf import AutocorrelationTempoTracker
 from ._band_config import BandConfig, default_band_config
-from ._bands import (
-    AdaptiveBand, make_mask, make_weights, a_weight_curve, A_WEIGHTS,
-    ALLOWED_RANGES, DEFAULT_RANGES,
-    ADAPT_ALPHA, ADAPT_FAST_ALPHA, ADAPT_INTERVAL, ADAPT_ANCHOR,
-    SECTION_THRESHOLD, FAST_ADAPT_FRAMES,
-)
-
-# Backward-compat aliases for underscore-prefixed names used by existing code
-_FREQS = FREQS
-_make_mask = make_mask
-_make_weights = make_weights
-_A_WEIGHTS = A_WEIGHTS
-_ALLOWED_RANGES = ALLOWED_RANGES
-_DEFAULT_RANGES = DEFAULT_RANGES
-_ADAPT_ALPHA = ADAPT_ALPHA
-_ADAPT_FAST_ALPHA = ADAPT_FAST_ALPHA
-_ADAPT_INTERVAL = ADAPT_INTERVAL
-_ADAPT_ANCHOR = ADAPT_ANCHOR
-_SECTION_THRESHOLD = SECTION_THRESHOLD
-_FAST_ADAPT_FRAMES = FAST_ADAPT_FRAMES
+from ._bands import A_WEIGHTS
 
 
 class AudioProcessor:
@@ -301,11 +275,6 @@ class AudioProcessor:
         with self._lock:
             return self._waveform.copy()
 
-    @property
-    def rms(self) -> float:
-        """Smoothed broadband RMS of the input signal (0..1 range for typical audio)."""
-        with self._lock:
-            return self._rms
 
 
 class SyntheticAudioProcessor:

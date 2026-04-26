@@ -129,13 +129,6 @@ class EnergyAnalyzer:
         return self._centroid_rms
 
     @property
-    def band_rms(self) -> dict[str, float]:
-        """Per-band RMS for detection bands (backwards compat)."""
-        return {k: self._band_rms[k]
-                for k in self._band_config.detection_band_names
-                if k in self._band_rms}
-
-    @property
     def percussiveness(self) -> float:
         """Flux/magnitude ratio — high = drums/transients, low = sustained tonal."""
         return self._percussiveness

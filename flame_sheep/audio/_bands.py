@@ -1,8 +1,7 @@
 """Adaptive spectral band definitions and utilities."""
 
 import numpy as np
-from ._constants import SAMPLE_RATE, N_BINS, FREQS
-from ._band_config import default_band_config
+from ._constants import N_BINS, FREQS
 
 
 # Adaptation constants
@@ -53,20 +52,6 @@ def a_weight_curve(freqs: np.ndarray) -> np.ndarray:
 A_WEIGHTS = a_weight_curve(FREQS)
 
 
-# --- Deprecated module-level constants (derived from default config) ---
-# Use BandConfig / default_band_config() for new code.
-_default_cfg = default_band_config()
-
-BAND_RANGES = _default_cfg.all_band_ranges
-
-DETECTION_BANDS = _default_cfg.detection_band_names
-
-ALLOWED_RANGES = {b.name: b.allowed_range for b in _default_cfg.detection_bands}
-
-DEFAULT_RANGES = {b.name: b.freq_range for b in _default_cfg.detection_bands}
-
-BAND_MASKS = {name: make_mask(*rng) for name, rng in BAND_RANGES.items()}
-
 
 class SpringBand:
     """Frequency band that drifts toward percussive energy via spring physics.
@@ -82,14 +67,9 @@ class SpringBand:
                  'lo_allowed', 'hi_allowed', 'mask', '_flux_ema')
 
     def __init__(self, name: str,
-                 default_range: tuple[float, float] | None = None,
-                 allowed_range: tuple[float, float] | None = None):
+                 default_range: tuple[float, float],
+                 allowed_range: tuple[float, float]):
         self.name = name
-        # Fall back to deprecated module-level dicts for backward compat
-        if allowed_range is None:
-            allowed_range = ALLOWED_RANGES[name]
-        if default_range is None:
-            default_range = DEFAULT_RANGES[name]
         lo_a, hi_a = allowed_range
         lo_d, hi_d = default_range
         self.lo_allowed = lo_a
@@ -155,13 +135,9 @@ class AdaptiveBand:
                  'name')
 
     def __init__(self, name: str,
-                 default_range: tuple[float, float] | None = None,
-                 allowed_range: tuple[float, float] | None = None):
+                 default_range: tuple[float, float],
+                 allowed_range: tuple[float, float]):
         self.name = name
-        if allowed_range is None:
-            allowed_range = ALLOWED_RANGES[name]
-        if default_range is None:
-            default_range = DEFAULT_RANGES[name]
         lo_a, hi_a = allowed_range
         lo_d, hi_d = default_range
         self.allowed_mask    = make_mask(lo_a, hi_a)

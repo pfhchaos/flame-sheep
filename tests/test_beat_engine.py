@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from flame_sheep.audio import (
-    AudioProcessor, SAMPLE_RATE, FFT_SIZE, N_BINS, _FREQS,
+    AudioProcessor, SAMPLE_RATE, FFT_SIZE, N_BINS, FREQS,
 )
 from .conftest import make_processor
 from .synths import (
@@ -739,7 +739,7 @@ class TestAdaptiveBands:
 
         # Check that kick weights shifted below 50Hz
         kick_ab = proc._detector.adaptive_bands['kick']
-        sub_50_mask = _FREQS < 50
+        sub_50_mask = FREQS < 50
         sub_50_weight = kick_ab.weights[sub_50_mask].sum()
         total_weight = kick_ab.weights.sum()
         sub_50_ratio = sub_50_weight / (total_weight + 1e-10)
@@ -782,7 +782,7 @@ class TestAdaptiveBands:
 
         # Check that hihat weights shifted below 8kHz
         hh_ab = proc._detector.adaptive_bands['hihat']
-        below_8k_mask = (_FREQS >= 5000) & (_FREQS < 8000)
+        below_8k_mask = (FREQS >= 5000) & (FREQS < 8000)
         below_8k_weight = hh_ab.weights[below_8k_mask].sum()
         total_weight = hh_ab.weights.sum()
         below_8k_ratio = below_8k_weight / (total_weight + 1e-10)

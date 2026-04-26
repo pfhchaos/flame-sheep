@@ -3,19 +3,19 @@
 import numpy as np
 from collections import deque
 
-from ._constants import SAMPLE_RATE, N_BINS, HISTORY_LEN, FREQS, FFT_SIZE, HOP_SIZE
+from ._constants import N_BINS, HISTORY_LEN, FFT_SIZE, HOP_SIZE
 from ..config import cfg
 from .tempo_scaler import TempoScaler
 from ._band_config import BandConfig, default_band_config
-
-_scaler = TempoScaler()
 from ._types import BeatEvent
 from ._spectrum import SpectrumFrame
 from ._bands import (
-    AdaptiveBand, SpringBand, make_mask, BAND_MASKS,
+    AdaptiveBand, SpringBand, make_mask,
     ADAPT_ALPHA, ADAPT_FAST_ALPHA, ADAPT_INTERVAL, ADAPT_ANCHOR,
     SECTION_THRESHOLD, FAST_ADAPT_FRAMES,
 )
+
+_scaler = TempoScaler()
 
 
 class FluxBeatDetector:

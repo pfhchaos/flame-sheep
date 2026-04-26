@@ -10,7 +10,7 @@ import pytest
 
 from flame_sheep.audio._spectrum import SpectrumEngine, SpectrumFrame
 from flame_sheep.audio._constants import FFT_SIZE, HOP_SIZE, N_BINS, SAMPLE_RATE
-from flame_sheep.audio._types import BeatEvent, BandState, AudioState
+from flame_sheep.audio._types import BeatEvent, BandState, AudioState, _default_bands
 from flame_sheep.audio.beat_detector import FluxBeatDetector
 from flame_sheep.audio.drop_detector import DropDetector
 from flame_sheep.audio.bass_drop_detector import BassDropDetector
@@ -30,8 +30,7 @@ def _audio(events=None, rms=0.0, harmonic_rms=0.0, breaking=False,
            percussiveness=0.5, centroid_delta=0.0, onset_density=None,
            **kwargs):
     """Helper to construct AudioState with convenience kwargs."""
-    bands = {name: BandState() for name in
-             ('subbass', 'kick', 'snare', 'hihat')}
+    bands = _default_bands()
     bands['subbass'] = BandState(rms=rms, harmonic_rms=harmonic_rms)
     if onset_density:
         for name, val in onset_density.items():
@@ -614,12 +613,14 @@ class TestEnergyAnalyzerContinuous:
         # Low flux relative to magnitude = sustained
         assert ea.percussiveness < 0.1
 
-    def test_band_rms_keys(self):
+    def test_band_rms_all_keys(self):
         ea = EnergyAnalyzer()
         spectrum = np.ones(N_BINS, dtype=np.float32) * 0.1
         ea.update(spectrum)
-        band = ea.band_rms
-        assert set(band.keys()) == {'kick', 'snare', 'hihat'}
+        band = ea.band_rms_all
+        from flame_sheep.audio._band_config import default_band_config
+        expected = set(default_band_config().all_band_names)
+        assert set(band.keys()) == expected
         assert all(v >= 0 for v in band.values())
 
     def test_centroid_delta(self):

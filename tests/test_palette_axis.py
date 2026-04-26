@@ -7,7 +7,7 @@ and palette selection behavior.
 import numpy as np
 import pytest
 
-from flame_sheep.audio._types import BeatEvent, BandState, AudioState
+from flame_sheep.audio._types import BeatEvent, BandState, AudioState, _default_bands
 from flame_sheep.axes.palette_axis import PaletteAxis
 from flame_sheep.genome import _random_palette
 
@@ -17,8 +17,7 @@ def _make_palette(seed=0):
 
 
 def _audio(events=None, snare_density=0.0, **kw):
-    bands = {name: BandState() for name in
-             ('subbass', 'kick', 'snare', 'hihat')}
+    bands = _default_bands()
     bands['snare'] = BandState(onset_density=snare_density)
     return AudioState(events=events or [], bands=bands, **kw)
 
