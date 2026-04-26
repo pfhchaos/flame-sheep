@@ -54,12 +54,16 @@ class TestRotationalSymmetry:
 
 class TestReflectiveSymmetry:
 
-    def test_vertical_mirror(self):
+    @pytest.mark.parametrize('axis', ['vertical', 'horizontal'])
+    def test_mirror_symmetry(self, axis):
         grid = _make_grid(64)
-        # Fill left half with pattern, mirror to right
         rng = np.random.default_rng(1)
-        grid[:, :32] = rng.random((64, 32))
-        grid[:, 32:] = grid[:, 31::-1]
+        if axis == 'vertical':
+            grid[:, :32] = rng.random((64, 32))
+            grid[:, 32:] = grid[:, 31::-1]
+        else:
+            grid[:32, :] = rng.random((32, 64))
+            grid[32:, :] = grid[31::-1, :]
         score, angle = _reflective_symmetry(np.log1p(grid))
         assert score > 0.5
 
@@ -68,14 +72,6 @@ class TestReflectiveSymmetry:
         grid = rng.random((64, 64))
         score, angle = _reflective_symmetry(grid)
         assert score < 0.3
-
-    def test_horizontal_mirror(self):
-        grid = _make_grid(64)
-        # Symmetric about horizontal axis
-        grid[:32, :] = np.random.default_rng(1).random((32, 64))
-        grid[32:, :] = grid[31::-1, :]
-        score, angle = _reflective_symmetry(np.log1p(grid))
-        assert score > 0.5
 
 
 class TestRadialSymmetry:

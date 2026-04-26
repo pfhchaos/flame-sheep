@@ -302,40 +302,18 @@ class TestVocalInterference:
 class TestSpeechInterference:
     """Speech should be harder to reject than singing due to consonant transients."""
 
-    def test_irregular_speech_alone(self):
-        """Normal irregular speech should produce some events but not flood."""
-        pcm = synth_speech(duration=4.0, amplitude=0.5, regularity=0.0)
+    @pytest.mark.parametrize('regularity,max_events', [
+        (0.0, 100),   # irregular speech
+        (0.8, 120),   # rhythmic speech (news anchor cadence)
+        (1.0, 150),   # metronomic speech (worst case — Patrick Boyle)
+    ], ids=['irregular', 'rhythmic', 'metronomic'])
+    def test_speech_alone(self, regularity, max_events):
+        """Speech at various regularities should not flood the detector."""
+        pcm = synth_speech(duration=4.0, amplitude=0.5,
+                           regularity=regularity, syllable_rate=4.0)
         events = run_pattern(pcm)
-        assert len(events) < 100, \
-            f"Irregular speech produced {len(events)} events (flood)"
-
-    def test_rhythmic_speech_alone(self):
-        """Highly rhythmic speech (like a news anchor or lecturer) produces
-        more regular events — this is the hard case for tempo gating."""
-        pcm = synth_speech(duration=4.0, amplitude=0.5, regularity=0.8)
-        events = run_pattern(pcm)
-        # Rhythmic speech WILL produce events — plosive consonants at regular
-        # intervals look like drums to the raw detector. Document the count.
-        print(f"[speech] rhythmic speech (reg=0.8): {len(events)} raw events")
-        assert len(events) < 120, \
-            f"Rhythmic speech produced {len(events)} events (excessive flood)"
-
-    def test_metronomic_speech_alone(self):
-        """Perfectly metronomic speech (regularity=1.0) — worst case.
-
-        This simulates speakers like Patrick Boyle whose cadence is so
-        regular that the tempo tracker may lock on to it and never
-        disengage when music stops.
-        """
-        pcm = synth_speech(duration=4.0, amplitude=0.5, regularity=1.0,
-                           syllable_rate=4.0)
-        events = run_pattern(pcm)
-        print(f"[speech] metronomic speech (reg=1.0): {len(events)} raw events")
-        # We expect events here — the raw detector can't tell the difference.
-        # The tempo tracker IS the defense, and it might actually lock on.
-        # This test documents the behavior rather than asserting perfection.
-        assert len(events) < 150, \
-            f"Metronomic speech produced {len(events)} events (extreme flood)"
+        assert len(events) < max_events, \
+            f"Speech (reg={regularity}) produced {len(events)} events (max {max_events})"
 
     def test_music_to_rhythmic_speech_transition(self):
         """Music plays, then stops and rhythmic speech begins.

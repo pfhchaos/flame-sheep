@@ -36,25 +36,11 @@ def simulate_random_onsets(tracker: TempoTracker, count: int,
 class TestTempoDetection:
     """Tests for tempo estimation accuracy."""
 
-    def test_detects_120_bpm(self):
+    @pytest.mark.parametrize('bpm', [90, 120, 150, 174])
+    def test_detects_bpm(self, bpm):
         tracker = TempoTracker()
-        simulate_beats(tracker, 120, 30)
-        assert _bpm_close(tracker.bpm, 120), f"Expected ~120 BPM, got {tracker.bpm}"
-
-    def test_detects_90_bpm(self):
-        tracker = TempoTracker()
-        simulate_beats(tracker, 90, 30)
-        assert _bpm_close(tracker.bpm, 90), f"Expected ~90 BPM, got {tracker.bpm}"
-
-    def test_detects_150_bpm(self):
-        tracker = TempoTracker()
-        simulate_beats(tracker, 150, 30)
-        assert _bpm_close(tracker.bpm, 150), f"Expected ~150 BPM, got {tracker.bpm}"
-
-    def test_detects_174_bpm_dnb(self):
-        tracker = TempoTracker()
-        simulate_beats(tracker, 174, 30)
-        assert _bpm_close(tracker.bpm, 174), f"Expected ~174 BPM, got {tracker.bpm}"
+        simulate_beats(tracker, bpm, 30)
+        assert _bpm_close(tracker.bpm, bpm), f"Expected ~{bpm} BPM, got {tracker.bpm}"
 
 
 class TestConfidenceAndLocking:
