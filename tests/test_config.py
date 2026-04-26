@@ -90,7 +90,7 @@ class TestConfigDefaults:
             c = Config()
         assert c.genome.drift_morph_speed == DEFAULTS['genome']['drift_morph_speed']
         assert c.zoom.boost_max == DEFAULTS['zoom']['boost_max']
-        assert c.intensity.attack_alpha == DEFAULTS['intensity']['attack_alpha']
+        assert c.drift.rms_threshold == DEFAULTS['drift']['rms_threshold']
 
     def test_all_sections_accessible(self):
         with mock.patch('flame_sheep.config.CONFIG_PATH',
