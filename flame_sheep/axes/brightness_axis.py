@@ -5,7 +5,7 @@ energy (vocals, strings, wall-of-bass) drives brightness, while
 isolated percussive hits decay before they can ramp it up.
 """
 
-from flame_sheep.audio._types import AudioState
+from flame_sheep_audio import AudioState
 from flame_sheep.config import cfg
 
 

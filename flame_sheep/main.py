@@ -26,9 +26,9 @@ from moderngl_window import settings
 
 from .config import cfg
 from .genome import Genome, _lerp_arr
-from .audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent, AudioState, DEFAULT_DEVICE
-from .audio.drop_detector import DropDetector
-from .audio.bass_drop_detector import BassDropDetector
+from flame_sheep_audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent, AudioState, DEFAULT_DEVICE
+from flame_sheep_audio.drop_detector import DropDetector
+from flame_sheep_audio.bass_drop_detector import BassDropDetector
 from .renderer import FlameRenderer, Viewport
 from .control import ControlPipe, ControlEvent
 from .axes.zoom_axis import ZoomAxis
@@ -1020,7 +1020,7 @@ def main():
     _TEST_AUDIO   = args.test_audio
 
     if args.list_audio:
-        from .audio import list_monitor_devices
+        from flame_sheep_audio import list_monitor_devices
         for d in list_monitor_devices():
             print(f"  [{d['index']:2d}] {d['name']}")
         return

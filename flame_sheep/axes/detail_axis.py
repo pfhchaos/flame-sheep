@@ -4,7 +4,7 @@ Uses the same slow-attack / fast-release envelope as brightness so
 that sustained musical energy drives detail, not individual hits.
 """
 
-from flame_sheep.audio._types import AudioState
+from flame_sheep_audio import AudioState
 from flame_sheep.config import cfg
 
 

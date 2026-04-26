@@ -10,7 +10,7 @@ import threading
 
 import numpy as np
 
-from flame_sheep.audio._types import AudioState
+from flame_sheep_audio import AudioState
 from flame_sheep.genome import Genome
 from flame_sheep.config import cfg
 

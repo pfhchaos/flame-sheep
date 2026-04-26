@@ -1,7 +1,7 @@
 """Visual axis protocol — interface for composable beat-reactive state machines."""
 
 from typing import Protocol
-from flame_sheep.audio._types import AudioState
+from flame_sheep_audio import AudioState
 
 
 class VisualAxis(Protocol):

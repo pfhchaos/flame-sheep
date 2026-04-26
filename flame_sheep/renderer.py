@@ -138,7 +138,7 @@ class FlameRenderer:
         self.palette_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
 
         # Audio spectrum texture: N_BINS x 1 R32F
-        from .audio import N_BINS
+        from flame_sheep_audio import N_BINS
         self.audio_tex = self.ctx.texture((N_BINS, 1), components=1, dtype='f4')
         self.audio_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
 
