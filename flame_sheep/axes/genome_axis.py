@@ -85,10 +85,12 @@ class GenomeAxis:
         # Kick energy tracking (for strong beat detection)
         self._recent_kick_energy = 0.5
 
-        # Section change: consumed on next strong beat to trigger loop swap
+        # Section change: consumed on next beat to trigger loop swap
         self._section_change_pending = False
         self.SECTION_CHANGE_THRESHOLD = 0.6
-        self._section_warmup = 0  # frames since last reset, suppress during warmup
+        self._section_warmup = 0      # frames since last reset
+        self._section_cooldown = 0    # frames since last section swap
+        self.SECTION_COOLDOWN = 480   # ~8s at 60fps (~4 bars at 120 BPM)
 
         # Loop playback
         self._loop_genomes: list[Genome] = []
@@ -114,14 +116,16 @@ class GenomeAxis:
         # Log section_change periodically for tuning
         self._section_log_counter += 1
         self._section_warmup += 1
+        self._section_cooldown += 1
         if self._section_log_counter % 300 == 0:  # every ~5s at 60fps
             log.info(f"[section] value={audio.section_change:.4f}")
 
-        # Detect section change — suppress during warmup (~30s for slow EMA to converge)
+        # Detect section change — suppress during warmup and cooldown
         WARMUP_FRAMES = 1800  # ~30s at 60fps
         if (
             audio.section_change > self.SECTION_CHANGE_THRESHOLD
             and self._section_warmup > WARMUP_FRAMES
+            and self._section_cooldown > self.SECTION_COOLDOWN
         ):
             if not self._section_change_pending:
                 self._section_change_pending = True
@@ -202,6 +206,7 @@ class GenomeAxis:
         # Section change pending → consume on any kick (don't wait for strong beat)
         if self._section_change_pending and self._lib is not None:
             self._section_change_pending = False
+            self._section_cooldown = 0  # start cooldown
             self.current_genome = self.current_genome.lerp(
                 self.target_genome, self.morph_t
             )
