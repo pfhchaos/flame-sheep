@@ -124,7 +124,8 @@ class ModeDetector:
 
         if self.mode != old_mode:
             log.info(f'[mode] {old_mode.value} → {self.mode.value}  '
-                     f'perc={self._perc_ema:.3f} rms={max_rms:.6f}')
+                     f'perc={self._perc_ema:.3f} acf={audio.tempo_confidence:.3f} '
+                     f'rms={max_rms:.6f}')
 
         return self.mode
 
