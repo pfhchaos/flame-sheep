@@ -71,6 +71,10 @@ class GenomeAxis:
         # Kick energy tracking (for strong beat detection)
         self._recent_kick_energy = 0.5
 
+        # Section change: consumed on next strong beat to trigger loop swap
+        self._section_change_pending = False
+        self.SECTION_CHANGE_THRESHOLD = 0.3
+
         # Loop playback
         self._loop_genomes: list[Genome] = []
         self._loop_pos: int = 0
@@ -90,6 +94,13 @@ class GenomeAxis:
             self._prefetch_genome()
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
+        # Detect section change — flag consumed on next strong beat
+        if abs(audio.section_change) > self.SECTION_CHANGE_THRESHOLD:
+            if not self._section_change_pending:
+                self._section_change_pending = True
+                log.info(f'[section] change detected ({audio.section_change:+.2f}), '
+                         f'will swap loop on next strong beat')
+
         # Handle discrete events
         for event in audio.events:
             if event.kind == 'kick':
@@ -157,13 +168,22 @@ class GenomeAxis:
         # Strong beat → swap direction (harder to trigger at high density)
         swap_thresh = self.STRONG_BEAT_THRESHOLD * (1.0 + kick_density * 0.5)
         if event.energy > self._recent_kick_energy * swap_thresh:
-            self.current_genome = self.current_genome.lerp(
-                self.target_genome, self.morph_t)
-            self._swap_next_genome()
-            self.morph_t = 0.0
-            dist = self.current_genome.distance(self.target_genome)
-            log.debug(f'[SWAP]  +{since:.3f}s  energy={event.energy:.2f}  '
-                      f'avg={self._recent_kick_energy:.2f}  dist={dist:.3f}')
+            # Section change pending → swap loop instead of just genome
+            if self._section_change_pending and self._lib is not None:
+                self._section_change_pending = False
+                self.current_genome = self.current_genome.lerp(
+                    self.target_genome, self.morph_t)
+                self.next_loop()
+                self.morph_t = 0.0
+                log.info(f'[SWAP+LOOP]  section change consumed on strong beat')
+            else:
+                self.current_genome = self.current_genome.lerp(
+                    self.target_genome, self.morph_t)
+                self._swap_next_genome()
+                self.morph_t = 0.0
+                dist = self.current_genome.distance(self.target_genome)
+                log.debug(f'[SWAP]  +{since:.3f}s  energy={event.energy:.2f}  '
+                          f'avg={self._recent_kick_energy:.2f}  dist={dist:.3f}')
         else:
             # Normal kick — pulse morph speed (scaled by density)
             self.morph_speed = min(0.15,
