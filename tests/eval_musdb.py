@@ -91,7 +91,7 @@ def _collect_fine_hop(pcm_mono: np.ndarray, adaptive: bool = False,
     for _ in range(40):
         frame = engine.push_hop(silence)
         stability.update(frame.magnitude)
-        energy.update(frame.magnitude)
+        energy.update(frame.magnitude, stability=stability)
         detector.detect(frame)
 
     times = []
@@ -102,7 +102,7 @@ def _collect_fine_hop(pcm_mono: np.ndarray, adaptive: bool = False,
             chunk = np.pad(chunk, (0, HOP_SIZE - len(chunk)))
         frame = engine.push_hop(chunk)
         stability.update(frame.magnitude)
-        energy.update(frame.magnitude)
+        energy.update(frame.magnitude, frame.flux, stability=stability)
         ts = pos / SAMPLE_RATE
         for e in detector.detect(frame):
             times.append(ts)
