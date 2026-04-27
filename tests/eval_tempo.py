@@ -22,11 +22,8 @@ import numpy as np
 
 sys.path.insert(0, '.')
 
-from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE
-from flame_sheep_audio._spectrum import SpectrumEngine
-from flame_sheep_audio.beat_detector import FluxBeatDetector
-from flame_sheep_audio.stability import MagnitudeStability
-from flame_sheep_audio.tempo_acf import AutocorrelationTempoTracker
+from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE, AudioProcessor
+from flame_sheep_audio.source import FeedSource
 
 
 def resample_to_48k(audio: np.ndarray, orig_sr: int = 44100) -> np.ndarray:
@@ -57,37 +54,36 @@ def reference_bpm(drums_audio: np.ndarray, sr: int) -> float:
 
 
 def estimate_bpm_pipeline(mix_audio: np.ndarray, orig_sr: int) -> float:
-    """Run our full pipeline on mix audio and return estimated BPM."""
+    """Run our full pipeline on mix audio and return estimated BPM.
+
+    Uses AudioProcessor directly so the eval matches the production path.
+    """
     mix_48k = resample_to_48k(mix_audio, orig_sr)
     if mix_48k.ndim > 1:
         mono = mix_48k.mean(axis=1).astype(np.float32)
     else:
         mono = mix_48k.astype(np.float32)
 
-    engine = SpectrumEngine()
-    stability = MagnitudeStability()
-    hop_duration = HOP_SIZE / SAMPLE_RATE
-    tracker = AutocorrelationTempoTracker(hop_duration=hop_duration)
+    proc = AudioProcessor(source=FeedSource())
 
     # Prime
-    silence = np.zeros(HOP_SIZE, dtype=np.float32)
-    for _ in range(40):
-        frame = engine.push_hop(silence)
-        stability.update(frame.magnitude)
-        tracker.feed(0.0)
+    silence = np.zeros(FFT_SIZE, dtype=np.float32)
+    for _ in range(15):
+        proc.feed(silence)
+        proc.process()
 
     # Process
     pos = 0
     while pos < len(mono):
-        chunk = mono[pos:pos + HOP_SIZE]
-        if len(chunk) < HOP_SIZE:
-            chunk = np.pad(chunk, (0, HOP_SIZE - len(chunk)))
-        frame = engine.push_hop(chunk)
-        stability.update(frame.magnitude)
-        tracker.feed(frame.onset_strength)
-        pos += HOP_SIZE
+        chunk = mono[pos:pos + FFT_SIZE]
+        if len(chunk) < FFT_SIZE:
+            chunk = np.pad(chunk, (0, FFT_SIZE - len(chunk)))
+        proc.feed(chunk)
+        proc.process()
+        pos += FFT_SIZE
 
-    return tracker.bpm if tracker.bpm > 0 else tracker.effective_bpm
+    snap = proc.drain()
+    return snap.effective_bpm
 
 
 def bpm_exact(estimated: float, reference: float, tolerance_pct: float = 4.0) -> bool:
