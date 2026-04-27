@@ -450,31 +450,45 @@ def _get_output_layout() -> dict[str, dict]:
 
 
 def _get_sway_layout() -> dict[str, dict]:
-    """Legacy wrapper — try Wayland protocol first, fall back to swaymsg."""
-    result = _get_output_layout()
-    if result:
-        return result
+    """Get output layout — try swaymsg first for accurate positions,
+    fall back to Wayland protocol (wl_output.geometry may return 0,0)."""
+    # TODO: use xdg-output-manager protocol for compositor-agnostic positions
+    wl_result = _get_output_layout()
 
-    # Fallback to swaymsg for older setups
+    # If Wayland gave real positions (not all zero), use them
+    if wl_result and any(g['x'] != 0 or g['y'] != 0 for g in wl_result.values()):
+        return wl_result
+
+    # swaymsg fallback — has correct positions, merge with Wayland physical sizes
     import json, subprocess, math
     try:
         raw = subprocess.check_output(['swaymsg', '-t', 'get_outputs'], timeout=3)
         outputs = json.loads(raw)
+        result = {}
         for o in outputs:
             if not o.get('active'):
                 continue
             r = o['rect']
-            mode = o.get('current_mode', {})
-            native_w = mode.get('width', r['width'])
-            native_h = mode.get('height', r['height'])
-            diag_px = math.sqrt(native_w**2 + native_h**2)
-            ppi = diag_px / DEFAULT_MONITOR_SIZE
-            result[o['name']] = {
+            name = o['name']
+            # Use physical size from Wayland if available, else estimate
+            if wl_result and name in wl_result:
+                phys_w_mm = wl_result[name]['phys_w_mm']
+                phys_h_mm = wl_result[name]['phys_h_mm']
+                ppi = wl_result[name]['ppi']
+            else:
+                mode = o.get('current_mode', {})
+                native_w = mode.get('width', r['width'])
+                native_h = mode.get('height', r['height'])
+                diag_px = math.sqrt(native_w**2 + native_h**2)
+                ppi = diag_px / DEFAULT_MONITOR_SIZE
+                phys_w_mm = r['width'] / ppi * 25.4
+                phys_h_mm = r['height'] / ppi * 25.4
+            result[name] = {
                 'x': r['x'], 'y': r['y'],
                 'w': r['width'], 'h': r['height'],
                 'ppi': ppi,
-                'phys_w_mm': r['width'] / ppi * 25.4,
-                'phys_h_mm': r['height'] / ppi * 25.4,
+                'phys_w_mm': phys_w_mm,
+                'phys_h_mm': phys_h_mm,
             }
         return result
     except Exception as e:
