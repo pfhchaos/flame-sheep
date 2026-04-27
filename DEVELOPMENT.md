@@ -53,7 +53,9 @@ PipeWire ─→ Signal Source ─→ SpectrumEngine
         │  centroid, centroid_delta         │
         │  centroid_rms, centroid_hrms      │
         │  percussiveness                  │
+        │  section_change                  │
         │  bpm, effective_bpm              │
+        │  tempo_confidence                │
         │  spectrum, waveform              │
         │  events[]                        │
         └──────────────────────────────────┘
@@ -74,13 +76,16 @@ AudioSnapshot
      │
 drain() → render thread
      │
+ModeDetector (beat / idle)
+     │
 AudioState → Visual Axes
 ├─ GenomeAxis     kick/snare density → genome morph/swap
+│                 section_change → loop swap on next strong beat
 ├─ PaletteAxis    snare density → palette walk
-├─ ZoomAxis       hihat/clap density → zoom pulse
-├─ BrightnessAxis harmonic RMS (slow envelope) → display gamma
-├─ DetailAxis     harmonic RMS (slow envelope) → iteration count
-└─ DriftMode      silence → slow morph (independent state machine)
+├─ ZoomAxis       hihat density → zoom pulse
+├─ BrightnessAxis slow_harmonic_rms → display gamma
+├─ DetailAxis     slow_harmonic_rms → iteration count
+└─ DriftMode      idle mode → slow autonomous morph
      │
 Renderer (GPU compute shaders)
      │
@@ -96,25 +101,30 @@ Display (Wayland layer-shell)
 - **Energy-based swaps** — genome direction changes on high-energy beats (strong beat detection), not fixed intervals
 - **Harmonic/percussive separation** — per-bin magnitude variance (HPSS-lite) separates sustained content from transients. Brightness tracks harmonic energy only
 - **Exponential break damping** — morph slows proportionally to break duration, brief false positives barely visible
+- **Section change detection** — dual-EMA on centroid + energy, euclidean distance triggers loop swaps on next strong beat
+- **Three-state mode machine** — beat (all axes) / idle (drift morph). Energy mode designed but disabled pending speech/music discrimination.
 - **All constants configurable** — TOML config, hot-reloadable via control pipe
 
 ## Module Layout
 
-### `flame_sheep/audio/` — Audio Analysis Pipeline
+### `flame_sheep_audio/` — Standalone Audio Analysis Package
 
 | Module | Purpose |
 |--------|---------|
 | `_constants.py` | SAMPLE_RATE, FFT_SIZE, HOP_SIZE, FREQS |
 | `_types.py` | `BeatEvent`, `BandState`, `AudioState`, `AudioSnapshot` |
-| `_spectrum.py` | `SpectrumEngine`: FFT, windowing, spectral flux |
-| `_bands.py` | Band definitions, `SpringBand`, `AdaptiveBand`, masks, A-weighting |
+| `_band_config.py` | `BandConfig`, `EnergyBandDef`, `DetectionBandDef`, `default_band_config()` |
+| `_spectrum.py` | `SpectrumEngine`: FFT, windowing, spectral flux, onset_strength, ZCR |
+| `_bands.py` | `SpringBand`, `AdaptiveBand`, `make_mask`, A-weighting |
+| `config.py` | Audio-only config (detection, stability, energy, density, tempo thresholds) |
 | `beat_detector.py` | `FluxBeatDetector`: onset detection with stability scaling |
-| `energy.py` | `EnergyAnalyzer`: per-band RMS + harmonic RMS |
+| `energy.py` | `EnergyAnalyzer`: per-band RMS/harmonic RMS, slow envelopes, section change |
 | `stability.py` | `MagnitudeStability`: per-bin EMA variance at two timescales |
-| `onset_density.py` | `OnsetDensityTracker`: per-band onset rate + accelerando signal |
+| `onset_density.py` | `OnsetDensityTracker`: per-band onset rate + per-band density delta |
+| `tempo_acf.py` | `AutocorrelationTempoTracker`: ACF-based tempo, confidence, BPM delta |
+| `tempo_scaler.py` | `TempoScaler`: sigmoid BPM → constant value mapping |
 | `drop_detector.py` | `DropDetector`: break detection from centroid energy dropout |
 | `bass_drop_detector.py` | `BassDropDetector`: break detection from sub-bass dropout |
-| `tempo_scaler.py` | `TempoScaler`: sigmoid BPM → constant value mapping |
 | `source.py` | `PipeWireSource`, `FeedSource`: signal input abstraction |
 | `processor.py` | `AudioProcessor` (orchestrator), `SyntheticAudioProcessor` (test) |
 
@@ -124,7 +134,7 @@ Each axis follows the `VisualAxis` protocol: `tick(audio, dt, clock)` + `contrib
 
 | Module | Input | Output |
 |--------|-------|--------|
-| `genome_axis.py` | beat events, onset density | `frame.genome` (morphed genome) |
+| `genome_axis.py` | beat events, onset density, section_change | `frame.genome` (morphed genome) |
 | `palette_axis.py` | snare/mid events | `frame.palette` (interpolated colors) |
 | `zoom_axis.py` | hihat/high events | `frame.genome.zoom` (multiplicative) |
 | `brightness_axis.py` | harmonic RMS | `frame.brightness` |
@@ -135,10 +145,11 @@ Each axis follows the `VisualAxis` protocol: `tick(audio, dt, clock)` + `contrib
 | Module | Purpose |
 |--------|---------|
 | `main.py` | `FlameSheepCore` (compositor), CLI, render loop |
-| `config.py` | TOML config system, hot-reloadable |
+| `config.py` | Visualization TOML config (genome, zoom, palette, drift), hot-reloadable |
+| `mode.py` | `ModeDetector`: three-state machine (beat/energy/idle) |
 | `genome.py` | `Genome`, `Transform`, variation packing, IFS parameters |
-| `drift_mode.py` | `DriftMode`: independent state machine for silence |
-| `tempo.py` | `TempoTracker`: IOI histogram, octave preference, effective BPM |
+| `drift_mode.py` | `DriftMode`: genome morph engine for idle mode |
+| `tempo.py` | `TempoTracker`: legacy IOI tracker (replaced by `tempo_acf.py` in audio package) |
 | `renderer.py` | GPU flame fractal rendering (compute shaders + tonemap) |
 | `scorer.py` | `BackgroundScorer`: CPU symmetry/aesthetic scoring process |
 | `symmetry.py` | Symmetry metrics: rotational, reflective, radial, self-similarity |
