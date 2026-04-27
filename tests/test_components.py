@@ -522,9 +522,16 @@ class TestModeDetector:
 
     def test_percussive_audio_enters_beat(self):
         md = ModeDetector()
-        # Any percussive audio exits idle immediately
+        # Highly percussive audio exits idle immediately
         md.tick(_audio(rms=0.1, percussiveness=0.8))
         assert md.mode == Mode.BEAT
+
+    def test_moderate_percussiveness_enters_energy_not_beat(self):
+        """Percussiveness between exit and enter thresholds (0.35-0.5)
+        should enter energy from idle, not beat."""
+        md = ModeDetector()
+        md.tick(_audio(rms=0.1, percussiveness=0.45))
+        assert md.mode == Mode.ENERGY
 
     def test_non_percussive_audio_enters_energy(self):
         md = ModeDetector()
