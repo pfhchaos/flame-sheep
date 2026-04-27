@@ -32,11 +32,12 @@ from tests.conftest import make_processor
 def _run_tempo_e2e(pattern: DrumPattern, min_duration: float = 20.0) -> float:
     """Run ACF tempo estimation on synthetic audio at HOP_SIZE resolution.
 
-    Bypasses AudioProcessor to use the same HOP_SIZE cadence as the
-    threaded path, giving the ACF tracker proper frame rate.
+    Uses the full pipeline (spectrum → detector → density → ACF) at
+    HOP_SIZE cadence to match the threaded path.
     """
     from flame_sheep_audio.stability import MagnitudeStability
     from flame_sheep_audio.beat_detector import FluxBeatDetector
+    from flame_sheep_audio.onset_density import OnsetDensityTracker
 
     pcm = pattern.render()
 
@@ -47,6 +48,8 @@ def _run_tempo_e2e(pattern: DrumPattern, min_duration: float = 20.0) -> float:
 
     engine = SpectrumEngine()
     stability = MagnitudeStability()
+    detector = FluxBeatDetector(sharpness=True, stability=stability)
+    density = OnsetDensityTracker()
     hop_dur = HOP_SIZE / SAMPLE_RATE
     tracker = AutocorrelationTempoTracker(hop_duration=hop_dur)
 
@@ -55,9 +58,11 @@ def _run_tempo_e2e(pattern: DrumPattern, min_duration: float = 20.0) -> float:
     for _ in range(40):
         frame = engine.push_hop(silence)
         stability.update(frame.magnitude)
+        detector.detect(frame)
         tracker.feed(0.0)
 
     # Feed at HOP_SIZE cadence (matches threaded path)
+    now = 0.0
     pos = 0
     while pos < len(pcm):
         chunk = pcm[pos:pos + HOP_SIZE]
@@ -65,7 +70,13 @@ def _run_tempo_e2e(pattern: DrumPattern, min_duration: float = 20.0) -> float:
             chunk = np.pad(chunk, (0, HOP_SIZE - len(chunk)))
         frame = engine.push_hop(chunk)
         stability.update(frame.magnitude)
-        tracker.feed(frame.onset_strength)
+        events = detector.detect(frame)
+        now += hop_dur
+        for e in events:
+            density.process_onset(e.kind, now)
+        density.update(now)
+        total_density = sum(density.densities.values())
+        tracker.feed(frame.onset_strength, onset_density=total_density)
         pos += HOP_SIZE
 
     return tracker.effective_bpm
