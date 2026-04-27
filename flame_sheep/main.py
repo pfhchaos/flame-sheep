@@ -286,15 +286,17 @@ class FlameSheepCore:
         self._genome_axis.next_loop()
 
     def song_started(self):
-        """Signal new song started — resets tempo, bands, drop detectors.
+        """Signal new song started — resets tempo, bands, drop detectors, mode.
         Injects a song_start event on the next tick via _pending_song_start.
         """
         self.audio.song_started()
         self.audio.reset_bands()
         self._drop_detector.reset()
         self._bass_drop_detector.reset()
+        self._mode.reset()  # drop to energy — must re-earn beat mode
+        self._mode.mode = Mode.ENERGY  # not idle — audio is playing
         self._pending_song_start = True
-        log.info('[song] reset tempo, bands, drop detectors')
+        log.info('[song] reset tempo, bands, drop detectors, mode')
 
     def hint_tempo(self, bpm: float):
         """Provide tempo hint from external source."""
