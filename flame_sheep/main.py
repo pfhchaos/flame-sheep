@@ -143,6 +143,7 @@ class FlameSheepCore:
             percussiveness=snap.percussiveness,
             bpm=snap.bpm,
             effective_bpm=snap.effective_bpm,
+            tempo_confidence=snap.tempo_confidence,
             tempo_saturated=snap.tempo_saturated,
             break_intensity=max(self._drop_detector.break_intensity,
                                 self._bass_drop_detector.break_intensity),

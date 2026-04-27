@@ -38,6 +38,7 @@ IDLE_EXIT_FRAMES = 1         # instant exit from idle on any audio
 # Thresholds (hysteresis: harder to enter beat than to stay)
 PERC_ENTER = 0.5             # percussiveness to enter beat mode
 PERC_EXIT = 0.35             # percussiveness to exit beat mode
+ACF_CONFIDENCE_ENTER = 0.7   # ACF confidence to enter beat (rhythmic non-percussive music)
 RMS_THRESHOLD = 0.0001       # broadband RMS below this = silence
 
 
@@ -71,10 +72,14 @@ class ModeDetector:
 
         is_silent = max_rms < RMS_THRESHOLD
         # Hysteresis: harder to enter beat than to stay
+        # ACF confidence as secondary: rhythmic non-percussive music
+        # (acoustic guitar, piano) has strong periodicity but low percussiveness
         if self.mode == Mode.BEAT:
-            is_percussive = self._perc_ema > PERC_EXIT
+            is_percussive = (self._perc_ema > PERC_EXIT
+                             or audio.tempo_confidence > ACF_CONFIDENCE_ENTER)
         else:
-            is_percussive = self._perc_ema > PERC_ENTER
+            is_percussive = (self._perc_ema > PERC_ENTER
+                             or audio.tempo_confidence > ACF_CONFIDENCE_ENTER)
 
         # Update counters
         if is_silent:
@@ -93,8 +98,9 @@ class ModeDetector:
         # State transitions
         if self.mode == Mode.IDLE:
             if not is_silent:
-                # Use raw percussiveness for instant idle exit (EMA is too slow)
-                if audio.percussiveness > PERC_ENTER:
+                # Use raw percussiveness or ACF confidence for instant idle exit
+                if (audio.percussiveness > PERC_ENTER
+                        or audio.tempo_confidence > ACF_CONFIDENCE_ENTER):
                     self.mode = Mode.BEAT
                 else:
                     self.mode = Mode.ENERGY
