@@ -35,8 +35,9 @@ BEAT_EXIT_FRAMES = 900       # ~15s of low percussiveness → exit beat
 ENERGY_TO_IDLE_FRAMES = 1800 # ~30s of silence → enter idle
 IDLE_EXIT_FRAMES = 1         # instant exit from idle on any audio
 
-# Thresholds
-PERC_THRESHOLD = 0.4         # percussiveness above this = music
+# Thresholds (hysteresis: harder to enter beat than to stay)
+PERC_ENTER = 0.5             # percussiveness to enter beat mode
+PERC_EXIT = 0.35             # percussiveness to exit beat mode
 RMS_THRESHOLD = 0.0001       # broadband RMS below this = silence
 
 
@@ -69,7 +70,11 @@ class ModeDetector:
         max_rms = max(b.rms for b in audio.bands.values())
 
         is_silent = max_rms < RMS_THRESHOLD
-        is_percussive = self._perc_ema > PERC_THRESHOLD
+        # Hysteresis: harder to enter beat than to stay
+        if self.mode == Mode.BEAT:
+            is_percussive = self._perc_ema > PERC_EXIT
+        else:
+            is_percussive = self._perc_ema > PERC_ENTER
 
         # Update counters
         if is_silent:
@@ -89,7 +94,7 @@ class ModeDetector:
         if self.mode == Mode.IDLE:
             if not is_silent:
                 # Use raw percussiveness for instant idle exit (EMA is too slow)
-                if audio.percussiveness > PERC_THRESHOLD:
+                if audio.percussiveness > PERC_ENTER:
                     self.mode = Mode.BEAT
                 else:
                     self.mode = Mode.ENERGY
