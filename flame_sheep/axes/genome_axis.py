@@ -93,12 +93,19 @@ class GenomeAxis:
         else:
             self._prefetch_genome()
 
+    _section_log_counter = 0
+
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
+        # Log section_change periodically for tuning
+        self._section_log_counter += 1
+        if self._section_log_counter % 300 == 0:  # every ~5s at 60fps
+            log.debug(f'[section] value={audio.section_change:.4f}')
+
         # Detect section change — flag consumed on next strong beat
-        if abs(audio.section_change) > self.SECTION_CHANGE_THRESHOLD:
+        if audio.section_change > self.SECTION_CHANGE_THRESHOLD:
             if not self._section_change_pending:
                 self._section_change_pending = True
-                log.info(f'[section] change detected ({audio.section_change:+.2f}), '
+                log.info(f'[section] change detected ({audio.section_change:.3f}), '
                          f'will swap loop on next strong beat')
 
         # Handle discrete events
