@@ -22,6 +22,7 @@ from flame_sheep.axes.brightness_axis import BrightnessAxis
 from flame_sheep.axes.detail_axis import DetailAxis
 from flame_sheep.drift_mode import DriftMode
 from flame_sheep.axes.genome_axis import GenomeAxis
+from flame_sheep.mode import ModeDetector, Mode
 
 from .conftest import trivial_genome
 
@@ -456,40 +457,21 @@ class TestDriftModeUnit:
         drift = DriftMode(genome_factory=factory)
         return drift, genome_axis
 
-    def test_not_active_when_loud(self):
+    def test_inactive_by_default(self):
         drift, _ = self._make()
-        for i in range(600):
-            drift.tick(_audio(rms=0.1), 1/60, float(i))
         assert not drift.active
 
-    def test_activates_after_quiet(self):
+    def test_morph_advances_when_active(self):
         drift, genome_axis = self._make()
-        for i in range(drift.ENTER_FRAMES + 1):
-            drift.tick(_audio(rms=0.0), 1/60, float(i))
-            if drift.active:
-                drift.enter(genome_axis)
-                break
-        assert drift.active
+        drift.active = True
+        drift.enter(genome_axis)
+        drift.tick(_audio(rms=0.0), 1/60, 0.0)
+        assert drift.morph_t > 0.0
 
-    def test_deactivates_on_sound(self):
+    def test_morph_does_not_advance_when_inactive(self):
         drift, genome_axis = self._make()
-        # Enter drift
-        for i in range(drift.ENTER_FRAMES + 1):
-            drift.tick(_audio(rms=0.0), 1/60, float(i))
-            if drift.active:
-                drift.enter(genome_axis)
-                break
-        assert drift.active
-        # Loud frame exits
-        drift.tick(_audio(rms=0.1), 1/60, 999.0)
-        assert not drift.active
-
-    def test_loud_resets_quiet_counter(self):
-        drift, _ = self._make()
-        for i in range(drift.ENTER_FRAMES - 10):
-            drift.tick(_audio(rms=0.0), 1/60, float(i))
-        drift.tick(_audio(rms=0.1), 1/60, 999.0)
-        assert drift._quiet_frames == 0
+        drift.tick(_audio(rms=0.0), 1/60, 0.0)
+        assert drift.morph_t == 0.0
 
     def test_morph_completes_in_reasonable_time(self):
         """Fixed morph speed should complete within ~20 seconds."""
@@ -520,6 +502,69 @@ class TestDriftModeUnit:
         expected = drift.current_genome.lerp(drift.target_genome, drift.morph_t)
         result = drift.exit()
         assert result.distance(expected) < 1e-6
+
+
+# -------------------------------------------------------------------
+# ModeDetector
+# -------------------------------------------------------------------
+
+class TestModeDetector:
+
+    def test_starts_idle(self):
+        md = ModeDetector()
+        assert md.mode == Mode.IDLE
+
+    def test_silence_stays_idle(self):
+        md = ModeDetector()
+        for _ in range(100):
+            md.tick(_audio(rms=0.0, percussiveness=0.0))
+        assert md.mode == Mode.IDLE
+
+    def test_percussive_audio_enters_beat(self):
+        md = ModeDetector()
+        # Any percussive audio exits idle immediately
+        md.tick(_audio(rms=0.1, percussiveness=0.8))
+        assert md.mode == Mode.BEAT
+
+    def test_non_percussive_audio_enters_energy(self):
+        md = ModeDetector()
+        # Non-percussive audio exits idle to energy
+        md.tick(_audio(rms=0.1, percussiveness=0.1))
+        assert md.mode == Mode.ENERGY
+
+    def test_energy_to_beat_requires_sustained_percussiveness(self):
+        md = ModeDetector()
+        md.mode = Mode.ENERGY
+        # One frame of percussiveness isn't enough
+        md.tick(_audio(rms=0.1, percussiveness=0.8))
+        assert md.mode == Mode.ENERGY
+        # Sustained high percussiveness transitions to beat
+        for _ in range(100):
+            md.tick(_audio(rms=0.1, percussiveness=0.8))
+        assert md.mode == Mode.BEAT
+
+    def test_beat_to_energy_requires_long_quiet(self):
+        md = ModeDetector()
+        md.mode = Mode.BEAT
+        md._perc_ema = 0.8  # was confident
+        # Brief non-percussive section shouldn't exit beat
+        for _ in range(60):  # 1 second
+            md.tick(_audio(rms=0.1, percussiveness=0.1))
+        assert md.mode == Mode.BEAT
+
+    def test_speech_stays_energy(self):
+        """Speech-level percussiveness (~0.27) should not trigger beat mode."""
+        md = ModeDetector()
+        md.mode = Mode.ENERGY
+        for _ in range(200):
+            md.tick(_audio(rms=0.1, percussiveness=0.27))
+        assert md.mode == Mode.ENERGY
+
+    def test_reset_returns_to_idle(self):
+        md = ModeDetector()
+        md.mode = Mode.BEAT
+        md.reset()
+        assert md.mode == Mode.IDLE
 
 
 # -------------------------------------------------------------------

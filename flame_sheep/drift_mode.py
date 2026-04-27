@@ -61,18 +61,8 @@ class DriftMode:
         self._genome_lock = threading.Lock()
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
-        """Monitor broadband RMS for activation; advance morph when active."""
-        # Use max RMS across all bands — any audible energy keeps us out of drift
-        max_rms = max(b.rms for b in audio.bands.values())
-        if max_rms < self.RMS_THRESHOLD:
-            self._quiet_frames += 1
-            if self._quiet_frames >= self.ENTER_FRAMES and not self.active:
-                self.active = True
-        else:
-            self._quiet_frames = 0
-            if self.active:
-                self.active = False
-
+        """Advance morph when active. Mode activation is managed externally
+        by ModeDetector — this class no longer decides when to enter/exit."""
         if not self.active:
             return
 
