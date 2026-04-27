@@ -99,7 +99,7 @@ class GenomeAxis:
         # Log section_change periodically for tuning
         self._section_log_counter += 1
         if self._section_log_counter % 300 == 0:  # every ~5s at 60fps
-            log.debug(f'[section] value={audio.section_change:.4f}')
+            log.info(f'[section] value={audio.section_change:.4f}')
 
         # Detect section change — flag consumed on next strong beat
         if audio.section_change > self.SECTION_CHANGE_THRESHOLD:
