@@ -73,7 +73,8 @@ class GenomeAxis:
 
         # Section change: consumed on next strong beat to trigger loop swap
         self._section_change_pending = False
-        self.SECTION_CHANGE_THRESHOLD = 0.3
+        self.SECTION_CHANGE_THRESHOLD = 1.0
+        self._section_warmup = 0  # frames since last reset, suppress during warmup
 
         # Loop playback
         self._loop_genomes: list[Genome] = []
@@ -98,11 +99,14 @@ class GenomeAxis:
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
         # Log section_change periodically for tuning
         self._section_log_counter += 1
+        self._section_warmup += 1
         if self._section_log_counter % 300 == 0:  # every ~5s at 60fps
             log.info(f'[section] value={audio.section_change:.4f}')
 
-        # Detect section change — flag consumed on next strong beat
-        if audio.section_change > self.SECTION_CHANGE_THRESHOLD:
+        # Detect section change — suppress during warmup (~30s for slow EMA to converge)
+        WARMUP_FRAMES = 1800  # ~30s at 60fps
+        if (audio.section_change > self.SECTION_CHANGE_THRESHOLD
+                and self._section_warmup > WARMUP_FRAMES):
             if not self._section_change_pending:
                 self._section_change_pending = True
                 log.info(f'[section] change detected ({audio.section_change:.3f}), '
@@ -202,6 +206,8 @@ class GenomeAxis:
         self._last_kick_time = 0.0
         self._recent_kick_energy = 0.5
         self._break_damping = 1.0
+        self._section_change_pending = False
+        self._section_warmup = 0
         # New song, new loop
         if self._lib is not None and self._lib.loop_count() > 1:
             self.next_loop()
