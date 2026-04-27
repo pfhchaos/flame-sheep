@@ -32,24 +32,39 @@ class GenomeAxis:
         morph_speed: how fast morph_t advances per frame
     """
 
-    LOOP_HISTORY_SIZE   = 8
+    LOOP_HISTORY_SIZE = 8
 
     @property
-    def DRIFT_MORPH_SPEED(self): return cfg.genome.drift_morph_speed
+    def DRIFT_MORPH_SPEED(self):
+        return cfg.genome.drift_morph_speed
+
     @property
-    def KICK_MORPH_PULSE(self): return cfg.genome.kick_morph_pulse
+    def KICK_MORPH_PULSE(self):
+        return cfg.genome.kick_morph_pulse
+
     @property
-    def BREAK_DECAY(self): return cfg.genome.break_decay
+    def BREAK_DECAY(self):
+        return cfg.genome.break_decay
+
     @property
-    def DENSITY_MORPH_SCALE(self): return cfg.genome.density_morph_scale
+    def DENSITY_MORPH_SCALE(self):
+        return cfg.genome.density_morph_scale
+
     @property
-    def STRONG_BEAT_THRESHOLD(self): return cfg.genome.strong_beat_threshold
+    def STRONG_BEAT_THRESHOLD(self):
+        return cfg.genome.strong_beat_threshold
+
     @property
-    def DENSITY_DAMPING(self): return cfg.genome.density_damping
+    def DENSITY_DAMPING(self):
+        return cfg.genome.density_damping
+
     @property
-    def CENTROID_SWAP_THRESHOLD(self): return cfg.genome.centroid_swap_threshold
+    def CENTROID_SWAP_THRESHOLD(self):
+        return cfg.genome.centroid_swap_threshold
+
     @property
-    def MIN_GENOME_DISTANCE(self): return cfg.drift.min_genome_distance
+    def MIN_GENOME_DISTANCE(self):
+        return cfg.drift.min_genome_distance
 
     def __init__(self, genome_factory, lib=None, rng=None):
         self.enabled = True
@@ -59,21 +74,20 @@ class GenomeAxis:
 
         # Morph state
         self.current_genome = self._genome_factory()
-        self.target_genome  = self._genome_factory()
-        self.morph_t        = 0.0
-        self.morph_speed    = self.DRIFT_MORPH_SPEED
+        self.target_genome = self._genome_factory()
+        self.morph_t = 0.0
+        self.morph_speed = self.DRIFT_MORPH_SPEED
 
         # Prefetch
         self._next_genome: Genome | None = None
         self._genome_lock = threading.Lock()
-
 
         # Kick energy tracking (for strong beat detection)
         self._recent_kick_energy = 0.5
 
         # Section change: consumed on next strong beat to trigger loop swap
         self._section_change_pending = False
-        self.SECTION_CHANGE_THRESHOLD = 1.0
+        self.SECTION_CHANGE_THRESHOLD = 0.6
         self._section_warmup = 0  # frames since last reset, suppress during warmup
 
         # Loop playback
@@ -101,35 +115,44 @@ class GenomeAxis:
         self._section_log_counter += 1
         self._section_warmup += 1
         if self._section_log_counter % 300 == 0:  # every ~5s at 60fps
-            log.info(f'[section] value={audio.section_change:.4f}')
+            log.info(f"[section] value={audio.section_change:.4f}")
 
         # Detect section change — suppress during warmup (~30s for slow EMA to converge)
         WARMUP_FRAMES = 1800  # ~30s at 60fps
-        if (audio.section_change > self.SECTION_CHANGE_THRESHOLD
-                and self._section_warmup > WARMUP_FRAMES):
+        if (
+            audio.section_change > self.SECTION_CHANGE_THRESHOLD
+            and self._section_warmup > WARMUP_FRAMES
+        ):
             if not self._section_change_pending:
                 self._section_change_pending = True
-                log.info(f'[section] change detected ({audio.section_change:.3f}), '
-                         f'will swap loop on next strong beat')
+                log.info(
+                    f"[section] change detected ({audio.section_change:.3f}), "
+                    f"will swap loop on next strong beat"
+                )
 
         # Handle discrete events
         for event in audio.events:
-            if event.kind == 'kick':
+            if event.kind == "kick":
                 self._handle_kick(event, clock, audio)
-            elif event.kind == 'song_start':
+            elif event.kind == "song_start":
                 self._handle_song_start()
 
         # In low-percussiveness mode, a large centroid shift triggers a swap
-        if (audio.percussiveness < cfg.genome.centroid_swap_perc_gate
-                and audio.centroid_delta > self.CENTROID_SWAP_THRESHOLD
-                and self.morph_t > 0.3):
+        if (
+            audio.percussiveness < cfg.genome.centroid_swap_perc_gate
+            and audio.centroid_delta > self.CENTROID_SWAP_THRESHOLD
+            and self.morph_t > 0.3
+        ):
             self.current_genome = self.current_genome.lerp(
-                self.target_genome, self.morph_t)
+                self.target_genome, self.morph_t
+            )
             self._swap_next_genome()
             self.morph_t = 0.0
             self.morph_speed = 0.02
-            log.debug(f'[centroid swap] delta={audio.centroid_delta:.0f}Hz '
-                      f'perc={audio.percussiveness:.2f}')
+            log.debug(
+                f"[centroid swap] delta={audio.centroid_delta:.0f}Hz "
+                f"perc={audio.percussiveness:.2f}"
+            )
 
         # Break damping: exponential slowdown during breaks, symmetric recovery
         if audio.break_intensity > 0:
@@ -141,22 +164,24 @@ class GenomeAxis:
         perc_scale = 0.2 + 0.8 * min(1.0, audio.percussiveness / 0.5)
 
         # Advance morph
-        self.morph_t = min(1.0,
-            self.morph_t + self.morph_speed * perc_scale * self._break_damping)
+        self.morph_t = min(
+            1.0, self.morph_t + self.morph_speed * perc_scale * self._break_damping
+        )
 
         if self.morph_t >= 1.0:
-
             self.current_genome = self.target_genome
-            self.morph_t        = 0.0
+            self.morph_t = 0.0
             self._swap_next_genome()
-            self.morph_speed    = self.DRIFT_MORPH_SPEED
+            self.morph_speed = self.DRIFT_MORPH_SPEED
 
         # Ramp morph speed toward density-driven baseline
         # Kick + snare drive morph (rhythm section), clap/hihat drive zoom
-        rhythm_density = (audio.bands['kick'].onset_density
-                          + audio.bands['snare'].onset_density * 0.5)
-        density_speed = (self.DRIFT_MORPH_SPEED
-                         + rhythm_density * self.DENSITY_MORPH_SCALE)
+        rhythm_density = (
+            audio.bands["kick"].onset_density + audio.bands["snare"].onset_density * 0.5
+        )
+        density_speed = (
+            self.DRIFT_MORPH_SPEED + rhythm_density * self.DENSITY_MORPH_SCALE
+        )
         # Blend toward baseline — ramps up after swap, decays down after pulse
         self.morph_speed = 0.95 * self.morph_speed + 0.05 * density_speed
 
@@ -169,37 +194,42 @@ class GenomeAxis:
         since = clock - self._last_kick_time
         self._last_kick_time = clock
 
-        self._recent_kick_energy = (
-            self._recent_kick_energy * 0.8 + event.energy * 0.2)
+        self._recent_kick_energy = self._recent_kick_energy * 0.8 + event.energy * 0.2
 
-        kick_density = (audio.bands['kick'].onset_density
-                        if audio else 0.0)
+        kick_density = audio.bands["kick"].onset_density if audio else 0.0
         density_scale = 1.0 / (1.0 + kick_density * self.DENSITY_DAMPING)
+
+        # Section change pending → consume on any kick (don't wait for strong beat)
+        if self._section_change_pending and self._lib is not None:
+            self._section_change_pending = False
+            self.current_genome = self.current_genome.lerp(
+                self.target_genome, self.morph_t
+            )
+            self.next_loop()
+            self.morph_t = 0.0
+            log.info(f"[SWAP+LOOP]  section change consumed on beat")
+            return
 
         # Strong beat → swap direction (harder to trigger at high density)
         swap_thresh = self.STRONG_BEAT_THRESHOLD * (1.0 + kick_density * 0.5)
         if event.energy > self._recent_kick_energy * swap_thresh:
-            # Section change pending → swap loop instead of just genome
-            if self._section_change_pending and self._lib is not None:
-                self._section_change_pending = False
-                self.current_genome = self.current_genome.lerp(
-                    self.target_genome, self.morph_t)
-                self.next_loop()
-                self.morph_t = 0.0
-                log.info(f'[SWAP+LOOP]  section change consumed on strong beat')
-            else:
-                self.current_genome = self.current_genome.lerp(
-                    self.target_genome, self.morph_t)
-                self._swap_next_genome()
-                self.morph_t = 0.0
-                dist = self.current_genome.distance(self.target_genome)
-                log.debug(f'[SWAP]  +{since:.3f}s  energy={event.energy:.2f}  '
-                          f'avg={self._recent_kick_energy:.2f}  dist={dist:.3f}')
+            self.current_genome = self.current_genome.lerp(
+                self.target_genome, self.morph_t
+            )
+            self._swap_next_genome()
+            self.morph_t = 0.0
+            dist = self.current_genome.distance(self.target_genome)
+            log.debug(
+                f"[SWAP]  +{since:.3f}s  energy={event.energy:.2f}  "
+                f"avg={self._recent_kick_energy:.2f}  dist={dist:.3f}"
+            )
         else:
             # Normal kick — pulse morph speed (scaled by density)
-            self.morph_speed = min(0.15,
-                self.morph_speed + event.energy * self.KICK_MORPH_PULSE * density_scale)
-            log.debug(f'[kick]  +{since:.3f}s  energy={event.energy:.2f}')
+            self.morph_speed = min(
+                0.15,
+                self.morph_speed + event.energy * self.KICK_MORPH_PULSE * density_scale,
+            )
+            log.debug(f"[kick]  +{since:.3f}s  energy={event.energy:.2f}")
 
     def _handle_song_start(self):
         """Reset state for new song — swap loop + reset energy tracking."""
@@ -211,7 +241,7 @@ class GenomeAxis:
         # New song, new loop
         if self._lib is not None and self._lib.loop_count() > 1:
             self.next_loop()
-            log.info(f'[song_start] switched to loop #{self.active_loop_id}')
+            log.info(f"[song_start] switched to loop #{self.active_loop_id}")
 
     def accept_handoff(self, genome: Genome, loop_id: int | None = None):
         """Receive genome from drift mode on transition back to active."""
@@ -227,13 +257,12 @@ class GenomeAxis:
 
     def force_swap(self):
         """Immediately swap to a new genome."""
-        self.current_genome = self.current_genome.lerp(
-            self.target_genome, self.morph_t)
+        self.current_genome = self.current_genome.lerp(self.target_genome, self.morph_t)
         self._swap_next_genome()
-        self.morph_t     = 0.0
+        self.morph_t = 0.0
         self.morph_speed = 0.15
         self.needs_walker_reset = True
-        log.info('force swap')
+        log.info("force swap")
 
     # --- Loop management ---
 
@@ -260,40 +289,40 @@ class GenomeAxis:
         self.morph_t = 0.0
         self.morph_speed = 0.05
         self.needs_walker_reset = True
-        log.info(f'[loop] loaded #{loop_id} ({n} genomes, start={start})')
+        log.info(f"[loop] loaded #{loop_id} ({n} genomes, start={start})")
         for i, g in enumerate(self._loop_genomes):
-            marker = ' <--' if i == start else ''
-            log.info(f'  [{i}] {_describe_genome(g)}{marker}')
+            marker = " <--" if i == start else ""
+            log.info(f"  [{i}] {_describe_genome(g)}{marker}")
 
     def next_loop(self):
         if self._lib is None or self._lib.loop_count() < 1:
             return
         top = self._lib.top_loops(n=20)
-        candidates = [(lid, info) for lid, info in top
-                      if lid not in self._loop_history]
+        candidates = [(lid, info) for lid, info in top if lid not in self._loop_history]
         if not candidates:
-            candidates = [(lid, info) for lid, info in top
-                          if lid != self.active_loop_id]
+            candidates = [
+                (lid, info) for lid, info in top if lid != self.active_loop_id
+            ]
         if not candidates:
             candidates = top
-        fitnesses = np.array([max(info['fitness'], 0.01)
-                              for _, info in candidates])
+        fitnesses = np.array([max(info["fitness"], 0.01) for _, info in candidates])
         weights = fitnesses / fitnesses.sum()
         idx = self.rng.choice(len(candidates), p=weights)
         lid, info = candidates[idx]
-        self._load_and_track(lid, info['fitness'])
+        self._load_and_track(lid, info["fitness"])
 
     def _load_and_track(self, loop_id: int, fitness: float | None = None):
         self._loop_history.append(loop_id)
         self.load_loop(loop_id)
         if fitness is not None:
-            log.info(f'[loop] fitness={fitness:.3f}')
+            log.info(f"[loop] fitness={fitness:.3f}")
 
     # --- Genome prefetch ---
 
     def _prefetch_genome(self):
         current_snapshot = self.current_genome
         factory = self._genome_factory
+
         def _gen():
             for _ in range(20):
                 g = factory()
@@ -301,6 +330,7 @@ class GenomeAxis:
                     break
             with self._genome_lock:
                 self._next_genome = g
+
         threading.Thread(target=_gen, daemon=True).start()
 
     def _swap_next_genome(self):
@@ -308,21 +338,20 @@ class GenomeAxis:
             self._loop_pos = (self._loop_pos + 1) % len(self._loop_genomes)
             self.target_genome = self._loop_genomes[self._loop_pos]
             if self._loop_pos == 0:
-                log.info(f'[loop] cycle complete, {len(self._loop_genomes)} genomes')
+                log.info(f"[loop] cycle complete, {len(self._loop_genomes)} genomes")
         else:
             with self._genome_lock:
                 if self._next_genome is not None:
                     self.target_genome = self._next_genome
-                    self._next_genome  = None
+                    self._next_genome = None
                 else:
                     self.target_genome = self._genome_factory()
             self._prefetch_genome()
-            log.info(f'[genome] {_describe_genome(self.target_genome)}')
+            log.info(f"[genome] {_describe_genome(self.target_genome)}")
 
 
 # Reverse map: variation index -> name
-_VAR_NAMES = {v: k.lower() for k, v in vars(Variation).items()
-              if isinstance(v, int)}
+_VAR_NAMES = {v: k.lower() for k, v in vars(Variation).items() if isinstance(v, int)}
 
 
 def _describe_genome(g: Genome) -> str:
@@ -331,9 +360,12 @@ def _describe_genome(g: Genome) -> str:
     for i, t in enumerate(sorted(g.transforms, key=lambda t: -t.weight)):
         if t.weight < 0.05:
             continue
-        active = [(w, _VAR_NAMES.get(j, f'v{j}'))
-                  for j, w in enumerate(t.variations) if w > 0.01]
+        active = [
+            (w, _VAR_NAMES.get(j, f"v{j}"))
+            for j, w in enumerate(t.variations)
+            if w > 0.01
+        ]
         active.sort(key=lambda x: -x[0])
-        names = '+'.join(n for _, n in active[:3])
-        parts.append(f'{names}({t.weight:.2f})')
-    return '  '.join(parts) if parts else '(empty)'
+        names = "+".join(n for _, n in active[:3])
+        parts.append(f"{names}({t.weight:.2f})")
+    return "  ".join(parts) if parts else "(empty)"
