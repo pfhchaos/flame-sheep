@@ -75,11 +75,15 @@ class ModeDetector:
         # ACF confidence as secondary: rhythmic non-percussive music
         # (acoustic guitar, piano) has strong periodicity but low percussiveness
         if self.mode == Mode.BEAT:
+            # Stay in beat: either percussiveness OR ACF confidence
             is_percussive = (self._perc_ema > PERC_EXIT
                              or audio.tempo_confidence > ACF_CONFIDENCE_ENTER)
         else:
+            # Enter beat: percussiveness alone (drums), OR
+            # both moderate percussiveness AND ACF confidence (rhythmic non-percussive)
             is_percussive = (self._perc_ema > PERC_ENTER
-                             or audio.tempo_confidence > ACF_CONFIDENCE_ENTER)
+                             or (self._perc_ema > PERC_EXIT
+                                 and audio.tempo_confidence > ACF_CONFIDENCE_ENTER))
 
         # Update counters
         if is_silent:
@@ -98,9 +102,9 @@ class ModeDetector:
         # State transitions
         if self.mode == Mode.IDLE:
             if not is_silent:
-                # Use raw percussiveness or ACF confidence for instant idle exit
-                if (audio.percussiveness > PERC_ENTER
-                        or audio.tempo_confidence > ACF_CONFIDENCE_ENTER):
+                # Use raw percussiveness for instant idle exit
+                # ACF confidence not available yet (needs signal to build)
+                if audio.percussiveness > PERC_ENTER:
                     self.mode = Mode.BEAT
                 else:
                     self.mode = Mode.ENERGY
