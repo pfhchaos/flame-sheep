@@ -75,9 +75,13 @@ class ModeDetector:
         # ACF confidence as secondary: rhythmic non-percussive music
         # (acoustic guitar, piano) has strong periodicity but low percussiveness
         if self.mode == Mode.BEAT:
-            # Stay in beat: either percussiveness OR ACF confidence
+            # Stay in beat: percussiveness alone (drums), OR
+            # lower percussiveness AND ACF confidence (rhythmic content).
+            # Speech (~0.3 perc, ~0.4 acf) fails both conditions.
+            PERC_STAY = 0.25
             is_percussive = (self._perc_ema > PERC_EXIT
-                             or audio.tempo_confidence > ACF_CONFIDENCE_ENTER)
+                             or (self._perc_ema > PERC_STAY
+                                 and audio.tempo_confidence > ACF_CONFIDENCE_ENTER))
         else:
             # Enter beat: percussiveness alone (drums), OR
             # both moderate percussiveness AND ACF confidence (rhythmic non-percussive)
