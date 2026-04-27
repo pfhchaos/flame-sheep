@@ -37,6 +37,7 @@ from .axes.detail_axis import DetailAxis
 from .axes.genome_axis import GenomeAxis
 from .axes.palette_axis import PaletteAxis
 from .drift_mode import DriftMode
+from .mode import ModeDetector, Mode
 
 
 # Set by main() before run_window_config — workaround for moderngl-window
@@ -82,6 +83,7 @@ class FlameSheepCore:
         self._brightness_axis = BrightnessAxis()
         self._detail_axis = DetailAxis()
         self._drift_mode = DriftMode(genome_factory=factory, lib=lib, rng=self.rng)
+        self._mode = ModeDetector()
         # Drop detection
         self._drop_detector = DropDetector()
         self._bass_drop_detector = BassDropDetector()
@@ -147,29 +149,45 @@ class FlameSheepCore:
         )
 
         # --- Mode transitions ---
-        was_drifting = self._drift_mode.active
-        self._drift_mode.tick(audio, frame_time, now)
-        is_drifting = self._drift_mode.active
+        old_mode = self._mode.mode
+        current_mode = self._mode.tick(audio)
 
-        if not was_drifting and is_drifting:
+        # Drift mode still manages idle genome morphing
+        was_drifting = self._drift_mode.active
+        is_idle = current_mode == Mode.IDLE
+
+        if is_idle and not was_drifting:
+            self._drift_mode.active = True
             self._drift_mode.enter(self._genome_axis)
-            # Music stopped — reset break detectors so quiet intro
-            # of next song doesn't trigger a false break
             self._drop_detector.reset()
             self._bass_drop_detector.reset()
-        elif was_drifting and not is_drifting:
+        elif not is_idle and was_drifting:
+            self._drift_mode.active = False
             self._genome_axis.accept_handoff(
                 self._drift_mode.exit(),
                 loop_id=self._drift_mode.active_loop_id)
 
-        # Shared axes always tick
-        self._palette_axis.tick(audio, frame_time, now)
-        self._zoom_axis.tick(audio, frame_time, now)
+        # Advance drift morph when idle
+        if is_idle:
+            self._drift_mode.morph_t = min(1.0,
+                self._drift_mode.morph_t + self._drift_mode.MORPH_SPEED)
+            if self._drift_mode.morph_t >= 1.0:
+                self._drift_mode.current_genome = self._drift_mode.target_genome
+                self._drift_mode.morph_t = 0.0
+                self._drift_mode._swap_next_genome()
+
+        # Tick axes based on mode
+        # Brightness/detail always tick (driven by slow envelope, always useful)
         self._brightness_axis.tick(audio, frame_time, now)
         self._detail_axis.tick(audio, frame_time, now)
 
-        # Only active mode's genome ticks
-        if not is_drifting:
+        if current_mode == Mode.BEAT:
+            # Full beat-reactive response
+            self._palette_axis.tick(audio, frame_time, now)
+            self._zoom_axis.tick(audio, frame_time, now)
+            self._genome_axis.tick(audio, frame_time, now)
+        elif current_mode == Mode.ENERGY:
+            # Genome drifts slowly, no palette/zoom events
             self._genome_axis.tick(audio, frame_time, now)
 
         # Assemble frame state
@@ -182,7 +200,7 @@ class FlameSheepCore:
         )
 
         # Genome contribution from whichever mode is active
-        if is_drifting:
+        if is_idle:
             self._drift_mode.contribute(frame)
         else:
             self._genome_axis.contribute(frame)
