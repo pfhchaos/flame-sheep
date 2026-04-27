@@ -22,8 +22,13 @@ import numpy as np
 
 sys.path.insert(0, '.')
 
-from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE, AudioProcessor
-from flame_sheep_audio.source import FeedSource
+from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE
+from flame_sheep_audio._spectrum import SpectrumEngine
+from flame_sheep_audio.beat_detector import FluxBeatDetector
+from flame_sheep_audio.energy import EnergyAnalyzer
+from flame_sheep_audio.stability import MagnitudeStability
+from flame_sheep_audio.onset_density import OnsetDensityTracker
+from flame_sheep_audio.tempo_acf import AutocorrelationTempoTracker
 
 
 def resample_to_48k(audio: np.ndarray, orig_sr: int = 44100) -> np.ndarray:
@@ -56,7 +61,10 @@ def reference_bpm(drums_audio: np.ndarray, sr: int) -> float:
 def estimate_bpm_pipeline(mix_audio: np.ndarray, orig_sr: int) -> float:
     """Run our full pipeline on mix audio and return estimated BPM.
 
-    Uses AudioProcessor directly so the eval matches the production path.
+    Uses HOP_SIZE cadence with push_hop to match the threaded production
+    path. Constructs the full pipeline (spectrum → stability → detector →
+    density → ACF tempo) so all signals (including onset density for
+    octave disambiguation) are present.
     """
     mix_48k = resample_to_48k(mix_audio, orig_sr)
     if mix_48k.ndim > 1:
@@ -64,26 +72,40 @@ def estimate_bpm_pipeline(mix_audio: np.ndarray, orig_sr: int) -> float:
     else:
         mono = mix_48k.astype(np.float32)
 
-    proc = AudioProcessor(source=FeedSource())
+    engine = SpectrumEngine()
+    stability = MagnitudeStability()
+    detector = FluxBeatDetector(sharpness=True, stability=stability)
+    density = OnsetDensityTracker()
+    hop_dur = HOP_SIZE / SAMPLE_RATE
+    tracker = AutocorrelationTempoTracker(hop_duration=hop_dur)
 
     # Prime
-    silence = np.zeros(FFT_SIZE, dtype=np.float32)
-    for _ in range(15):
-        proc.feed(silence)
-        proc.process()
+    silence = np.zeros(HOP_SIZE, dtype=np.float32)
+    for _ in range(40):
+        frame = engine.push_hop(silence)
+        stability.update(frame.magnitude)
+        detector.detect(frame)
+        tracker.feed(0.0)
 
-    # Process
+    # Process at HOP_SIZE cadence (matches threaded path)
+    now = 0.0
     pos = 0
     while pos < len(mono):
-        chunk = mono[pos:pos + FFT_SIZE]
-        if len(chunk) < FFT_SIZE:
-            chunk = np.pad(chunk, (0, FFT_SIZE - len(chunk)))
-        proc.feed(chunk)
-        proc.process()
-        pos += FFT_SIZE
+        chunk = mono[pos:pos + HOP_SIZE]
+        if len(chunk) < HOP_SIZE:
+            chunk = np.pad(chunk, (0, HOP_SIZE - len(chunk)))
+        frame = engine.push_hop(chunk)
+        stability.update(frame.magnitude)
+        events = detector.detect(frame)
+        now += hop_dur
+        for e in events:
+            density.process_onset(e.kind, now)
+        density.update(now)
+        total_density = sum(density.densities.values())
+        tracker.feed(frame.onset_strength, onset_density=total_density)
+        pos += HOP_SIZE
 
-    snap = proc.drain()
-    return snap.effective_bpm
+    return tracker.effective_bpm
 
 
 def bpm_exact(estimated: float, reference: float, tolerance_pct: float = 4.0) -> bool:
