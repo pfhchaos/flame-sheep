@@ -54,6 +54,10 @@ class ModeDetector:
         self._perc_ema = 0.0    # smoothed percussiveness (start low = unknown)
         self._perc_alpha = 0.95 # EMA smoothing for percussiveness
 
+        # Energy mode disabled pending better speech/music discrimination.
+        # All non-silent audio goes to beat mode for now.
+        self._energy_mode_enabled = False
+
         # Frame counters for hysteresis
         self._beat_frames = 0   # frames of high percussiveness
         self._quiet_frames = 0  # frames of low percussiveness (in beat mode)
@@ -106,12 +110,13 @@ class ModeDetector:
         # State transitions
         if self.mode == Mode.IDLE:
             if not is_silent:
-                # Use raw percussiveness for instant idle exit
-                # ACF confidence not available yet (needs signal to build)
-                if audio.percussiveness > PERC_ENTER:
-                    self.mode = Mode.BEAT
+                if self._energy_mode_enabled:
+                    if audio.percussiveness > PERC_ENTER:
+                        self.mode = Mode.BEAT
+                    else:
+                        self.mode = Mode.ENERGY
                 else:
-                    self.mode = Mode.ENERGY
+                    self.mode = Mode.BEAT
 
         elif self.mode == Mode.ENERGY:
             if self._beat_frames >= BEAT_ENTER_FRAMES:
@@ -120,7 +125,9 @@ class ModeDetector:
                 self.mode = Mode.IDLE
 
         elif self.mode == Mode.BEAT:
-            if self._quiet_frames >= BEAT_EXIT_FRAMES:
+            if is_silent and self._silence_frames >= ENERGY_TO_IDLE_FRAMES:
+                self.mode = Mode.IDLE
+            elif self._energy_mode_enabled and self._quiet_frames >= BEAT_EXIT_FRAMES:
                 if is_silent:
                     self.mode = Mode.IDLE
                 else:
