@@ -1,0 +1,42 @@
+#version 430
+// Test shader: apply a single variation to input points and write results.
+// Used by GPU golden master tests to verify shader math against CPU reference.
+
+layout(local_size_x = 64) in;
+
+#define MAX_ACTIVE_VARS 8
+#define SLOT_SIZE 10
+#define PARAM_OFFSET 2
+
+layout(std430, binding = 3) readonly buffer ActiveVariations {
+    float u_active_vars[];
+};
+
+// {{SYMMETRY_GROUPS}}
+
+#include "rng.glsl"
+#include "variations.glsl"
+
+layout(std430, binding = 6) buffer InputPoints {
+    vec2 in_points[];
+};
+
+layout(std430, binding = 7) buffer OutputPoints {
+    vec2 out_points[];
+};
+
+uniform int u_n_points;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= u_n_points) return;
+
+    // Init RNG state deterministically per point
+    rng_state = idx * 17u + 1u;
+
+    vec2 p = in_points[idx];
+    // apply_variations reads from u_active_vars buffer (binding 3)
+    // We set up tidx=0 with a single active variation at weight 1.0
+    vec2 result = apply_variations(p, 0);
+    out_points[idx] = result;
+}
