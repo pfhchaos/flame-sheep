@@ -22,7 +22,7 @@ from flame_sheep.axes.brightness_axis import BrightnessAxis
 from flame_sheep.axes.detail_axis import DetailAxis
 from flame_sheep.drift_mode import DriftMode
 from flame_sheep.axes.genome_axis import GenomeAxis
-from flame_sheep.mode import ModeDetector, Mode
+from flame_sheep_audio.mode import ModeDetector, Mode
 
 from .conftest import trivial_genome
 

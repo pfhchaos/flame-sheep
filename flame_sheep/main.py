@@ -40,8 +40,7 @@ from moderngl_window import settings
 from .config import cfg
 from .genome import Genome, _lerp_arr
 from flame_sheep_audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent, AudioState, DEFAULT_DEVICE
-from flame_sheep_audio.drop_detector import DropDetector
-from flame_sheep_audio.bass_drop_detector import BassDropDetector
+from flame_sheep_audio.mode import Mode
 from .renderer import FlameRenderer, Viewport
 from .control import ControlPipe, ControlEvent
 from .axes.zoom_axis import ZoomAxis
@@ -50,7 +49,6 @@ from .axes.detail_axis import DetailAxis
 from .axes.genome_axis import GenomeAxis
 from .axes.palette_axis import PaletteAxis
 from .drift_mode import DriftMode
-from .mode import ModeDetector, Mode
 
 
 # Set by main() before run_window_config — workaround for moderngl-window
@@ -96,10 +94,6 @@ class FlameSheepCore:
         self._brightness_axis = BrightnessAxis()
         self._detail_axis = DetailAxis()
         self._drift_mode = DriftMode(genome_factory=factory, lib=lib, rng=self.rng)
-        self._mode = ModeDetector()
-        # Drop detection
-        self._drop_detector = DropDetector()
-        self._bass_drop_detector = BassDropDetector()
         self._pending_song_start = False
 
         if test_audio:
@@ -136,16 +130,7 @@ class FlameSheepCore:
             events.insert(0, BeatEvent(kind='song_start', energy=0.0))
             self._pending_song_start = False
 
-        # Run break detectors — update breaking state (if enabled)
-        if cfg.breaks.enabled:
-            self._drop_detector.detect(
-                events, snap.centroid_rms,
-                snap.bpm, self._drift_mode.active, frame_time)
-            self._bass_drop_detector.detect(
-                events, snap.bands['subbass'].rms,
-                snap.bpm, self._drift_mode.active, frame_time)
-
-        # Build AudioState for axes
+        # Build AudioState for axes (mode + break_intensity come from audio engine)
         audio = AudioState(
             events=events,
             bands=snap.bands,
@@ -159,13 +144,11 @@ class FlameSheepCore:
             effective_bpm=snap.effective_bpm,
             tempo_confidence=snap.tempo_confidence,
             tempo_saturated=snap.tempo_saturated,
-            break_intensity=max(self._drop_detector.break_intensity,
-                                self._bass_drop_detector.break_intensity),
+            break_intensity=snap.break_intensity,
         )
 
-        # --- Mode transitions ---
-        old_mode = self._mode.mode
-        current_mode = self._mode.tick(audio)
+        # --- Mode transitions (detected by audio engine) ---
+        current_mode = Mode(snap.mode)
 
         # Drift mode still manages idle genome morphing
         was_drifting = self._drift_mode.active
@@ -174,8 +157,6 @@ class FlameSheepCore:
         if is_idle and not was_drifting:
             self._drift_mode.active = True
             self._drift_mode.enter(self._genome_axis)
-            self._drop_detector.reset()
-            self._bass_drop_detector.reset()
         elif not is_idle and was_drifting:
             self._drift_mode.active = False
             self._genome_axis.accept_handoff(
@@ -305,10 +286,6 @@ class FlameSheepCore:
         """
         self.audio.song_started()
         self.audio.reset_bands()
-        self._drop_detector.reset()
-        self._bass_drop_detector.reset()
-        self._mode.reset()  # drop to energy — must re-earn beat mode
-        self._mode.mode = Mode.ENERGY  # not idle — audio is playing
         self._pending_song_start = True
         log.info('[song] reset tempo, bands, drop detectors, mode')
 
@@ -761,8 +738,6 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                         log.info(f'[ctl] invalid tempo: {event.args[0]}')
             elif event.command == 'seek':
                 core.audio.reset_tempo()
-                core._drop_detector.reset()
-                core._bass_drop_detector.reset()
                 log.info('[ctl] seek — reset tempo + drop state')
             elif event.command == 'pause':
                 # TODO: enter ambient/slow mode
