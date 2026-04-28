@@ -807,6 +807,18 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
 
             # Dispatch pending Wayland events (delivers frame callbacks)
             if not session.dispatch():
+                if session_monitor.gpu_paused:
+                    log.info('[render] wayland connection lost during VT switch, '
+                             'waiting for session to resume...')
+                    while not quit_requested and not session_monitor.is_active():
+                        time.sleep(0.5)
+                        _watchdog_last = time.perf_counter()
+                        quit_requested = handle_control_events()
+                    if not quit_requested:
+                        log.info('[render] session resumed, restarting wallpaper')
+                        # Re-exec ourselves to get fresh Wayland connection
+                        import sys
+                        os.execv(sys.executable, [sys.executable] + sys.argv)
                 log.error('wayland connection lost, exiting')
                 break
 
