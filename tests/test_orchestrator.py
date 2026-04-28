@@ -121,6 +121,79 @@ class TestCommandDispatch:
         orch.tick()  # should not raise
 
 
+class TestMultipleConsumers:
+    """Validate that multiple consumers get independent event streams."""
+
+    def test_each_consumer_gets_all_events(self, orch, clock):
+        """Every registered consumer should receive every event."""
+        ids = [orch.register(f'c{i}') for i in range(5)]
+        clock.advance(0.6)
+        orch.tick()
+        counts = [len(orch.drain_events(cid)) for cid in ids]
+        assert all(c == counts[0] for c in counts), \
+            f"Uneven distribution: {counts}"
+        assert counts[0] > 0
+
+    def test_late_registrant_misses_earlier_events(self, orch, clock):
+        """A consumer registered after tick() should not see past events."""
+        early = orch.register('early')
+        clock.advance(0.6)
+        orch.tick()
+        late = orch.register('late')
+        early_events = orch.drain_events(early)
+        late_events = orch.drain_events(late)
+        assert len(early_events) > 0
+        assert len(late_events) == 0
+
+    def test_independent_drain(self, orch, clock):
+        """Draining one consumer doesn't affect another."""
+        a = orch.register('a')
+        b = orch.register('b')
+        clock.advance(0.6)
+        orch.tick()
+        # Drain a
+        a_events = orch.drain_events(a)
+        # b should still have its events
+        b_events = orch.drain_events(b)
+        assert len(a_events) == len(b_events)
+        assert len(a_events) > 0
+
+    def test_event_content_matches_across_consumers(self, orch, clock):
+        """All consumers should get the same event kinds and energies."""
+        a = orch.register('a')
+        b = orch.register('b')
+        clock.advance(0.6)
+        orch.tick()
+        a_events = orch.drain_events(a)
+        b_events = orch.drain_events(b)
+        for ea, eb in zip(a_events, b_events):
+            assert ea.event.kind == eb.event.kind
+            assert ea.event.energy == eb.event.energy
+            assert ea.timestamp == eb.timestamp
+
+    def test_accumulation_across_ticks(self, orch, clock):
+        """A consumer that doesn't drain accumulates events across ticks."""
+        drainer = orch.register('drainer')
+        accumulator = orch.register('accumulator')
+        total_drained = 0
+        for _ in range(5):
+            clock.advance(0.3)
+            orch.tick()
+            total_drained += len(orch.drain_events(drainer))
+        accumulated = len(orch.drain_events(accumulator))
+        assert accumulated == total_drained
+
+    def test_maxlen_prevents_unbounded_growth(self, orch, clock):
+        """Consumer queues have maxlen=1000 to prevent memory leaks."""
+        cid = orch.register('leaky')
+        # Generate a lot of events without draining
+        for _ in range(2000):
+            clock.advance(0.3)
+            orch.tick()
+        events = orch.drain_events(cid)
+        assert len(events) <= 1000
+
+
 class TestLifecycle:
 
     def test_start_stop(self, clock):
