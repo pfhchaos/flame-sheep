@@ -42,9 +42,9 @@ def _scorer_main(db_path: str, stop_event):
 
             row = conn.execute(
                 'SELECT id, params FROM genomes '
-                'WHERE symmetry_max IS NULL OR self_similarity IS NULL '
-                'OR detail_sensitivity IS NULL '
-                'LIMIT 1'
+                'WHERE score_version IS NULL OR score_version < ? '
+                'LIMIT 1',
+                (BackgroundScorer.SCORE_VERSION,),
             ).fetchone()
 
             if row is None:
@@ -56,14 +56,24 @@ def _scorer_main(db_path: str, stop_event):
                 scores = _score_genome(params_json)
                 conn.execute(
                     '''UPDATE genomes
-                       SET symmetry_max=?, rotational=?, reflective=?,
+                       SET coverage=?, entropy=?, color_entropy=?,
+                           balance=?, complexity=?,
+                           symmetry_max=?, rotational=?, reflective=?,
                            radial=?, periodic=?, fractal_dim=?,
-                           self_similarity=?, detail_sensitivity=?
+                           self_similarity=?, detail_sensitivity=?,
+                           centroid_x=?, centroid_y=?,
+                           score_version=?
                        WHERE id=?''',
-                    (scores['symmetry_max'], scores['rotational'],
+                    (scores['coverage'], scores['entropy'],
+                     scores['color_entropy'], scores['balance'],
+                     scores['complexity'],
+                     scores['symmetry_max'], scores['rotational'],
                      scores['reflective'], scores['radial'],
                      scores['periodic'], scores['fractal_dim'],
                      scores['self_similarity'], scores['detail_sensitivity'],
+                     scores.get('centroid_offset_x'),
+                     scores.get('centroid_offset_y'),
+                     BackgroundScorer.SCORE_VERSION,
                      gid),
                 )
                 conn.commit()
@@ -73,13 +83,10 @@ def _scorer_main(db_path: str, stop_event):
                           f'fdim={scores["fractal_dim"]:.3f}')
             except Exception:
                 log.exception(f'failed to score genome #{gid}')
+                # Mark as scored (with version) so we don't retry forever
                 conn.execute(
-                    '''UPDATE genomes
-                       SET symmetry_max=0, rotational=0, reflective=0,
-                           radial=0, periodic=0, fractal_dim=0,
-                           self_similarity=0, detail_sensitivity=0
-                       WHERE id=?''',
-                    (gid,),
+                    'UPDATE genomes SET score_version=? WHERE id=?',
+                    (BackgroundScorer.SCORE_VERSION, gid),
                 )
                 conn.commit()
     finally:
@@ -164,6 +171,9 @@ def _score_genome(params_json: str) -> dict[str, float]:
 
 class BackgroundScorer:
     """Load-aware background process that scores unscored genomes."""
+
+    # Bump this when the scoring algorithm changes to re-score all genomes
+    SCORE_VERSION = 2  # v2: added centroid_offset_x/y
 
     LOAD_THRESHOLD = 6.0
     LOAD_CHECK_INTERVAL = 10.0
