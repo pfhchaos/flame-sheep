@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from flame_sheep_audio import (
     AudioProcessor, SyntheticAudioProcessor, AudioSnapshot, BeatEvent, DEFAULT_DEVICE,
+    BandConfig,
 )
 from .control import ControlPipe, ControlEvent
 from .mpris import MprisListener
@@ -73,6 +74,11 @@ class Orchestrator:
         self.control = ControlPipe()
         self.mpris = MprisListener(ctl_path=self.control.pipe_path)
         self.session = SessionMonitor()
+
+    @property
+    def band_config(self) -> BandConfig:
+        """Expose audio engine's band configuration to consumers."""
+        return self.audio._band_config
 
     def register(self, consumer_id: str) -> str:
         """Register a consumer. Returns the consumer_id for drain_events()."""
