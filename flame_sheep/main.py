@@ -707,6 +707,11 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
     mpris = MprisListener(ctl_path=control.pipe_path)
     mpris.start()
 
+    # --- Session monitor for VT switch detection ---
+    from .session import SessionMonitor
+    session_monitor = SessionMonitor()
+    session_monitor.start()
+
     def handle_control_events() -> bool:
         """Process control events. Returns True if quit requested."""
         for event in control.poll_all():
@@ -847,11 +852,10 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                 break  # surfaces died (sway reload?)
             # Check GL health before committing to expensive operations.
             # A VT switch can leave EGL "current" but the GPU inaccessible.
-            gl_err = ctx.error
-            if gl_err and gl_err != 'GL_NO_ERROR':
-                log.warning(f'[render] GL error before frame: {gl_err}, '
-                            f'skipping frame (VT switch?)')
-                session.release_current()
+            # Skip GL calls if GPU is paused (VT switch)
+            if session_monitor.gpu_paused:
+                _watchdog_last = time.perf_counter()
+                time.sleep(0.1)
                 continue
             renderer.upload_audio(frame.spectrum)
             renderer.upload_genome(frame.genome)
@@ -877,6 +881,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
     finally:
         scorer.stop()
         mpris.stop()
+        session_monitor.stop()
         control.stop()
         core.stop()
         session.destroy()
