@@ -86,6 +86,9 @@ class DriftMode:
     def contribute(self, frame) -> None:
         """Write interpolated genome to frame."""
         frame.genome = self.current_genome.lerp(self.target_genome, self.morph_t)
+        # Slowly nudge center toward origin
+        CENTER_PULL = 0.002
+        frame.genome.center = frame.genome.center * (1.0 - CENTER_PULL)
 
     def enter(self, genome_axis) -> None:
         """Snapshot genome state from genome_axis — no visual pop."""

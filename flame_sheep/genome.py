@@ -489,12 +489,18 @@ def _score_from_histogram(hit_grid: np.ndarray, color_grid: np.ndarray) -> dict[
     # Normalize — CoV of ~1.5 in hit cells is high complexity
     complexity = min(complexity / 1.5, 1.0)
 
+    # Centroid offset from grid center, normalized to [-1, 1]
+    centroid_offset_x = float((cx - center_x) / center_x) if center_x > 0 else 0.0
+    centroid_offset_y = float((cy - center_y) / center_y) if center_y > 0 else 0.0
+
     return dict(
         coverage=coverage,
         entropy=entropy,
         color_entropy=color_entropy,
         balance=balance,
         complexity=complexity,
+        centroid_offset_x=centroid_offset_x,
+        centroid_offset_y=centroid_offset_y,
     )
 
 
