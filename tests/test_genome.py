@@ -308,7 +308,10 @@ class TestScoreFromHistogram:
             g = Genome.random(rng)
             scores = g.aesthetic_score()
             for k, v in scores.items():
-                assert 0.0 <= v <= 1.0, f"{k}={v} out of [0,1]"
+                if k.startswith('centroid_offset'):
+                    assert -1.0 <= v <= 1.0, f"{k}={v} out of [-1,1]"
+                else:
+                    assert 0.0 <= v <= 1.0, f"{k}={v} out of [0,1]"
 
     def test_corner_cluster_low_balance(self):
         hits = np.zeros((64, 64))
@@ -358,7 +361,8 @@ class TestAestheticScoreCpu:
         rng = np.random.default_rng(80)
         g = Genome.random(rng)
         scores = g.aesthetic_score()
-        expected = {'coverage', 'entropy', 'color_entropy', 'balance', 'complexity'}
+        expected = {'coverage', 'entropy', 'color_entropy', 'balance', 'complexity',
+                    'centroid_offset_x', 'centroid_offset_y'}
         assert set(scores.keys()) == expected
 
     def test_different_genomes_different_scores(self):

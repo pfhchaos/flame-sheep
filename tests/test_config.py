@@ -104,6 +104,11 @@ class TestConfigDefaults:
                         Path('/nonexistent/path/config.toml')):
             c = Config()
         for section, values in DEFAULTS.items():
+            if not isinstance(values, dict):
+                # Top-level scalar keys (e.g. audio_device)
+                assert getattr(c, section) == values, \
+                    f'cfg.{section} != {values}'
+                continue
             ns = getattr(c, section)
             for key, default_val in values.items():
                 assert getattr(ns, key) == default_val, \
