@@ -5,14 +5,23 @@ fixed pace, independent of the active-audio GenomeAxis.  FlameSheepCore
 acts as compositor, switching which state machine drives FrameState.genome.
 """
 
+from __future__ import annotations
+
 import logging
 import threading
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from flame_sheep_audio import AudioState
 from flame_sheep.genome import Genome
 from flame_sheep.config import cfg
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from flame_sheep.main import FlameSheepCore
+    from flame_sheep.axes.genome_axis import GenomeAxis
+    from flame_sheep.storage import Library
 
 log = logging.getLogger(__name__)
 
@@ -26,23 +35,25 @@ class DriftMode:
     """
 
     @property
-    def RMS_THRESHOLD(self): return cfg.drift.rms_threshold
+    def RMS_THRESHOLD(self) -> float: return cfg.drift.rms_threshold
     @property
-    def ENTER_FRAMES(self): return cfg.drift.enter_frames
+    def ENTER_FRAMES(self) -> int: return cfg.drift.enter_frames
     @property
-    def MORPH_SPEED(self): return cfg.drift.morph_speed
+    def MORPH_SPEED(self) -> float: return cfg.drift.morph_speed
     @property
-    def MIN_GENOME_DISTANCE(self): return cfg.drift.min_genome_distance
+    def MIN_GENOME_DISTANCE(self) -> float: return cfg.drift.min_genome_distance
     @property
-    def CYCLES_PER_LOOP(self): return cfg.drift.cycles_per_loop
+    def CYCLES_PER_LOOP(self) -> int: return cfg.drift.cycles_per_loop
 
-    def __init__(self, genome_factory, lib=None, rng=None):
-        self._genome_factory = genome_factory
-        self._lib = lib
-        self.rng = rng or np.random.default_rng()
+    def __init__(self, genome_factory: Callable[[], Genome],
+                 lib: Library | None = None,
+                 rng: np.random.Generator | None = None) -> None:
+        self._genome_factory: Callable[[], Genome] = genome_factory
+        self._lib: Library | None = lib
+        self.rng: np.random.Generator = rng or np.random.default_rng()
 
-        self.active = False
-        self._quiet_frames = 0
+        self.active: bool = False
+        self._quiet_frames: int = 0
 
         # Own morph state (populated on enter())
         self.current_genome: Genome | None = None
@@ -90,7 +101,7 @@ class DriftMode:
         CENTER_PULL = 0.002
         frame.genome.center = frame.genome.center * (1.0 - CENTER_PULL)
 
-    def enter(self, genome_axis) -> None:
+    def enter(self, genome_axis: GenomeAxis) -> None:
         """Snapshot genome state from genome_axis — no visual pop."""
         self.current_genome = genome_axis.current_genome.lerp(
             genome_axis.target_genome, genome_axis.morph_t)
@@ -114,7 +125,7 @@ class DriftMode:
 
     # --- Internal genome management ---
 
-    def _swap_next_genome(self):
+    def _swap_next_genome(self) -> None:
         if self._loop_genomes:
             self._loop_pos = (self._loop_pos + 1) % len(self._loop_genomes)
             self.target_genome = self._loop_genomes[self._loop_pos]
@@ -129,7 +140,7 @@ class DriftMode:
         dist = self.current_genome.distance(self.target_genome)
         log.debug(f'[drift] swap  dist={dist:.3f}')
 
-    def _prefetch_genome(self):
+    def _prefetch_genome(self) -> None:
         current_snapshot = self.current_genome
         factory = self._genome_factory
 
@@ -143,7 +154,7 @@ class DriftMode:
 
         threading.Thread(target=_gen, daemon=True).start()
 
-    def _next_loop(self):
+    def _next_loop(self) -> None:
         if self._lib is None or self._lib.loop_count() < 1:
             return
         top = self._lib.top_loops(n=20)

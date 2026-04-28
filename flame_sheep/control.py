@@ -26,6 +26,8 @@ Integration examples:
   bindsym $mod+bracketleft exec echo dislike > ~/.local/share/flame-sheep/ctl
 """
 
+from __future__ import annotations
+
 import logging
 
 log = logging.getLogger(__name__)
@@ -61,20 +63,20 @@ class ControlPipe:
     Non-blocking, won't stall if no commands are sent.
     """
     
-    def __init__(self, pipe_path: Path = DEFAULT_PIPE_PATH):
-        self.pipe_path = pipe_path
+    def __init__(self, pipe_path: Path = DEFAULT_PIPE_PATH) -> None:
+        self.pipe_path: Path = pipe_path
         self._queue: queue.Queue[ControlEvent] = queue.Queue()
-        self._running = False
+        self._running: bool = False
         self._thread: threading.Thread | None = None
-        
-    def start(self):
+
+    def start(self) -> None:
         """Create pipe and start listener thread."""
         self._ensure_pipe_exists()
         self._running = True
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
-        
-    def stop(self):
+
+    def stop(self) -> None:
         """Stop listener thread. Pipe remains for future use."""
         self._running = False
         # Write a dummy command to unblock the read
@@ -106,7 +108,7 @@ class ControlPipe:
             events.append(event)
         return events
         
-    def _ensure_pipe_exists(self):
+    def _ensure_pipe_exists(self) -> None:
         """Create the named pipe if it doesn't exist."""
         self.pipe_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -122,7 +124,7 @@ class ControlPipe:
         # Make it world-writable so any process can send commands
         os.chmod(self.pipe_path, 0o622)
         
-    def _read_loop(self):
+    def _read_loop(self) -> None:
         """Background thread: read lines from pipe, parse, queue."""
         while self._running:
             try:

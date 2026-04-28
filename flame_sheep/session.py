@@ -4,8 +4,11 @@ Polls the session Active property via logind D-Bus to detect VT switches.
 The render loop checks is_active() before any GL calls.
 """
 
+from __future__ import annotations
+
 import logging
 import time
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -13,11 +16,11 @@ log = logging.getLogger(__name__)
 class SessionMonitor:
     """Monitor logind session active state for VT switch detection."""
 
-    def __init__(self):
-        self._props = None
-        self._last_check = 0.0
-        self._cached_active = True
-        self._CHECK_INTERVAL = 0.0  # no caching — always poll fresh
+    def __init__(self) -> None:
+        self._props: Any = None
+        self._last_check: float = 0.0
+        self._cached_active: bool = True
+        self._CHECK_INTERVAL: float = 0.0  # no caching — always poll fresh
 
         try:
             import dbus
@@ -33,10 +36,10 @@ class SessionMonitor:
         except Exception as e:
             log.warning(f'[session] logind monitoring unavailable: {e}')
 
-    def start(self):
+    def start(self) -> None:
         pass  # no thread needed — we poll
 
-    def stop(self):
+    def stop(self) -> None:
         pass
 
     @property

@@ -9,16 +9,17 @@ The orchestrator's tick() updates shared audio state and dispatches
 control pipe commands to all registered handlers.
 """
 
+from __future__ import annotations
+
 import logging
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from flame_sheep_audio import (
     AudioProcessor, SyntheticAudioProcessor, AudioSnapshot, BeatEvent, DEFAULT_DEVICE,
 )
-from flame_sheep_audio._types import AudioState
-from flame_sheep_audio.mode import Mode
 from .control import ControlPipe, ControlEvent
 from .mpris import MprisListener
 from .session import SessionMonitor
@@ -41,11 +42,13 @@ class Orchestrator:
     Command handlers are registered via on_command().
     """
 
-    def __init__(self, audio_device=DEFAULT_DEVICE, test_audio: bool = False,
-                 clock=None):
-        self._clock = clock or time.perf_counter
+    def __init__(self, audio_device: str | int | None = DEFAULT_DEVICE,
+                 test_audio: bool = False,
+                 clock: Callable[[], float] | None = None) -> None:
+        self._clock: Callable[[], float] = clock or time.perf_counter
 
         # Audio engine
+        self.audio: AudioProcessor | SyntheticAudioProcessor
         if test_audio:
             self.audio = SyntheticAudioProcessor(
                 kick_interval=0.5,
@@ -64,7 +67,7 @@ class Orchestrator:
         self._consumers: dict[str, deque[TimestampedEvent]] = {}
 
         # Command callbacks
-        self._command_handlers: dict[str, list] = {}
+        self._command_handlers: dict[str, list[Callable[[ControlEvent], None]]] = {}
 
         # Infrastructure
         self.control = ControlPipe()
@@ -76,7 +79,7 @@ class Orchestrator:
         self._consumers[consumer_id] = deque(maxlen=1000)
         return consumer_id
 
-    def on_command(self, command: str, handler):
+    def on_command(self, command: str, handler: Callable[[ControlEvent], None]) -> None:
         """Register a callback for a control pipe command.
 
         Multiple handlers per command are allowed — all are called.
@@ -90,7 +93,7 @@ class Orchestrator:
         q.clear()
         return events
 
-    def tick(self):
+    def tick(self) -> None:
         """Update shared audio state and dispatch events/commands.
 
         Called by whoever drives the main loop (render loop, test harness).
@@ -112,7 +115,7 @@ class Orchestrator:
             for handler in self._command_handlers.get(cmd.command, []):
                 handler(cmd)
 
-    def start(self):
+    def start(self) -> None:
         """Start all owned subsystems."""
         self.audio.start()
         self.control.start()
@@ -120,7 +123,7 @@ class Orchestrator:
         self.session.start()
         log.info(f'orchestrator started. Control pipe: {self.control.pipe_path}')
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop all owned subsystems."""
         self.mpris.stop()
         self.session.stop()
