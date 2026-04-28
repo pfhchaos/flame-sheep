@@ -208,7 +208,8 @@ class SpectrumPanel(Panel):
                              values: np.ndarray, label: str,
                              x: float, y: float, w: float, strip_h: float,
                              color: tuple[float, float, float, float],
-                             plot_x: float, plot_w: float) -> None:
+                             plot_x: float, plot_w: float,
+                             max_val: float | None = None) -> None:
         """Draw one spectrum strip efficiently."""
         draw.rect(x, y, w, strip_h, _BG)
         text.draw(label, x + 4, y + 2, _DIM)
@@ -217,7 +218,8 @@ class SpectrumPanel(Panel):
             return
         self._ensure_x_cache(plot_x, plot_w)
 
-        max_val = max(values[1:].max(), 1e-10)
+        if max_val is None:
+            max_val = max(values[1:].max(), 1e-10)
         n = min(len(values) - 1, len(self._x_positions))
         normalized = values[1:n+1] / max_val
         heights = normalized * (strip_h - 4)
@@ -250,20 +252,27 @@ class SpectrumPanel(Panel):
         n_strips = 3 if len(self._stability) == len(self._spectrum) else 1
         strip_h = (h - bracket_h) / n_strips
 
+        # Shared peak for all three strips so proportions are honest
+        shared_max = max(self._spectrum[1:].max(), 1e-10) if len(self._spectrum) > 1 else 1e-10
+
         if n_strips == 3:
             harmonic = self._spectrum * self._stability
             percussive = self._spectrum * (1.0 - self._stability)
             self._draw_spectrum_strip(draw, text, self._spectrum, 'full',
-                                      x, y, w, strip_h, _FG, plot_x, plot_w)
+                                      x, y, w, strip_h, _FG, plot_x, plot_w,
+                                      max_val=shared_max)
             self._draw_spectrum_strip(draw, text, harmonic, 'harm',
                                       x, y + strip_h, w, strip_h,
-                                      _CYAN, plot_x, plot_w)
+                                      _CYAN, plot_x, plot_w,
+                                      max_val=shared_max)
             self._draw_spectrum_strip(draw, text, percussive, 'perc',
                                       x, y + strip_h * 2, w, strip_h,
-                                      _ORANGE, plot_x, plot_w)
+                                      _ORANGE, plot_x, plot_w,
+                                      max_val=shared_max)
         else:
             self._draw_spectrum_strip(draw, text, self._spectrum, 'full',
-                                      x, y, w, strip_h, _FG, plot_x, plot_w)
+                                      x, y, w, strip_h, _FG, plot_x, plot_w,
+                                      max_val=shared_max)
 
         # Band brackets below spectrums
         bracket_y = y + h - bracket_h

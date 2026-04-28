@@ -522,7 +522,9 @@ def _ensure_singleton() -> None:
         f.write(str(os.getpid()))
 
 
-def _run_wallpaper(audio_device: str | int | None, test_audio: bool, blur_radius: float = 1.0) -> None:
+def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
+                   blur_radius: float = 1.0,
+                   log_features: bool = False, log_file: str | None = None) -> None:
     """
     Wallpaper mode — one continuous flame fractal image across all monitors.
     """
@@ -643,10 +645,10 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool, blur_radius
         nonlocal _vote_count, _votes_per_evolve, _evolve_count, _evolving
         _vote_count += 1
         if _evolving:
-            log.info(f'[evolve] already running, vote queued ({_vote_count})')
+            log.debug(f'[evolve] already running, vote queued ({_vote_count})')
             return
         if _vote_count < _votes_per_evolve:
-            log.info(f'[evolve] {_vote_count}/{_votes_per_evolve} votes until next evolution')
+            log.debug(f'[evolve] {_vote_count}/{_votes_per_evolve} votes until next evolution')
             return
         if lib.loop_count() < 2:
             log.warning('not enough loops to evolve')
@@ -694,8 +696,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool, blur_radius
             for pid in core._palette_axis.palette_history:
                 lib.rate('palette', pid, +1)
             lib.update_loop_fitness(core.active_loop_id)
-            log.info(f'[ctl] liked loop #{core.active_loop_id} '
-                  f'(+{len(core._palette_axis.palette_history)} palettes)')
+            log.debug(f'[ctl] liked loop #{core.active_loop_id} '
+                   f'(+{len(core._palette_axis.palette_history)} palettes)')
             _maybe_evolve()
         else:
             log.warning('no active loop to rate')
@@ -706,14 +708,14 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool, blur_radius
             for pid in core._palette_axis.palette_history:
                 lib.rate('palette', pid, -1)
             lib.update_loop_fitness(core.active_loop_id)
-            log.info(f'[ctl] disliked loop #{core.active_loop_id} '
-                  f'(+{len(core._palette_axis.palette_history)} palettes)')
+            log.debug(f'[ctl] disliked loop #{core.active_loop_id} '
+                   f'(+{len(core._palette_axis.palette_history)} palettes)')
             _maybe_evolve()
         core.next_loop()
 
     def _handle_next(event):
         core.next_loop()
-        log.info(f'[ctl] next loop #{core.active_loop_id}')
+        log.debug(f'[ctl] next loop #{core.active_loop_id}')
 
     def _handle_song(event):
         core.song_started()
@@ -729,7 +731,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool, blur_radius
 
     def _handle_seek(event):
         orch.audio.reset_tempo()
-        log.info('[ctl] seek — reset tempo + drop state')
+        log.debug('[ctl] seek — reset tempo + drop state')
 
     def _handle_config(event):
         if event.args and event.args[0] == 'reload':
@@ -737,7 +739,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool, blur_radius
             from flame_sheep_audio.config import cfg as audio_cfg
             cfg.reload()
             audio_cfg.reload()
-            log.info('[ctl] config reloaded (viz + audio)')
+            log.debug('[ctl] config reloaded (viz + audio)')
 
     orch.on_command('quit', _handle_quit)
     orch.on_command('swap', _handle_swap)
@@ -750,6 +752,12 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool, blur_radius
     orch.on_command('config', _handle_config)
 
     orch.start()
+
+    # Feature logger (optional)
+    feature_logger = None
+    if log_features:
+        from .logger import AudioFeatureLogger
+        feature_logger = AudioFeatureLogger(orch, path=log_file or None)
 
     last_time = time.perf_counter()
     _frame = 0
@@ -778,6 +786,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool, blur_radius
             _frame += 1
             _watchdog_last = time.perf_counter()
             orch.tick()
+            if feature_logger:
+                feature_logger.tick()
 
             # Dispatch pending Wayland events (delivers frame callbacks)
             if not session.dispatch():
@@ -881,6 +891,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool, blur_radius
             os.execv(sys.executable, [sys.executable, '-m', 'flame_sheep'] + sys.argv[1:])
 
         log.debug(f'[render] exiting render loop (quit_requested={quit_requested})')
+        if feature_logger:
+            feature_logger.close()
         scorer.stop()
         orch.stop()
         session.destroy()
@@ -1079,11 +1091,15 @@ def main() -> None:
                         help='print library statistics and exit')
     parser.add_argument('--blur-radius', type=float, default=1.0,
                         help='wallpaper blur strength (0=off, 1=light, 2+=heavy; default: 1.0)')
+    parser.add_argument('--log-features', action='store_true',
+                        help='log audio features as JSON lines for offline analysis')
+    parser.add_argument('--log-file', type=str, default=None,
+                        help='path for feature log (default: ~/.local/share/flame-sheep/features.jsonl)')
     parser.add_argument('--benchmark-variations', action='store_true',
                         help='benchmark each variation solo (GPU timing) and exit')
-    parser.add_argument('--log-level', default='INFO',
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
-                        help='logging verbosity (default: INFO)')
+    parser.add_argument('--log-level', action='append', default=[],
+                        help='logging verbosity: global (INFO) or per-component '
+                             '(flame_sheep_audio.tempo_acf=DEBUG). Repeatable.')
 
     # parse_known_args so moderngl-window's own flags don't cause errors here
     args, remaining = parser.parse_known_args()
@@ -1093,7 +1109,23 @@ def main() -> None:
         return
 
     from .log import setup_logging
-    setup_logging(level=args.log_level)
+    # Parse --log-level args: bare value = global, name=LEVEL = per-component
+    global_level = 'INFO'
+    component_levels: dict[str, str] = {}
+    # Config TOML levels (baseline)
+    from .config import cfg
+    if hasattr(cfg, 'logging') and hasattr(cfg.logging, 'levels'):
+        config_levels = cfg.logging.levels
+        if isinstance(config_levels, dict):
+            component_levels.update(config_levels)
+    # CLI overrides
+    for spec in args.log_level:
+        if '=' in spec:
+            name, level = spec.split('=', 1)
+            component_levels[name] = level.upper()
+        else:
+            global_level = spec.upper()
+    setup_logging(level=global_level, component_levels=component_levels)
 
     global _AUDIO_DEVICE, _TEST_AUDIO
     _AUDIO_DEVICE = args.audio_device
@@ -1128,7 +1160,8 @@ def main() -> None:
         if audio_device is None:
             from .config import cfg
             audio_device = cfg.audio_device
-        _run_wallpaper(audio_device, args.test_audio, blur_radius=args.blur_radius)
+        _run_wallpaper(audio_device, args.test_audio, blur_radius=args.blur_radius,
+                       log_features=args.log_features, log_file=args.log_file)
         return
 
     # Strip our flags from sys.argv so moderngl-window's arg parser

@@ -304,7 +304,7 @@ class GenomeAxis:
         log.info(f"[loop] loaded #{loop_id} ({n} genomes, start={start})")
         for i, g in enumerate(self._loop_genomes):
             marker = " <--" if i == start else ""
-            log.info(f"  [{i}] {_describe_genome(g)}{marker}")
+            log.debug(f"  [{i}] {_describe_genome(g)}{marker}")
 
     def next_loop(self) -> None:
         if self._lib is None or self._lib.loop_count() < 1:
@@ -327,7 +327,7 @@ class GenomeAxis:
         self._loop_history.append(loop_id)
         self.load_loop(loop_id)
         if fitness is not None:
-            log.info(f"[loop] fitness={fitness:.3f}")
+            log.debug(f"[loop] fitness={fitness:.3f}")
 
     # --- Genome prefetch ---
 
@@ -350,7 +350,7 @@ class GenomeAxis:
             self._loop_pos = (self._loop_pos + 1) % len(self._loop_genomes)
             self.target_genome = self._loop_genomes[self._loop_pos]
             if self._loop_pos == 0:
-                log.info(f"[loop] cycle complete, {len(self._loop_genomes)} genomes")
+                log.debug(f"[loop] cycle complete, {len(self._loop_genomes)} genomes")
         else:
             with self._genome_lock:
                 if self._next_genome is not None:
@@ -359,7 +359,7 @@ class GenomeAxis:
                 else:
                     self.target_genome = self._genome_factory()
             self._prefetch_genome()
-            log.info(f"[genome] {_describe_genome(self.target_genome)}")
+            log.debug(f"[genome] {_describe_genome(self.target_genome)}")
 
 
 # Reverse map: variation index -> name
