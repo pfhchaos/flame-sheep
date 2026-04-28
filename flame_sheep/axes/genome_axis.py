@@ -110,15 +110,9 @@ class GenomeAxis:
         else:
             self._prefetch_genome()
 
-    _section_log_counter = 0
-
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
-        # Log section_change periodically for tuning
-        self._section_log_counter += 1
         self._section_warmup += 1
         self._section_cooldown += 1
-        if self._section_log_counter % 300 == 0:  # every ~5s at 60fps
-            log.info(f"[section] value={audio.section_change:.4f}")
 
         # Detect section change — suppress during warmup and cooldown
         WARMUP_FRAMES = 1800  # ~30s at 60fps
@@ -191,6 +185,9 @@ class GenomeAxis:
 
     def contribute(self, frame) -> None:
         frame.genome = self.current_genome.lerp(self.target_genome, self.morph_t)
+        # Slowly nudge center toward origin — keeps attractor on screen
+        CENTER_PULL = 0.002  # ~1% per frame toward center
+        frame.genome.center = frame.genome.center * (1.0 - CENTER_PULL)
 
     # --- Event handlers ---
 
