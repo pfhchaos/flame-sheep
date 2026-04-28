@@ -58,7 +58,8 @@ def _ensure_schema(conn: sqlite3.Connection):
             balance       REAL,
             complexity    REAL,
             centroid_x    REAL,
-            centroid_y    REAL
+            centroid_y    REAL,
+            score_version INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS loops (
@@ -114,6 +115,8 @@ def _ensure_schema(conn: sqlite3.Connection):
                  'centroid_x', 'centroid_y'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} REAL')
+    if 'score_version' not in existing:
+        conn.execute('ALTER TABLE genomes ADD COLUMN score_version INTEGER DEFAULT 0')
 
     conn.commit()
 
@@ -514,14 +517,15 @@ class Library:
         cur = self.conn.execute(
             '''INSERT INTO genomes (params, coverage, entropy, color_entropy, balance, complexity,
                                     symmetry_max, rotational, reflective, radial, periodic, fractal_dim,
-                                    centroid_x, centroid_y)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                    centroid_x, centroid_y, score_version)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (params, scores['coverage'], scores['entropy'],
              scores['color_entropy'], scores['balance'], scores['complexity'],
              scores.get('symmetry_max'), scores.get('rotational'),
              scores.get('reflective'), scores.get('radial'),
              scores.get('periodic'), scores.get('fractal_dim'),
-             scores.get('centroid_offset_x'), scores.get('centroid_offset_y')),
+             scores.get('centroid_offset_x'), scores.get('centroid_offset_y'),
+             1),  # version 1 = initial CPU scores, bg scorer upgrades to SCORE_VERSION
         )
         self.conn.commit()
         return cur.lastrowid
