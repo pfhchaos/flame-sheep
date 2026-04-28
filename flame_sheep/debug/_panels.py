@@ -170,9 +170,11 @@ class SpectrumPanel(Panel):
         super().__init__(height=76)
         self._band_config = band_config
         self._spectrum: np.ndarray = np.zeros(0)
+        self._stability: np.ndarray = np.zeros(0)
 
     def update(self, snap: AudioSnapshot, timeline: TimelineBuffer, dt: float) -> None:
         self._spectrum = snap.spectrum
+        self._stability = snap.stability
 
     def _freq_to_x(self, freq: float, plot_x: float, plot_w: float) -> float:
         """Map frequency to x coordinate on log scale."""
@@ -193,21 +195,32 @@ class SpectrumPanel(Panel):
         spec_h = h - 16  # leave room for band brackets (one line)
 
         if len(self._spectrum) > 1:
-            # Draw spectrum bars on log-frequency axis
             n_bins = len(self._spectrum)
             max_val = max(self._spectrum.max(), 1e-10)
+            has_stability = len(self._stability) == n_bins
+
             for i in range(1, n_bins):
                 freq = FREQS[i] if i < len(FREQS) else 24000.0
                 if freq < 20 or freq > 24000:
                     continue
                 bx = self._freq_to_x(freq, plot_x, plot_w)
-                # Bin width on log scale
                 next_freq = FREQS[min(i + 1, len(FREQS) - 1)]
                 bx2 = self._freq_to_x(next_freq, plot_x, plot_w)
                 bw = max(bx2 - bx, 1.0)
                 val = self._spectrum[i] / max_val
                 bar_h = val * spec_h
-                draw.rect(bx, y + spec_h - bar_h, bw, bar_h, _FG)
+
+                if has_stability:
+                    s = self._stability[i]
+                    harm_h = bar_h * s
+                    perc_h = bar_h * (1.0 - s)
+                    # Harmonic (teal) on bottom, percussive (orange) on top
+                    draw.rect(bx, y + spec_h - harm_h, bw, harm_h,
+                              (0.34, 0.76, 0.76, 0.7))
+                    draw.rect(bx, y + spec_h - bar_h, bw, perc_h,
+                              (0.85, 0.55, 0.33, 0.7))
+                else:
+                    draw.rect(bx, y + spec_h - bar_h, bw, bar_h, _FG)
 
         # Band brackets below spectrum
         # Detection bands: one shared line (springs keep them apart)
