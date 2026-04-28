@@ -856,6 +856,11 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             # Compute pass — surface doesn't matter for compute, keep first
             if not session.make_current(first_surf):
                 break  # surfaces died (sway reload?)
+            # Double-check after make_current — VT switch can happen between
+            # the check above and here
+            if session_monitor.gpu_paused:
+                session.release_current()
+                continue
             renderer.upload_audio(frame.spectrum)
             renderer.upload_genome(frame.genome)
             renderer.upload_palette(frame.palette)

@@ -17,7 +17,7 @@ class SessionMonitor:
         self._props = None
         self._last_check = 0.0
         self._cached_active = True
-        self._CHECK_INTERVAL = 0.05  # poll every 50ms
+        self._CHECK_INTERVAL = 0.0  # no caching — always poll fresh
 
         try:
             import dbus
