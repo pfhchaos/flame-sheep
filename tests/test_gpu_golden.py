@@ -83,7 +83,8 @@ PARAM_FIXTURES = {
 # Variations that use RNG — results will differ between CPU and GPU
 # so we skip strict comparison for these
 RANDOM_VARIATIONS = {Variation.SATTRACTOR, Variation.WALLPAPER, Variation.FRIEZE,
-                     Variation.JULIAN, Variation.JULIASCOPE, Variation.ICON}
+                     Variation.JULIAN, Variation.JULIASCOPE, Variation.ICON,
+                     Variation.CPOW}
 
 # Variation names for readable output
 VAR_NAMES: dict[int, str] = {}
