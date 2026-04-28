@@ -153,7 +153,7 @@ class SpectrumPanel(Panel):
     """FFT spectrum with band frequency brackets underneath."""
 
     def __init__(self, band_config: BandConfig) -> None:
-        super().__init__(height=80)
+        super().__init__(height=64)
         self._band_config = band_config
         self._spectrum: np.ndarray = np.zeros(0)
 
@@ -176,7 +176,7 @@ class SpectrumPanel(Panel):
 
         plot_x = x + 4.0
         plot_w = w - 8.0
-        spec_h = h - 24  # leave room for band brackets
+        spec_h = h - 16  # leave room for band brackets (one line)
 
         if len(self._spectrum) > 1:
             # Draw spectrum bars on log-frequency axis
@@ -195,22 +195,18 @@ class SpectrumPanel(Panel):
                 bar_h = val * spec_h
                 draw.rect(bx, y + spec_h - bar_h, bw, bar_h, _FG)
 
-        # Band brackets below spectrum
+        # Band brackets below spectrum (all on one line — springs keep them apart)
         bracket_y = y + spec_h + 2
         ranges = self._band_config.all_band_ranges
         det_names = set(self._band_config.detection_band_names)
-        all_names = list(ranges.keys())
         for i, (name, (lo, hi)) in enumerate(ranges.items()):
             color = _band_color(i)
             if name not in det_names:
-                # Energy-only bands: dimmer
                 color = (color[0] * 0.5, color[1] * 0.5, color[2] * 0.5, color[3])
             bx1 = self._freq_to_x(lo, plot_x, plot_w)
             bx2 = self._freq_to_x(hi, plot_x, plot_w)
-            # Horizontal line
-            draw.rect(bx1, bracket_y + i * 5, bx2 - bx1, 2, color)
-            # Label
-            text.draw(name[:4], bx1, bracket_y + i * 5 + 2, color)
+            draw.rect(bx1, bracket_y, bx2 - bx1, 2, color)
+            text.draw(name[:4], bx1, bracket_y + 3, color)
 
 
 class BandMetricsPanel(Panel):
