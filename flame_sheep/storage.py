@@ -56,7 +56,9 @@ def _ensure_schema(conn: sqlite3.Connection):
             entropy       REAL,
             color_entropy REAL,
             balance       REAL,
-            complexity    REAL
+            complexity    REAL,
+            centroid_x    REAL,
+            centroid_y    REAL
         );
 
         CREATE TABLE IF NOT EXISTS loops (
@@ -107,7 +109,9 @@ def _ensure_schema(conn: sqlite3.Connection):
 
     # Add symmetry columns if they don't exist (no migration system yet)
     existing = {r[1] for r in conn.execute('PRAGMA table_info(genomes)').fetchall()}
-    for col in ('symmetry_max', 'rotational', 'reflective', 'radial', 'periodic', 'fractal_dim', 'self_similarity', 'detail_sensitivity'):
+    for col in ('symmetry_max', 'rotational', 'reflective', 'radial', 'periodic',
+                 'fractal_dim', 'self_similarity', 'detail_sensitivity',
+                 'centroid_x', 'centroid_y'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} REAL')
 
@@ -509,13 +513,15 @@ class Library:
             scores = genome.aesthetic_score()
         cur = self.conn.execute(
             '''INSERT INTO genomes (params, coverage, entropy, color_entropy, balance, complexity,
-                                    symmetry_max, rotational, reflective, radial, periodic, fractal_dim)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                    symmetry_max, rotational, reflective, radial, periodic, fractal_dim,
+                                    centroid_x, centroid_y)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (params, scores['coverage'], scores['entropy'],
              scores['color_entropy'], scores['balance'], scores['complexity'],
              scores.get('symmetry_max'), scores.get('rotational'),
              scores.get('reflective'), scores.get('radial'),
-             scores.get('periodic'), scores.get('fractal_dim')),
+             scores.get('periodic'), scores.get('fractal_dim'),
+             scores.get('centroid_offset_x'), scores.get('centroid_offset_y')),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -532,13 +538,15 @@ class Library:
     def genome_scores(self, genome_id: int) -> dict[str, float]:
         """Get stored aesthetic scores for a genome."""
         row = self.conn.execute(
-            'SELECT coverage, entropy, color_entropy, balance, complexity FROM genomes WHERE id = ?',
+            'SELECT coverage, entropy, color_entropy, balance, complexity, centroid_x, centroid_y'
+            ' FROM genomes WHERE id = ?',
             (genome_id,),
         ).fetchone()
         if row is None:
             raise KeyError(f'No genome with id {genome_id}')
         return dict(coverage=row[0], entropy=row[1], color_entropy=row[2],
-                    balance=row[3], complexity=row[4])
+                    balance=row[3], complexity=row[4],
+                    centroid_offset_x=row[5], centroid_offset_y=row[6])
 
     def top_genomes(self, n: int = 20, min_coverage: float = 0.01) -> list[tuple[int, dict]]:
         """Return top N genomes ranked by a simple composite fitness."""
