@@ -900,6 +900,15 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
     except Exception as e:
         log.error(f'[render] exception in render loop: {e}', exc_info=True)
     finally:
+        # If surfaces closed during VT switch, wait and restart
+        if not quit_requested and session_monitor.gpu_paused:
+            log.info('[render] surfaces closed during VT switch, waiting for resume...')
+            while not session_monitor.is_active():
+                time.sleep(0.5)
+            log.info('[render] session resumed, restarting')
+            import sys
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
         log.info(f'[render] exiting render loop (quit_requested={quit_requested})')
         scorer.stop()
         mpris.stop()
