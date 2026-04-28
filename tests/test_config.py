@@ -111,8 +111,14 @@ class TestConfigDefaults:
                 continue
             ns = getattr(c, section)
             for key, default_val in values.items():
-                assert getattr(ns, key) == default_val, \
-                    f'cfg.{section}.{key} != {default_val}'
+                actual = getattr(ns, key)
+                if isinstance(default_val, dict):
+                    # Nested dicts become SimpleNamespace; compare as dicts
+                    assert vars(actual) == default_val, \
+                        f'cfg.{section}.{key} != {default_val}'
+                else:
+                    assert actual == default_val, \
+                        f'cfg.{section}.{key} != {default_val}'
 
 
 class TestConfigUserOverride:

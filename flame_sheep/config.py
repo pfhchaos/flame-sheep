@@ -58,6 +58,11 @@ DEFAULTS = {
         'window_width': 640,
         'window_height': 400,
     },
+    'logging': {
+        'feature_file': '~/.local/share/flame-sheep/features.jsonl',
+        'feature_fields': [],
+        'levels': {},
+    },
 }
 
 

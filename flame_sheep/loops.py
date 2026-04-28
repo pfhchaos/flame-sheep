@@ -324,7 +324,7 @@ def crossover(
     name = f'breed-{loop_a_id}x{loop_b_id}'
     loop_id = lib.save_loop(child_ids, name=name,
                             parent_a=loop_a_id, parent_b=loop_b_id)
-    log.info('Bred loop %d from %d x %d', loop_id, loop_a_id, loop_b_id)
+    log.debug('Bred loop %d from %d x %d', loop_id, loop_a_id, loop_b_id)
     return loop_id
 
 
@@ -378,8 +378,8 @@ def mutate_loop(
 
     name = f'mutate-{loop_id}-pos{pos}'
     new_id = lib.save_loop(child_ids, name=name, parent_a=loop_id)
-    log.info('Mutated loop %d -> %d (pos %d: %d -> %d)',
-             loop_id, new_id, pos, target_id, replacement)
+    log.debug('Mutated loop %d -> %d (pos %d: %d -> %d)',
+              loop_id, new_id, pos, target_id, replacement)
     return new_id
 
 
