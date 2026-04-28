@@ -907,7 +907,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                 time.sleep(0.5)
             log.info('[render] session resumed, restarting')
             import sys
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            os.execv(sys.executable, [sys.executable, '-m', 'flame_sheep'] + sys.argv[1:])
 
         log.info(f'[render] exiting render loop (quit_requested={quit_requested})')
         scorer.stop()
