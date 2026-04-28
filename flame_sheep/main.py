@@ -9,13 +9,15 @@ Core rendering/audio/genome logic lives in FlameSheepCore so it can be
 shared between both modes.
 """
 
+from __future__ import annotations
+
 import faulthandler
 faulthandler.enable()  # print traceback on SIGSEGV instead of silent death
 
 import signal
 import os
 
-def _sigsegv_restart(signum, frame):
+def _sigsegv_restart(signum: int, frame: object) -> None:
     """On SIGSEGV (GPU crash on VT switch), restart ourselves."""
     import sys
     os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -30,12 +32,17 @@ log = logging.getLogger(__name__)
 import argparse
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 import os
 import threading
+from typing import TYPE_CHECKING
 import numpy as np
 import moderngl_window as mglw
 from moderngl_window import settings
+
+if TYPE_CHECKING:
+    from .storage import Library
 
 from .config import cfg
 from .genome import Genome, _lerp_arr
@@ -72,11 +79,13 @@ class FlameSheepCore:
     """
 
     def __init__(self, orchestrator: Orchestrator,
-                 lib=None, clock=None, genome_factory=None):
+                 lib: Library | None = None,
+                 clock: Callable[[], float] | None = None,
+                 genome_factory: Callable[[], Genome] | None = None) -> None:
         self._orch = orchestrator
-        self._consumer_id = orchestrator.register('wallpaper')
-        self._clock = clock or time.perf_counter
-        self.rng = np.random.default_rng()
+        self._consumer_id: str = orchestrator.register('wallpaper')
+        self._clock: Callable[[], float] = clock or time.perf_counter
+        self.rng: np.random.Generator = np.random.default_rng()
         self._lib = lib
 
         # --- Visual axes ---
@@ -258,17 +267,17 @@ class FlameSheepCore:
     def active_loop_id(self):
         return self._genome_axis.active_loop_id
 
-    def force_genome_swap(self):
+    def force_genome_swap(self) -> None:
         """Immediately swap to a new genome — call when image looks degenerate."""
         self._genome_axis.force_swap()
 
-    def load_loop(self, loop_id: int):
+    def load_loop(self, loop_id: int) -> None:
         self._genome_axis.load_loop(loop_id)
 
-    def next_loop(self):
+    def next_loop(self) -> None:
         self._genome_axis.next_loop()
 
-    def song_started(self):
+    def song_started(self) -> None:
         """Signal new song started — resets tempo, bands, drop detectors, mode.
         Injects a song_start event on the next tick via _pending_song_start.
         """
@@ -277,7 +286,7 @@ class FlameSheepCore:
         self._pending_song_start = True
         log.info('[song] reset tempo, bands, drop detectors, mode')
 
-    def hint_tempo(self, bpm: float):
+    def hint_tempo(self, bpm: float) -> None:
         """Provide tempo hint from external source."""
         self._orch.audio.hint_tempo(bpm)
         log.info(f'[tempo] hint: {bpm:.1f} BPM')
@@ -477,7 +486,7 @@ def _get_sway_layout() -> dict[str, dict]:
         return {}
 
 
-def _ensure_singleton():
+def _ensure_singleton() -> None:
     """Kill any existing flame-sheep wallpaper instance.
 
     Uses a pidfile at ~/.local/share/flame-sheep/pid. If a previous
@@ -513,7 +522,7 @@ def _ensure_singleton():
         f.write(str(os.getpid()))
 
 
-def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
+def _run_wallpaper(audio_device: str | int | None, test_audio: bool, blur_radius: float = 1.0) -> None:
     """
     Wallpaper mode — one continuous flame fractal image across all monitors.
     """
@@ -877,7 +886,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
         session.destroy()
 
 
-def _run_variation_benchmark():
+def _run_variation_benchmark() -> None:
     """Benchmark each variation solo on the GPU."""
     import time
     import moderngl
@@ -952,7 +961,7 @@ def _run_variation_benchmark():
     ctx.release()
 
 
-def _run_library_commands(args):
+def _run_library_commands(args: argparse.Namespace) -> None:
     """Handle --generate-genomes, --compose-loops, --evolve, --stats."""
     from .genome import Genome
     from .storage import Library
@@ -1036,7 +1045,7 @@ def _run_library_commands(args):
     lib.close()
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description='flame-sheep: audio-reactive flame fractal wallpaper',
         # Don't error on moderngl-window's own flags — we strip ours then

@@ -11,6 +11,7 @@ The symmetry score is the max across all detected symmetry types.
 These are descriptors, not direct fitness terms — high symmetry is
 striking but deliberate asymmetry can also look good.
 """
+from __future__ import annotations
 
 import numpy as np
 from scipy import ndimage

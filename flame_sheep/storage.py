@@ -16,6 +16,8 @@ Motion fields:
   genome TO the next one in the loop.
 """
 
+from __future__ import annotations
+
 import json
 import sqlite3
 from pathlib import Path
@@ -46,7 +48,7 @@ def _connect(data_dir: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def _ensure_schema(conn: sqlite3.Connection):
+def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript('''
         CREATE TABLE IF NOT EXISTS genomes (
             id          INTEGER PRIMARY KEY,
@@ -504,7 +506,7 @@ class Library:
     def __init__(self, data_dir: Path | None = None):
         self.conn = _connect(data_dir)
 
-    def close(self):
+    def close(self) -> None:
         self.conn.close()
 
     # -- Genomes --
@@ -653,7 +655,7 @@ class Library:
         return dict(fitness=row[0], mean_coherence=row[1], min_coherence=row[2],
                     diversity=row[3], palette_flow=row[4], smoothness=row[5])
 
-    def update_loop_fitness(self, loop_id: int):
+    def update_loop_fitness(self, loop_id: int) -> None:
         """Recompute and store loop fitness from coherence + genome quality + votes.
 
         Components:
@@ -780,7 +782,7 @@ class Library:
 
     # -- Ratings --
 
-    def rate(self, target_type: str, target_id: int, rating: int):
+    def rate(self, target_type: str, target_id: int, rating: int) -> None:
         """Record a like (+1) or dislike (-1).
 
         Loop votes are clamped to -1/0/+1 (replaces previous vote).

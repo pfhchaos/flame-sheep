@@ -16,14 +16,21 @@ Mutation is driven by beat detection from audio.py:
   - hihat -> perturb affine coefficients slightly
 """
 
-import numpy as np
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+import numpy as np
 
 from .variations import (
     Variation, NUM_VARIATIONS, MAX_VAR_PARAMS, MAX_PARAMS_PER_VAR,
     SLOT_SIZE, PARAMETRIC_VARIATIONS, VAR_PARAMS_SPEC,
     random_var_params, apply_variation_cpu, apply_variations_cpu,
 )
+
+if TYPE_CHECKING:
+    from .renderer import FlameRenderer
 
 # Re-export for backwards compatibility
 _PARAMETRIC_VARIATIONS = PARAMETRIC_VARIATIONS
@@ -45,7 +52,7 @@ class Transform:
     # Probability weight for this transform being chosen
     weight: float = 1.0
     # Per-variation parameters (e.g. julian_power, splits_x)
-    var_params: dict = field(default_factory=dict)
+    var_params: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def random(cls, rng: np.random.Generator) -> 'Transform':
@@ -309,7 +316,7 @@ class Genome:
         return affines, active_vars, colors, weights
 
 
-    def aesthetic_score(self, renderer=None, n_test: int = 5000) -> dict[str, float]:
+    def aesthetic_score(self, renderer: FlameRenderer | None = None, n_test: int = 5000) -> dict[str, float]:
         """
         Compute aesthetic quality metrics for this genome.
         
@@ -386,7 +393,7 @@ class Genome:
 
         return _score_from_histogram(hit_grid, color_grid)
 
-    def _aesthetic_score_gpu(self, renderer) -> dict[str, float]:
+    def _aesthetic_score_gpu(self, renderer: FlameRenderer) -> dict[str, float]:
         """
         GPU histogram aesthetic scorer.
 

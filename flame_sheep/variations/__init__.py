@@ -9,6 +9,7 @@ Modules:
     _params    — random parameter generation (from JWildfire randomize())
     _cpu       — CPU approximation for viability testing
 """
+from __future__ import annotations
 
 from ._registry import (
     Variation,

@@ -14,6 +14,7 @@ Usage:
     log = logging.getLogger(__name__)
     log.info('something happened')
 """
+from __future__ import annotations
 
 import logging
 import logging.handlers
@@ -30,7 +31,7 @@ LOG_FORMAT = '%(asctime)s %(name)s %(levelname)s %(message)s'
 LOG_DATE_FORMAT = '%H:%M:%S'
 
 
-def setup_logging(level: str = 'INFO', log_file: bool = True, quiet: bool = False):
+def setup_logging(level: str = 'INFO', log_file: bool = True, quiet: bool = False) -> None:
     """Configure logging for the application.
 
     Args:

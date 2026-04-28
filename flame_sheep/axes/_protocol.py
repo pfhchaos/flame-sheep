@@ -1,7 +1,12 @@
 """Visual axis protocol — interface for composable beat-reactive state machines."""
 
-from typing import Protocol
-from flame_sheep_audio import AudioState
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from flame_sheep_audio import AudioState
+    from flame_sheep.main import FlameSheepCore
 
 
 class VisualAxis(Protocol):
@@ -18,4 +23,4 @@ class VisualAxis(Protocol):
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None: ...
 
-    def contribute(self, frame) -> None: ...
+    def contribute(self, frame: FlameSheepCore.FrameState) -> None: ...

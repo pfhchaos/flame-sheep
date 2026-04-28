@@ -1,6 +1,9 @@
 """Palette axis — snare events drive palette graph traversal."""
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 log = logging.getLogger(__name__)
 
@@ -11,6 +14,10 @@ from flame_sheep_audio import AudioState
 from flame_sheep.genome import _lerp_arr
 from flame_sheep.config import cfg
 
+if TYPE_CHECKING:
+    from flame_sheep.main import FlameSheepCore
+    from flame_sheep.storage import Library
+
 
 class PaletteAxis:
     """Snare -> palette walk. Energy controls jump distance."""
@@ -18,11 +25,13 @@ class PaletteAxis:
     PALETTE_HISTORY_SIZE = 8
 
     @property
-    def DRIFT_MORPH_SPEED(self): return cfg.palette.drift_morph_speed
+    def DRIFT_MORPH_SPEED(self) -> float: return cfg.palette.drift_morph_speed
     @property
-    def DENSITY_DAMPING(self): return cfg.palette.density_damping
+    def DENSITY_DAMPING(self) -> float: return cfg.palette.density_damping
 
-    def __init__(self, initial_palette: np.ndarray, lib=None, rng=None):
+    def __init__(self, initial_palette: np.ndarray,
+                 lib: Library | None = None,
+                 rng: np.random.Generator | None = None) -> None:
         self.enabled = True
         self._lib = lib
         self._rng = rng or np.random.default_rng()
@@ -60,7 +69,7 @@ class PaletteAxis:
         # Decay speed toward drift
         self.palette_speed = max(self.DRIFT_MORPH_SPEED, self.palette_speed * 0.98)
 
-    def contribute(self, frame) -> None:
+    def contribute(self, frame: FlameSheepCore.FrameState) -> None:
         frame.palette = _lerp_arr(
             self.palette_current, self.palette_target, self.palette_t)
 
@@ -100,7 +109,7 @@ class PaletteAxis:
         from flame_sheep.genome import _random_palette
         return _random_palette(self._rng)
 
-    def _track_palette(self, palette_id: int):
+    def _track_palette(self, palette_id: int) -> None:
         """Add palette to recent history, deduplicating consecutive repeats."""
         if not self.palette_history or self.palette_history[-1] != palette_id:
             self.palette_history.append(palette_id)
