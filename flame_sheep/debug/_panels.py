@@ -167,10 +167,13 @@ class SpectrumPanel(Panel):
     """FFT spectrum with band frequency brackets underneath."""
 
     def __init__(self, band_config: BandConfig) -> None:
-        super().__init__(height=76)
+        super().__init__(height=160)
         self._band_config = band_config
         self._spectrum: np.ndarray = np.zeros(0)
         self._stability: np.ndarray = np.zeros(0)
+        # Precomputed log-frequency x positions (built on first render)
+        self._x_positions: np.ndarray | None = None
+        self._x_widths: np.ndarray | None = None
 
     def update(self, snap: AudioSnapshot, timeline: TimelineBuffer, dt: float) -> None:
         self._spectrum = snap.spectrum
@@ -186,46 +189,84 @@ class SpectrumPanel(Panel):
         t = (log_f - min_log) / (max_log - min_log)
         return plot_x + t * plot_w
 
+    def _ensure_x_cache(self, plot_x: float, plot_w: float) -> None:
+        """Precompute log-frequency x positions and widths for FFT bins."""
+        if self._x_positions is not None:
+            return
+        min_log = math.log2(20.0)
+        max_log = math.log2(24000.0)
+        log_range = max_log - min_log
+        freqs = np.maximum(FREQS[1:], 20.0)
+        log_f = np.log2(freqs)
+        t = (log_f - min_log) / log_range
+        self._x_positions = (plot_x + t * plot_w).astype(np.float32)
+        # Widths: distance to next bin's x position
+        widths = np.diff(self._x_positions, append=self._x_positions[-1] + 1.0)
+        self._x_widths = np.maximum(widths, 1.0).astype(np.float32)
+
+    def _draw_spectrum_strip(self, draw: SolidRenderer, text: TextRenderer,
+                             values: np.ndarray, label: str,
+                             x: float, y: float, w: float, strip_h: float,
+                             color: tuple[float, float, float, float],
+                             plot_x: float, plot_w: float) -> None:
+        """Draw one spectrum strip efficiently."""
+        draw.rect(x, y, w, strip_h, _BG)
+        text.draw(label, x + 4, y + 2, _DIM)
+
+        if len(values) < 2:
+            return
+        self._ensure_x_cache(plot_x, plot_w)
+
+        max_val = max(values[1:].max(), 1e-10)
+        n = min(len(values) - 1, len(self._x_positions))
+        normalized = values[1:n+1] / max_val
+        heights = normalized * (strip_h - 4)
+
+        # Batch rects — only draw bins with visible height
+        xs = self._x_positions[:n]
+        ws = self._x_widths[:n]
+        r, g, b, a = color
+        v = draw._vertices
+        base_y = y + strip_h
+        for i in range(n):
+            h = heights[i]
+            if h < 0.5:
+                continue
+            bx = xs[i]
+            bw = ws[i]
+            by = base_y - h
+            v.extend([bx, by, r, g, b, a])
+            v.extend([bx + bw, by, r, g, b, a])
+            v.extend([bx + bw, base_y, r, g, b, a])
+            v.extend([bx, by, r, g, b, a])
+            v.extend([bx + bw, base_y, r, g, b, a])
+            v.extend([bx, base_y, r, g, b, a])
+
     def render(self, draw: SolidRenderer, text: TextRenderer,
                x: int, y: int, w: int, h: int) -> None:
-        draw.rect(x, y, w, h, _BG)
+        plot_x = x + 36.0
+        plot_w = w - 40.0
+        bracket_h = 20
+        n_strips = 3 if len(self._stability) == len(self._spectrum) else 1
+        strip_h = (h - bracket_h) / n_strips
 
-        plot_x = x + 4.0
-        plot_w = w - 8.0
-        spec_h = h - 16  # leave room for band brackets (one line)
+        if n_strips == 3:
+            harmonic = self._spectrum * self._stability
+            percussive = self._spectrum * (1.0 - self._stability)
+            self._draw_spectrum_strip(draw, text, self._spectrum, 'full',
+                                      x, y, w, strip_h, _FG, plot_x, plot_w)
+            self._draw_spectrum_strip(draw, text, harmonic, 'harm',
+                                      x, y + strip_h, w, strip_h,
+                                      _CYAN, plot_x, plot_w)
+            self._draw_spectrum_strip(draw, text, percussive, 'perc',
+                                      x, y + strip_h * 2, w, strip_h,
+                                      _ORANGE, plot_x, plot_w)
+        else:
+            self._draw_spectrum_strip(draw, text, self._spectrum, 'full',
+                                      x, y, w, strip_h, _FG, plot_x, plot_w)
 
-        if len(self._spectrum) > 1:
-            n_bins = len(self._spectrum)
-            max_val = max(self._spectrum.max(), 1e-10)
-            has_stability = len(self._stability) == n_bins
-
-            for i in range(1, n_bins):
-                freq = FREQS[i] if i < len(FREQS) else 24000.0
-                if freq < 20 or freq > 24000:
-                    continue
-                bx = self._freq_to_x(freq, plot_x, plot_w)
-                next_freq = FREQS[min(i + 1, len(FREQS) - 1)]
-                bx2 = self._freq_to_x(next_freq, plot_x, plot_w)
-                bw = max(bx2 - bx, 1.0)
-                val = self._spectrum[i] / max_val
-                bar_h = val * spec_h
-
-                if has_stability:
-                    s = self._stability[i]
-                    harm_h = bar_h * s
-                    perc_h = bar_h * (1.0 - s)
-                    # Harmonic (teal) on bottom, percussive (orange) on top
-                    draw.rect(bx, y + spec_h - harm_h, bw, harm_h,
-                              (0.34, 0.76, 0.76, 0.7))
-                    draw.rect(bx, y + spec_h - bar_h, bw, perc_h,
-                              (0.85, 0.55, 0.33, 0.7))
-                else:
-                    draw.rect(bx, y + spec_h - bar_h, bw, bar_h, _FG)
-
-        # Band brackets below spectrum
-        # Detection bands: one shared line (springs keep them apart)
-        # Energy bands: separate line (can overlap detection bands)
-        bracket_y = y + spec_h + 2
+        # Band brackets below spectrums
+        bracket_y = y + h - bracket_h
         ranges = self._band_config.all_band_ranges
         all_names = self._band_config.all_band_names
         det_names = set(self._band_config.detection_band_names)
