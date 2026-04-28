@@ -12,7 +12,6 @@ import pytest
 
 from flame_sheep.main import FlameSheepCore
 from .conftest import FakeClock, trivial_genome
-from flame_sheep.mode import Mode
 
 
 @pytest.fixture
@@ -27,9 +26,7 @@ def core(clock):
     _seed = iter(range(1000))
     c = FlameSheepCore(test_audio=True, lib=None, clock=clock,
                        genome_factory=lambda: trivial_genome(next(_seed)))
-    # SyntheticAudioProcessor simulates music — force beat mode
-    c._mode.mode = Mode.BEAT
-    c._mode._perc_ema = 0.8
+    # SyntheticAudioProcessor now returns mode='beat' by default
     yield c
     c.stop()
 
