@@ -9,6 +9,9 @@ Core rendering/audio/genome logic lives in FlameSheepCore so it can be
 shared between both modes.
 """
 
+import faulthandler
+faulthandler.enable()  # print traceback on SIGSEGV instead of silent death
+
 import logging
 
 log = logging.getLogger(__name__)
@@ -832,6 +835,14 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             # Compute pass — surface doesn't matter for compute, keep first
             if not session.make_current(first_surf):
                 break  # surfaces died (sway reload?)
+            # Check GL health before committing to expensive operations.
+            # A VT switch can leave EGL "current" but the GPU inaccessible.
+            gl_err = ctx.error
+            if gl_err:
+                log.warning(f'[render] GL error before frame: {gl_err}, '
+                            f'skipping frame (VT switch?)')
+                session.release_current()
+                continue
             renderer.upload_audio(frame.spectrum)
             renderer.upload_genome(frame.genome)
             renderer.upload_palette(frame.palette)
