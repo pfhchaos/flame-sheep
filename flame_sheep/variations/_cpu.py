@@ -218,8 +218,8 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
     elif var_idx == 29: # cylinder
         return w*np.sin(x), w*y
     elif var_idx == 30: # splits
-        sx = _current_var_params.get('splits_sx', 0.5)
-        sy = _current_var_params.get('splits_sy', 0.5)
+        sx = _current_var_params.get('splits_x', 0.5)
+        sy = _current_var_params.get('splits_y', 0.5)
         ox = x + sx if x >= 0.0 else x - sx
         oy = y + sy if y >= 0.0 else y - sy
         return w*ox, w*oy
