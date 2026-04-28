@@ -43,6 +43,31 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         return w*x, w*y
     elif var_idx == 1: # sinusoidal
         return w*np.sin(x), w*np.sin(y)
+    elif var_idx == 4: # horseshoe
+        ri = 1.0 / max(r, 1e-6)
+        return w*ri*((x - y)*(x + y)), w*ri*(2.0*x*y)
+    elif var_idx == 5: # polar
+        return w*(th / np.pi), w*(r - 1.0)
+    elif var_idx == 6: # handkerchief
+        return w*r*np.sin(th + r), w*r*np.cos(th - r)
+    elif var_idx == 7: # heart
+        return w*r*np.sin(th*r), w*r*(-np.cos(th*r))
+    elif var_idx == 8: # disk
+        pir = np.pi * r
+        return w*(th/np.pi)*np.sin(pir), w*(th/np.pi)*np.cos(pir)
+    elif var_idx == 11: # diamond
+        return w*np.sin(th)*np.cos(r), w*np.cos(th)*np.sin(r)
+    elif var_idx == 12: # ex
+        p0 = np.sin(th + r)
+        p1 = np.cos(th - r)
+        return w*r*(p0**3 + p1**3), w*r*(p0**3 - p1**3)
+    elif var_idx == 14: # bent
+        qx = x * 2.0 if x < 0.0 else x
+        qy = y * 0.5 if y < 0.0 else y
+        return w*qx, w*qy
+    elif var_idx == 16: # fisheye
+        ri = 2.0 / (r + 1.0)
+        return w*ri*y, w*ri*x
     elif var_idx == 15: # waves
         fx = _current_var_params.get('waves_freq_x', 0.5)
         fy = _current_var_params.get('waves_freq_y', 0.5)
@@ -182,6 +207,90 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         scalexx = 0.5 * scalex * (1.0 + np.sin(y * sx_freq))
         scaleyy = 0.5 * scaley * (1.0 + np.sin(x * sy_freq))
         return w * (x + np.sin(y * freqx) * scalexx), w * (y + np.sin(x * freqy) * scaleyy)
+    elif var_idx == 20: # cosine
+        return w*np.cos(np.pi*x)*np.cosh(y), w*(-np.sin(np.pi*x)*np.sinh(y))
+    elif var_idx == 27: # eyefish
+        ri = 2.0 / (r + 1.0)
+        return w*ri*x, w*ri*y
+    elif var_idx == 28: # bubble
+        d = 4.0 / (x*x + y*y + 4.0)
+        return w*d*x, w*d*y
+    elif var_idx == 29: # cylinder
+        return w*np.sin(x), w*y
+    elif var_idx == 30: # splits
+        sx = _current_var_params.get('splits_sx', 0.5)
+        sy = _current_var_params.get('splits_sy', 0.5)
+        ox = x + sx if x >= 0.0 else x - sx
+        oy = y + sy if y >= 0.0 else y - sy
+        return w*ox, w*oy
+    elif var_idx == 31: # cloverleaf
+        a = np.arctan2(y, x)  # phi (standard atan2)
+        rr = r * (np.sin(2.0*a) + 0.25*np.sin(6.0*a))
+        return w*rr*np.cos(a), w*rr*np.sin(a)
+    elif var_idx == 36: # butterfly
+        w_factor = 1.3029400
+        ri = max(r, 1e-6)
+        return w*w_factor*y*(2.0*x/ri), w*w_factor*ri
+    elif var_idx == 37: # curl
+        c1 = _current_var_params.get('curl_c1', 0.5)
+        c2 = _current_var_params.get('curl_c2', 0.0)
+        x2 = x*x
+        y2 = y*y
+        re = 1.0 + c1*x + c2*(x2 - y2)
+        im = c1*y + c2*2.0*x*y
+        d = max(re*re + im*im, 1e-6)
+        return w*(x*re + y*im)/d, w*(y*re - x*im)/d
+    elif var_idx == 38: # rectangles
+        rx = _current_var_params.get('rectangles_rx', 0.5)
+        ry = _current_var_params.get('rectangles_ry', 0.5)
+        ox = x if abs(rx) < 1e-6 else (2.0*np.floor(x/rx) + 1.0)*rx - x
+        oy = y if abs(ry) < 1e-6 else (2.0*np.floor(y/ry) + 1.0)*ry - y
+        return w*ox, w*oy
+    elif var_idx == 39: # checks
+        cs = _current_var_params.get('checks_cs', 1.0)
+        cx = _current_var_params.get('checks_cx', 0.5)
+        cy = _current_var_params.get('checks_cy', 0.5)
+        ics = 1.0 / max(cs, 1e-6)
+        cell = int(round(x*ics)) + int(round(y*ics))
+        if cell % 2 == 0:
+            return w*(x + cx), w*y
+        else:
+            return w*x, w*(y + cy)
+    elif var_idx == 40: # hex_modulus
+        size = _current_var_params.get('hex_modulus_size', 1.0)
+        hsize = 0.86602540 / max(size, 1e-6)
+        weight = 1.0 / 0.86602540
+        hx = 0.57735027*x*hsize - y*hsize/3.0
+        hz = 2.0*y*hsize/3.0
+        hy = -hx - hz
+        rx_h = round(hx)
+        ry_h = round(hy)
+        rz_h = round(hz)
+        xd = abs(rx_h - hx)
+        yd = abs(ry_h - hy)
+        zd = abs(rz_h - hz)
+        if xd > yd and xd > zd:
+            rx_h = -ry_h - rz_h
+        elif yd > zd:
+            ry_h = -rx_h - rz_h
+        fx = hx - rx_h
+        fy = hz - rz_h
+        return w*fx*weight, w*fy*weight
+    elif var_idx == 41: # kaleidoscope
+        pull = _current_var_params.get('kaleidoscope_pull', 0.0)
+        rot = _current_var_params.get('kaleidoscope_rot', 0.0)
+        n = max(_current_var_params.get('kaleidoscope_n', 6.0), 2.0)
+        cr = np.cos(rot)
+        sr = np.sin(rot)
+        rpx = cr*x - sr*y
+        rpy = sr*x + cr*y
+        a = np.arctan2(rpy, rpx)
+        ri = np.sqrt(rpx*rpx + rpy*rpy) + pull
+        sector = 2.0*np.pi / n
+        a = a % sector
+        if a > sector*0.5:
+            a = sector - a
+        return w*ri*np.cos(a), w*ri*np.sin(a)
     elif var_idx == 2: # spherical — 1/r², can blow up near origin
         r2 = x*x + y*y + 1e-10
         return w*x/r2, w*y/r2
