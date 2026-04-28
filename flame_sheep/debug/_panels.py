@@ -301,9 +301,13 @@ class BandMetricsPanel(Panel):
         self._band_config = band_config
         self._bands: dict[str, BandState] = {}
         self._det_names: set[str] = set(band_config.detection_band_names)
+        self._rms_peak: float = 0.001  # adaptive peak for bar scaling
 
     def update(self, snap: AudioSnapshot, timeline: TimelineBuffer, dt: float) -> None:
         self._bands = snap.bands
+        # Track peak RMS across all bands (slow decay so bars don't jitter)
+        max_rms = max((bs.rms for bs in snap.bands.values()), default=0.001)
+        self._rms_peak = max(self._rms_peak * 0.99, max_rms, 0.001)
 
     def render(self, draw: SolidRenderer, text: TextRenderer,
                x: int, y: int, w: int, h: int) -> None:
@@ -344,15 +348,16 @@ class BandMetricsPanel(Panel):
             else:
                 col_x += 62
 
-            # RMS bar
+            # RMS bar (scaled to adaptive peak)
             text.draw('rms', col_x, ry + 3, _DIM)
             col_x += 24
             draw.rect(col_x, ry + 3, bar_w, 10, _DIM)
+            scale = bar_w / self._rms_peak
             # Slow RMS ghost
-            slow_w = min(bs.slow_rms * 200, bar_w)
+            slow_w = min(bs.slow_rms * scale, bar_w)
             draw.rect(col_x, ry + 3, slow_w, 10, (0.3, 0.3, 0.4, 0.5))
             # Current RMS
-            rms_w = min(bs.rms * 200, bar_w)
+            rms_w = min(bs.rms * scale, bar_w)
             draw.rect(col_x, ry + 3, rms_w, 10, color)
 
 
