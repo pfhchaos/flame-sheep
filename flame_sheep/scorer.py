@@ -9,6 +9,8 @@ with the render loop. Lowest CPU priority (nice 19), pauses when
 system load is high (VM gaming, emerge builds, etc.).
 """
 
+from __future__ import annotations
+
 import logging
 import multiprocessing
 import os
@@ -19,7 +21,7 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 
-def _scorer_main(db_path: str, stop_event):
+def _scorer_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
     """Entry point for the scorer subprocess."""
     # Reconfigure logging in the child process
     logging.basicConfig(level=logging.DEBUG,
@@ -186,7 +188,7 @@ class BackgroundScorer:
         self._process: multiprocessing.Process | None = None
         self._stop = multiprocessing.Event()
 
-    def start(self):
+    def start(self) -> None:
         self._stop.clear()
         self._process = multiprocessing.Process(
             target=_scorer_main,
@@ -195,7 +197,7 @@ class BackgroundScorer:
         self._process.start()
         log.info('Background scorer started (pid=%d)', self._process.pid)
 
-    def stop(self):
+    def stop(self) -> None:
         self._stop.set()
         if self._process is not None:
             self._process.join(timeout=5.0)

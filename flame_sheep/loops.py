@@ -17,6 +17,8 @@ Composition strategy:
   5. Run many attempts from different seeds, keep the best loops.
 """
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass, field
 

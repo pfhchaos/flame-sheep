@@ -7,6 +7,7 @@ Ranges from JWildfire's randomize() methods:
 - Kaleidoscope: we override kal_n to [3, 8] (JWildfire's default allows
   meaningless negative values)
 """
+from __future__ import annotations
 
 import numpy as np
 

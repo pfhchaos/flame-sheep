@@ -23,6 +23,7 @@ Histogram layout (SSBO, binding=0):
 Walker state (SSBO, binding=1):
   float[N_WALKERS * 3]  — [x, y, color] per walker, persists between frames
 """
+from __future__ import annotations
 
 import ctypes
 import moderngl
@@ -32,12 +33,12 @@ from pathlib import Path
 # glBindFramebuffer(GL_FRAMEBUFFER, 0) to return to the EGL surface
 try:
     from OpenGL import GL as _GL
-    def _bind_default_framebuffer():
+    def _bind_default_framebuffer() -> None:
         _GL.glBindFramebuffer(_GL.GL_FRAMEBUFFER, 0)
 except ImportError:
     # Fallback: call glBindFramebuffer via ctypes
     _libGL = ctypes.CDLL('libGL.so.1')
-    def _bind_default_framebuffer():
+    def _bind_default_framebuffer() -> None:
         _libGL.glBindFramebuffer(0x8D40, 0)  # GL_FRAMEBUFFER = 0x8D40
 
 from .genome import Genome, MAX_TRANSFORMS, NUM_VARIATIONS, MAX_ACTIVE_VARS, SLOT_SIZE
@@ -48,7 +49,7 @@ SHADER_DIR = Path(__file__).parent / 'shaders'
 def _resolve_includes(source: str, shader_dir: Path) -> str:
     """Resolve #include "file.glsl" directives by inlining file contents."""
     import re
-    def _replace(m):
+    def _replace(m: re.Match[str]) -> str:
         path = shader_dir / m.group(1)
         return path.read_text()
     return re.sub(r'#include\s+"(.+?)"', _replace, source)
@@ -74,7 +75,7 @@ class Viewport:
         self.w = w
         self.h = h
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f'Viewport(x={self.x}, y={self.y}, w={self.w}, h={self.h})'
 
 
@@ -94,7 +95,7 @@ class FlameRenderer:
         self._load_shaders()
         self._create_resources()
 
-    def _load_shaders(self):
+    def _load_shaders(self) -> None:
         from .variations._symmetry_groups import generate_glsl
         flame_src = (SHADER_DIR / 'flame.comp').read_text()
         flame_src = _resolve_includes(flame_src, SHADER_DIR)
@@ -115,7 +116,7 @@ class FlameRenderer:
             (SHADER_DIR / 'downsample_hist.comp').read_text()
         )
 
-    def _create_resources(self):
+    def _create_resources(self) -> None:
         w, h = self.canvas_w, self.canvas_h
         n_pixels = w * h
 
@@ -182,7 +183,7 @@ class FlameRenderer:
         self._blur_fbos = {}
         self.blur_radius = 1.0  # adjustable blur strength
 
-    def reset_walkers(self):
+    def reset_walkers(self) -> None:
         """Re-randomize walker positions. Call after a genome swap to avoid
         stuck walkers that escaped to infinity under a degenerate genome."""
         walker_data = np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(np.float32)
@@ -192,7 +193,7 @@ class FlameRenderer:
     # Per-frame API
     # ------------------------------------------------------------------
 
-    def upload_genome(self, genome: Genome):
+    def upload_genome(self, genome: Genome) -> None:
         affines, active_vars, colors, weights = genome.to_gpu_arrays()
         self.affines_buf.write(affines.tobytes())
         self.active_vars_buf.write(active_vars.tobytes())
@@ -209,27 +210,27 @@ class FlameRenderer:
 
         self.palette_tex.write(genome.palette.tobytes())
 
-    def upload_palette(self, palette: np.ndarray):
+    def upload_palette(self, palette: np.ndarray) -> None:
         """Upload a palette independently of the genome.
         palette: shape (256, 3) float32."""
         self.palette_tex.write(palette.tobytes())
 
-    def upload_audio(self, spectrum: np.ndarray):
+    def upload_audio(self, spectrum: np.ndarray) -> None:
         self.audio_tex.write(spectrum.astype(np.float32).tobytes())
 
-    def clear_histogram(self):
+    def clear_histogram(self) -> None:
         size = self.canvas_w * self.canvas_h * 2
         self.clear_shader['u_size'] = size
         groups = (size + 63) // 64
         self.clear_shader.run(group_x=groups)
         self.ctx.memory_barrier()
 
-    def dispatch_chaos_game(self, iterations: int = N_ITERS):
+    def dispatch_chaos_game(self, iterations: int = N_ITERS) -> None:
         self.compute_shader['u_iterations'] = iterations
         groups = N_WALKERS // 64
         self.compute_shader.run(group_x=groups)
 
-    def _get_blur_fbos(self, w: int, h: int):
+    def _get_blur_fbos(self, w: int, h: int) -> tuple[moderngl.Framebuffer, moderngl.Texture, moderngl.Framebuffer, moderngl.Texture]:
         """Get or create a pair of FBOs for two-pass blur at the given size."""
         key = (w, h)
         if key not in self._blur_fbos:
@@ -249,7 +250,7 @@ class FlameRenderer:
         return self._blur_fbos[key]
 
     def render_tonemap(self, viewport: Viewport, surface_w: int, surface_h: int,
-                       brightness: float = 6.0):
+                       brightness: float = 6.0) -> None:
         """
         Render the tonemap pass for one window's viewport slice,
         then apply a two-pass gaussian blur.

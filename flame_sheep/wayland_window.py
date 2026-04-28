@@ -16,6 +16,8 @@ For multi-output mode (continuous image across monitors), use WallpaperSession:
           session.swap(win)
 """
 
+from __future__ import annotations
+
 import logging
 
 log = logging.getLogger(__name__)
@@ -29,6 +31,8 @@ import time
 import signal
 from collections import deque
 
+from typing import TYPE_CHECKING, Any
+
 import cffi
 import moderngl
 import moderngl.mgl as _mgl
@@ -40,7 +44,7 @@ from pywayland.client import Display
 _ffi = cffi.FFI()
 
 
-def _cffi_to_void_p(cdata) -> ctypes.c_void_p:
+def _cffi_to_void_p(cdata: Any) -> ctypes.c_void_p:
     """Convert a cffi cdata pointer to a ctypes c_void_p."""
     return ctypes.c_void_p(int(_ffi.cast('uintptr_t', cdata)))
 
@@ -123,7 +127,7 @@ _libwlegl.wl_egl_window_resize.restype    = None
 _libwlegl.wl_egl_window_resize.argtypes   = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
 
 
-def _egl_check(label: str):
+def _egl_check(label: str) -> None:
     err = _libegl.eglGetError()
     if err != 0x3000:  # EGL_SUCCESS
         raise RuntimeError(f'EGL error after {label}: 0x{err:04x}')
@@ -138,17 +142,17 @@ class OutputSurface:
     One wlr-layer-shell BACKGROUND surface for a single output.
     Does NOT own an EGL context — that lives in WallpaperSession.
     """
-    def __init__(self):
-        self.width        = 0
-        self.height       = 0
-        self.should_close = False
-        self._configured  = False
-        self._frame_pending   = True   # start True so first frame renders
-        self._frame_callback  = None   # prevent GC of pending wl_callback
-        self._wl_surface      = None
-        self._layer_surface   = None
-        self._egl_window      = None  # wl_egl_window*
-        self.egl_surface      = None  # EGL surface handle (int)
+    def __init__(self) -> None:
+        self.width: int        = 0
+        self.height: int       = 0
+        self.should_close: bool = False
+        self._configured: bool  = False
+        self._frame_pending: bool   = True   # start True so first frame renders
+        self._frame_callback: Any   = None   # prevent GC of pending wl_callback
+        self._wl_surface: Any       = None
+        self._layer_surface: Any    = None
+        self._egl_window: int | None      = None  # wl_egl_window*
+        self.egl_surface: int | None      = None  # EGL surface handle (int)
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +188,7 @@ class WallpaperSession:
         registry = display.get_registry()
         outputs  = []
 
-        def _on_global(reg, name, interface, version):
+        def _on_global(reg: Any, name: int, interface: str, version: int) -> None:
             if interface == WlOutput.name:
                 out = reg.bind(name, WlOutput, min(version, 4))
                 outputs.append(out)
@@ -192,10 +196,10 @@ class WallpaperSession:
         registry.dispatcher['global'] = _on_global
         display.roundtrip()
 
-        output_names: dict = {}
+        output_names: dict[int, str] = {}
 
-        def make_name_handler(out):
-            def _on_name(output, name):
+        def make_name_handler(out: Any) -> Any:
+            def _on_name(output: Any, name: str) -> None:
                 output_names[id(out)] = name
             return _on_name
 
@@ -205,14 +209,14 @@ class WallpaperSession:
         display.disconnect()
         return list(output_names.values())
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.ctx: moderngl.Context | None = None
-        self._egl_display  = None
-        self._egl_config   = None
-        self._egl_context  = None
+        self._egl_display: int | None  = None
+        self._egl_config: Any   = None
+        self._egl_context: int | None  = None
 
         # Wayland
-        self._wl_display   = Display()
+        self._wl_display: Any   = Display()
         self._wl_display.connect()
 
         self._compositor   = None
@@ -235,7 +239,7 @@ class WallpaperSession:
         signal.signal(signal.SIGINT, lambda *_: self._signal_close())
         self._surfaces: list[OutputSurface] = []
 
-    def _on_global(self, registry, name: int, interface: str, version: int):
+    def _on_global(self, registry: Any, name: int, interface: str, version: int) -> None:
         if interface == WlCompositor.name:
             self._compositor = registry.bind(name, WlCompositor, min(version, 5))
         elif interface == ZwlrLayerShellV1.name:
@@ -246,7 +250,7 @@ class WallpaperSession:
                 self._wl_outputs[oname] = _out
             out.dispatcher['name'] = _on_name
 
-    def _init_egl(self):
+    def _init_egl(self) -> None:
         wl_ptr = _cffi_to_void_p(self._wl_display._ptr)
 
         if _eglGetPlatformDisplayEXT is not None:
@@ -353,8 +357,8 @@ class WallpaperSession:
         self._surfaces.append(surf)
         return surf
 
-    def _on_configure(self, surf: OutputSurface, layer_surface,
-                      serial: int, width: int, height: int):
+    def _on_configure(self, surf: OutputSurface, layer_surface: Any,
+                      serial: int, width: int, height: int) -> None:
         if width  > 0: surf.width  = width
         if height > 0: surf.height = height
         layer_surface.ack_configure(serial)
@@ -383,7 +387,7 @@ class WallpaperSession:
             return False
         return True
 
-    def release_current(self):
+    def release_current(self) -> None:
         _libegl.eglMakeCurrent(
             self._egl_display,
             EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)
@@ -482,11 +486,11 @@ class WallpaperSession:
             self._signal_close()
             return False
 
-    def _signal_close(self):
+    def _signal_close(self) -> None:
         for s in self._surfaces:
             s.should_close = True
 
-    def destroy(self):
+    def destroy(self) -> None:
         self.release_current()
         for surf in self._surfaces:
             if surf._layer_surface:
@@ -534,17 +538,17 @@ class WallpaperWindow:
         signal.signal(signal.SIGINT, lambda *_: self._session._signal_close())
 
     @property
-    def should_close(self):
+    def should_close(self) -> bool:
         return self._surf.should_close
 
-    def make_current(self):
+    def make_current(self) -> None:
         self._session.make_current(self._surf)
 
-    def release_current(self):
+    def release_current(self) -> None:
         self._session.release_current()
 
-    def swap(self):
+    def swap(self) -> None:
         self._session.swap(self._surf)
 
-    def destroy(self):
+    def destroy(self) -> None:
         self._session.destroy()

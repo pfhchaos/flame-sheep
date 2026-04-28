@@ -1,4 +1,5 @@
 """Variation registry — enum indices matching flame.comp shader order."""
+from __future__ import annotations
 
 
 class Variation:

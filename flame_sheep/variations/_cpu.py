@@ -5,6 +5,7 @@ Safe/bounded variations fall through to linear (identity * w).
 
 Used by Genome.is_viable() and BackgroundScorer for CPU chaos game.
 """
+from __future__ import annotations
 
 import numpy as np
 

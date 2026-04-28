@@ -1,8 +1,12 @@
 """Genome axis — kick/drop events drive genome morphing and swapping."""
 
+from __future__ import annotations
+
 import logging
 import threading
+from collections.abc import Callable
 from collections import deque
+from typing import TYPE_CHECKING
 
 from flame_sheep.config import cfg
 import numpy as np
@@ -12,6 +16,10 @@ log = logging.getLogger(__name__)
 from flame_sheep_audio import AudioState, BeatEvent
 from flame_sheep.genome import Genome
 from flame_sheep.variations import Variation
+
+if TYPE_CHECKING:
+    from flame_sheep.main import FlameSheepCore
+    from flame_sheep.storage import Library
 
 
 class GenomeAxis:
@@ -35,38 +43,40 @@ class GenomeAxis:
     LOOP_HISTORY_SIZE = 8
 
     @property
-    def DRIFT_MORPH_SPEED(self):
+    def DRIFT_MORPH_SPEED(self) -> float:
         return cfg.genome.drift_morph_speed
 
     @property
-    def KICK_MORPH_PULSE(self):
+    def KICK_MORPH_PULSE(self) -> float:
         return cfg.genome.kick_morph_pulse
 
     @property
-    def BREAK_DECAY(self):
+    def BREAK_DECAY(self) -> float:
         return cfg.genome.break_decay
 
     @property
-    def DENSITY_MORPH_SCALE(self):
+    def DENSITY_MORPH_SCALE(self) -> float:
         return cfg.genome.density_morph_scale
 
     @property
-    def STRONG_BEAT_THRESHOLD(self):
+    def STRONG_BEAT_THRESHOLD(self) -> float:
         return cfg.genome.strong_beat_threshold
 
     @property
-    def DENSITY_DAMPING(self):
+    def DENSITY_DAMPING(self) -> float:
         return cfg.genome.density_damping
 
     @property
-    def CENTROID_SWAP_THRESHOLD(self):
+    def CENTROID_SWAP_THRESHOLD(self) -> float:
         return cfg.genome.centroid_swap_threshold
 
     @property
-    def MIN_GENOME_DISTANCE(self):
+    def MIN_GENOME_DISTANCE(self) -> float:
         return cfg.drift.min_genome_distance
 
-    def __init__(self, genome_factory, lib=None, rng=None):
+    def __init__(self, genome_factory: Callable[[], Genome],
+                 lib: Library | None = None,
+                 rng: np.random.Generator | None = None) -> None:
         self.enabled = True
         self._genome_factory = genome_factory
         self._lib = lib
@@ -183,7 +193,7 @@ class GenomeAxis:
         # Blend toward baseline — ramps up after swap, decays down after pulse
         self.morph_speed = 0.95 * self.morph_speed + 0.05 * density_speed
 
-    def contribute(self, frame) -> None:
+    def contribute(self, frame: FlameSheepCore.FrameState) -> None:
         frame.genome = self.current_genome.lerp(self.target_genome, self.morph_t)
         # Slowly nudge center toward origin — keeps attractor on screen
         CENTER_PULL = 0.002  # ~1% per frame toward center
@@ -191,7 +201,7 @@ class GenomeAxis:
 
     # --- Event handlers ---
 
-    def _handle_kick(self, event: BeatEvent, clock: float, audio=None):
+    def _handle_kick(self, event: BeatEvent, clock: float, audio: AudioState | None = None) -> None:
         since = clock - self._last_kick_time
         self._last_kick_time = clock
 
@@ -233,7 +243,7 @@ class GenomeAxis:
             )
             log.debug(f"[kick]  +{since:.3f}s  energy={event.energy:.2f}")
 
-    def _handle_song_start(self):
+    def _handle_song_start(self) -> None:
         """Reset state for new song — swap loop + reset energy tracking."""
         self._last_kick_time = 0.0
         self._recent_kick_energy = 0.5
@@ -245,7 +255,7 @@ class GenomeAxis:
             self.next_loop()
             log.info(f"[song_start] switched to loop #{self.active_loop_id}")
 
-    def accept_handoff(self, genome: Genome, loop_id: int | None = None):
+    def accept_handoff(self, genome: Genome, loop_id: int | None = None) -> None:
         """Receive genome from drift mode on transition back to active."""
         self.current_genome = genome
         self.target_genome = genome
@@ -257,7 +267,7 @@ class GenomeAxis:
             self.load_loop(loop_id)
         self._prefetch_genome()
 
-    def force_swap(self):
+    def force_swap(self) -> None:
         """Immediately swap to a new genome."""
         self.current_genome = self.current_genome.lerp(self.target_genome, self.morph_t)
         self._swap_next_genome()
@@ -268,7 +278,7 @@ class GenomeAxis:
 
     # --- Loop management ---
 
-    def _load_top_loop(self):
+    def _load_top_loop(self) -> None:
         if self._lib is None or self._lib.loop_count() < 1:
             self._loop_genomes = []
             self.active_loop_id = None
@@ -276,10 +286,10 @@ class GenomeAxis:
             return
         self.next_loop()
 
-    def load_loop(self, loop_id: int):
+    def load_loop(self, loop_id: int) -> None:
         self._start_loop(loop_id)
 
-    def _start_loop(self, loop_id: int):
+    def _start_loop(self, loop_id: int) -> None:
         items = self._lib.load_loop(loop_id)
         self._loop_genomes = [genome for _, genome, _ in items]
         n = len(self._loop_genomes)
@@ -296,7 +306,7 @@ class GenomeAxis:
             marker = " <--" if i == start else ""
             log.info(f"  [{i}] {_describe_genome(g)}{marker}")
 
-    def next_loop(self):
+    def next_loop(self) -> None:
         if self._lib is None or self._lib.loop_count() < 1:
             return
         top = self._lib.top_loops(n=20)
@@ -313,7 +323,7 @@ class GenomeAxis:
         lid, info = candidates[idx]
         self._load_and_track(lid, info["fitness"])
 
-    def _load_and_track(self, loop_id: int, fitness: float | None = None):
+    def _load_and_track(self, loop_id: int, fitness: float | None = None) -> None:
         self._loop_history.append(loop_id)
         self.load_loop(loop_id)
         if fitness is not None:
@@ -321,7 +331,7 @@ class GenomeAxis:
 
     # --- Genome prefetch ---
 
-    def _prefetch_genome(self):
+    def _prefetch_genome(self) -> None:
         current_snapshot = self.current_genome
         factory = self._genome_factory
 
@@ -335,7 +345,7 @@ class GenomeAxis:
 
         threading.Thread(target=_gen, daemon=True).start()
 
-    def _swap_next_genome(self):
+    def _swap_next_genome(self) -> None:
         if self._loop_genomes:
             self._loop_pos = (self._loop_pos + 1) % len(self._loop_genomes)
             self.target_genome = self._loop_genomes[self._loop_pos]
