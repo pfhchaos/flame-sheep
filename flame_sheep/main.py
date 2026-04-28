@@ -847,16 +847,15 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             frame = core.tick(frame_time)
             _watchdog_last = time.perf_counter()
 
-            # Compute pass — surface doesn't matter for compute, keep first
-            if not session.make_current(first_surf):
-                break  # surfaces died (sway reload?)
-            # Check GL health before committing to expensive operations.
-            # A VT switch can leave EGL "current" but the GPU inaccessible.
-            # Skip GL calls if GPU is paused (VT switch)
+            # Skip ALL GL calls if GPU is paused (VT switch)
             if session_monitor.gpu_paused:
                 _watchdog_last = time.perf_counter()
                 time.sleep(0.1)
                 continue
+
+            # Compute pass — surface doesn't matter for compute, keep first
+            if not session.make_current(first_surf):
+                break  # surfaces died (sway reload?)
             renderer.upload_audio(frame.spectrum)
             renderer.upload_genome(frame.genome)
             renderer.upload_palette(frame.palette)
