@@ -181,6 +181,34 @@ class TestConfigReload:
         finally:
             path.unlink()
 
+    def test_reload_fires_callbacks(self):
+        with mock.patch('flame_sheep.config.CONFIG_PATH',
+                        Path('/nonexistent/path/config.toml')):
+            c = Config()
+        calls = []
+        c.on_reload(lambda: calls.append('a'))
+        c.on_reload(lambda: calls.append('b'))
+        c.reload()
+        assert calls == ['a', 'b']
+
+    def test_reload_callbacks_fire_after_values_updated(self):
+        toml_v1 = '[genome]\ndrift_morph_speed = 10.0\n'
+        toml_v2 = '[genome]\ndrift_morph_speed = 20.0\n'
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
+            f.write(toml_v1)
+            f.flush()
+            path = Path(f.name)
+        try:
+            with mock.patch('flame_sheep.config.CONFIG_PATH', path):
+                c = Config()
+                observed = []
+                c.on_reload(lambda: observed.append(c.genome.drift_morph_speed))
+                path.write_text(toml_v2)
+                c.reload()
+                assert observed == [20.0]
+        finally:
+            path.unlink(missing_ok=True)
+
     def test_reload_resets_to_defaults_if_file_removed(self):
         toml = '[genome]\ndrift_morph_speed = 10.0\n'
         with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
@@ -199,3 +227,17 @@ class TestConfigReload:
                     DEFAULTS['genome']['drift_morph_speed']
         finally:
             path.unlink(missing_ok=True)
+
+
+class TestAudioConfigReloadCallbacks:
+    """Test reload callbacks on audio engine config."""
+
+    def test_audio_reload_fires_callbacks(self):
+        from flame_sheep_audio.config import Config as AudioConfig
+        with mock.patch('flame_sheep_audio.config.CONFIG_PATH',
+                        Path('/nonexistent/path/audio.toml')):
+            c = AudioConfig()
+        calls = []
+        c.on_reload(lambda: calls.append('fired'))
+        c.reload()
+        assert calls == ['fired']
