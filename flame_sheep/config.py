@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 CONFIG_PATH = Path.home() / '.config' / 'flame-sheep' / 'config.toml'
 
 DEFAULTS = {
+    'audio_device': None,  # auto-detect, or string like "Companion Speaker"
     'genome': {
         'drift_morph_speed': 0.001,
         'density_morph_scale': 0.003,

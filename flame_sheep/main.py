@@ -1147,7 +1147,12 @@ def main():
         return
 
     if args.wallpaper:
-        _run_wallpaper(args.audio_device, args.test_audio, blur_radius=args.blur_radius)
+        # CLI flag overrides config; config overrides auto-detect
+        audio_device = args.audio_device
+        if audio_device is None:
+            from .config import cfg
+            audio_device = cfg.audio_device
+        _run_wallpaper(audio_device, args.test_audio, blur_radius=args.blur_radius)
         return
 
     # Strip our flags from sys.argv so moderngl-window's arg parser
