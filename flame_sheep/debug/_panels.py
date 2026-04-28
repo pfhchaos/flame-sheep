@@ -41,6 +41,18 @@ def _band_color(idx: int) -> tuple[float, float, float, float]:
     return _BAND_COLORS[idx % len(_BAND_COLORS)]
 
 
+# Stable name->color mapping so timeline and spectrum brackets match
+_band_color_cache: dict[str, tuple[float, float, float, float]] = {}
+
+
+def _color_for_band(name: str, all_names: tuple[str, ...] | list[str]) -> tuple[float, float, float, float]:
+    """Get a stable color for a band name (consistent across panels)."""
+    if name not in _band_color_cache:
+        idx = list(all_names).index(name) if name in all_names else len(_band_color_cache)
+        _band_color_cache[name] = _band_color(idx)
+    return _band_color_cache[name]
+
+
 class Panel:
     """Base class for a panel strip."""
 
@@ -106,10 +118,12 @@ class HeaderPanel(Panel):
 class TimelinePanel(Panel):
     """Scrolling piano-roll of detected onsets."""
 
-    def __init__(self, band_names: tuple[str, ...]) -> None:
+    def __init__(self, band_names: tuple[str, ...],
+                 all_band_names: tuple[str, ...] | None = None) -> None:
         n_bands = max(len(band_names), 1)
         super().__init__(height=20 + n_bands * 20)
         self._band_names = band_names
+        self._all_band_names = all_band_names or band_names
         self._now = time.perf_counter()
 
     def update(self, snap: AudioSnapshot, timeline: TimelineBuffer, dt: float) -> None:
@@ -130,7 +144,7 @@ class TimelinePanel(Panel):
 
         for i, name in enumerate(self._band_names):
             lane_y = y + 4 + i * (lane_h + 4)
-            color = _band_color(i)
+            color = _color_for_band(name, self._all_band_names)
 
             # Band label
             text.draw(name[:6], x + 4, lane_y + 3, _DIM)
@@ -198,9 +212,10 @@ class SpectrumPanel(Panel):
         # Band brackets below spectrum (all on one line — springs keep them apart)
         bracket_y = y + spec_h + 2
         ranges = self._band_config.all_band_ranges
+        all_names = self._band_config.all_band_names
         det_names = set(self._band_config.detection_band_names)
-        for i, (name, (lo, hi)) in enumerate(ranges.items()):
-            color = _band_color(i)
+        for name, (lo, hi) in ranges.items():
+            color = _color_for_band(name, all_names)
             if name not in det_names:
                 color = (color[0] * 0.5, color[1] * 0.5, color[2] * 0.5, color[3])
             bx1 = self._freq_to_x(lo, plot_x, plot_w)
@@ -234,7 +249,7 @@ class BandMetricsPanel(Panel):
         for i, name in enumerate(all_names):
             ry = y + 4 + i * (row_h + 4)
             bs = self._bands.get(name, BandState())
-            color = _band_color(i)
+            color = _color_for_band(name, all_names)
 
             # Band name
             text.draw(name[:6], x + 4, ry + 3, color)
@@ -308,7 +323,8 @@ def build_panels(band_config: BandConfig,
     """Build panels from band config and enabled list."""
     all_panels: dict[str, Panel] = {
         'header': HeaderPanel(),
-        'timeline': TimelinePanel(band_config.detection_band_names),
+        'timeline': TimelinePanel(band_config.detection_band_names,
+                                  all_band_names=band_config.all_band_names),
         'spectrum': SpectrumPanel(band_config),
         'band_metrics': BandMetricsPanel(band_config),
         'break': BreakPanel(),
