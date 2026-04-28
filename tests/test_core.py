@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from flame_sheep.main import FlameSheepCore
+from flame_sheep.orchestrator import Orchestrator
 from .conftest import FakeClock, trivial_genome
 
 
@@ -20,15 +21,28 @@ def clock():
 
 
 @pytest.fixture
-def core(clock):
+def orch(clock):
+    """Orchestrator with synthetic audio."""
+    o = Orchestrator(test_audio=True, clock=clock)
+    o.start()
+    yield o
+    o.stop()
+
+
+@pytest.fixture
+def core(orch, clock):
     """FlameSheepCore with synthetic audio driven by a fake clock.
     Uses trivial genomes — instant construction, no viability checks."""
     _seed = iter(range(1000))
-    c = FlameSheepCore(test_audio=True, lib=None, clock=clock,
+    c = FlameSheepCore(orchestrator=orch, lib=None, clock=clock,
                        genome_factory=lambda: trivial_genome(next(_seed)))
-    # SyntheticAudioProcessor now returns mode='beat' by default
     yield c
-    c.stop()
+
+
+def _tick(core, dt):
+    """Tick orchestrator + core together."""
+    core._orch.tick()
+    return core.tick(dt)
 
 
 def tick_for(core, clock, duration: float, fps: float = 60.0):
@@ -38,7 +52,7 @@ def tick_for(core, clock, duration: float, fps: float = 60.0):
     frames = []
     for _ in range(n_frames):
         clock.advance(dt)
-        frames.append(core.tick(dt))
+        frames.append(_tick(core, dt))
     return frames
 
 
@@ -56,7 +70,7 @@ class TestGenomeSwapRate:
 
         for _ in range(int(10.0 * 60)):  # 10 seconds at 60fps
             clock.advance(dt)
-            core.tick(dt)
+            _tick(core, dt)
             if id(core.target_genome) != prev_target:
                 swaps += 1
                 prev_target = id(core.target_genome)
@@ -73,7 +87,7 @@ class TestGenomeSwapRate:
 
         for _ in range(int(4.0 * 60)):  # 4 seconds
             clock.advance(dt)
-            core.tick(dt)
+            _tick(core, dt)
             if id(core.target_genome) != prev_target:
                 swaps += 1
                 prev_target = id(core.target_genome)
@@ -95,10 +109,10 @@ class TestBeatEventFlooding:
 
         for _ in range(int(3.0 * 60)):
             clock.advance(dt)
-            events = core.audio.process()
+            events = core._orch.audio.process()
             if len(events) > max_events:
                 max_events = len(events)
-            core.tick(dt)
+            _tick(core, dt)
 
         assert max_events <= 3, \
             f"Got {max_events} events in a single tick (max should be 3)"
@@ -110,15 +124,15 @@ class TestBeatEventFlooding:
         # Warm up
         for _ in range(30):
             clock.advance(dt)
-            core.tick(dt)
+            _tick(core, dt)
 
         # Simulate gap: advance clock but only call audio.process
         for _ in range(30):  # 500ms gap
             clock.advance(dt)
-            core.audio.process()
+            core._orch.audio.process()
 
         # Resume
-        events = core.audio.process()
+        events = core._orch.audio.process()
         assert len(events) <= 3, \
             f"Resuming after gap produced {len(events)} events (flood!)"
 
@@ -129,13 +143,13 @@ class TestBeatEventFlooding:
 
         for _ in range(30):
             clock.advance(dt)
-            core.tick(dt)
+            _tick(core, dt)
 
         # Gap WITHOUT calling audio.process
         clock.advance(0.5)
 
         # Resume — may or may not flood depending on synth implementation
-        events = core.audio.process()
+        events = core._orch.audio.process()
         # Just verify no crash
 
 
@@ -150,7 +164,7 @@ class TestMorphInvariants:
         dt = 1.0 / 60
         for _ in range(int(4.0 * 60)):
             clock.advance(dt)
-            core.tick(dt)
+            _tick(core, dt)
             assert 0.0 <= core.morph_t <= 1.0, \
                 f"morph_t out of range: {core.morph_t}"
 
@@ -159,7 +173,7 @@ class TestMorphInvariants:
         dt = 1.0 / 60
         for _ in range(int(4.0 * 60)):
             clock.advance(dt)
-            core.tick(dt)
+            _tick(core, dt)
             assert 0.0 < core.morph_speed <= 1.0, \
                 f"morph_speed out of range: {core.morph_speed}"
 
@@ -168,7 +182,7 @@ class TestMorphInvariants:
         dt = 1.0 / 60
         for _ in range(int(4.0 * 60)):
             clock.advance(dt)
-            core.tick(dt)
+            _tick(core, dt)
             assert 0.0 <= core.palette_t <= 1.0, \
                 f"palette_t out of range: {core.palette_t}"
 
@@ -184,7 +198,7 @@ class TestZoomPulse:
         dt = 1.0 / 60
         for _ in range(int(4.0 * 60)):
             clock.advance(dt)
-            core.tick(dt)
+            _tick(core, dt)
             assert core.zoom_boost <= core._zoom_axis.ZOOM_BOOST_MAX + 1e-6, \
                 f"zoom_boost {core.zoom_boost} exceeds max {core._zoom_axis.ZOOM_BOOST_MAX}"
 
@@ -196,7 +210,7 @@ class TestZoomPulse:
         boosted = False
         for _ in range(int(2.0 * 60)):
             clock.advance(dt)
-            core.tick(dt)
+            _tick(core, dt)
             if core.zoom_boost > 0.01:
                 boosted = True
                 break
@@ -207,7 +221,7 @@ class TestZoomPulse:
         # Tick a few frames without advancing clock much — zoom should decay
         peak = core.zoom_boost
         for _ in range(10):
-            core.tick(dt)  # don't advance clock — no new hihats
+            _tick(core, dt)  # don't advance clock — no new hihats
         assert core.zoom_boost < peak, \
             f"zoom_boost should decay: was {peak}, now {core.zoom_boost}"
 
@@ -226,7 +240,7 @@ class TestPaletteAxis:
 
         for _ in range(int(5.0 * 60)):
             clock.advance(dt)
-            core.tick(dt)
+            _tick(core, dt)
             if not np.array_equal(core.palette_target, prev_palette):
                 palette_changes += 1
                 prev_palette = core.palette_target.copy()
@@ -245,9 +259,11 @@ class TestQuietDrift:
         """When audio is silent, drift mode should produce changing genomes."""
         clock = FakeClock(start=1000.0)
         _seed = iter(range(1000))
-        core = FlameSheepCore(test_audio=True, lib=None, clock=clock,
+        orch = Orchestrator(test_audio=True, clock=clock)
+        orch.start()
+        core = FlameSheepCore(orchestrator=orch, lib=None, clock=clock,
                               genome_factory=lambda: trivial_genome(next(_seed)))
-        core.audio._rms = 0.0
+        orch.audio._rms = 0.0
 
         dt = 1.0 / 60
         genomes = []
@@ -255,10 +271,10 @@ class TestQuietDrift:
         # 20 seconds at 60fps
         for _ in range(60 * 20):
             clock.advance(dt)
-            frame = core.tick(dt)
+            frame = _tick(core, dt)
             genomes.append(frame.genome)
 
-        core.stop()
+        orch.stop()
         # Frame genomes should change over time during drift
         first = genomes[0]
         changed = any(g.distance(first) > 0.01 for g in genomes[-60:])
@@ -275,7 +291,7 @@ class TestFrameState:
     def test_frame_state_fields(self, core, clock):
         """tick() should return a valid FrameState with all fields."""
         clock.advance(1.0 / 60)
-        frame = core.tick(1.0 / 60)
+        frame = _tick(core, 1.0 / 60)
         assert frame.genome is not None
         assert isinstance(frame.palette, np.ndarray)
         assert frame.palette.shape == (256, 3)
@@ -288,6 +304,6 @@ class TestFrameState:
         dt = 1.0 / 60
         for _ in range(60):
             clock.advance(dt)
-            frame = core.tick(dt)
+            frame = _tick(core, dt)
             assert 0.7 <= frame.brightness <= 12.0, \
                 f"brightness {frame.brightness} out of expected range"

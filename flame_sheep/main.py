@@ -39,8 +39,9 @@ from moderngl_window import settings
 
 from .config import cfg
 from .genome import Genome, _lerp_arr
-from flame_sheep_audio import AudioProcessor, SyntheticAudioProcessor, BeatEvent, AudioState, DEFAULT_DEVICE
+from flame_sheep_audio import BeatEvent, AudioState, DEFAULT_DEVICE
 from flame_sheep_audio.mode import Mode
+from .orchestrator import Orchestrator
 from .renderer import FlameRenderer, Viewport
 from .control import ControlPipe, ControlEvent
 from .axes.zoom_axis import ZoomAxis
@@ -59,7 +60,8 @@ _TEST_AUDIO:   bool = False
 
 class FlameSheepCore:
     """
-    Audio + genome state, shared across all outputs.
+    Visualization state — axes, drift mode, genome morphing.
+    Consumes an Orchestrator for audio state and events.
     Does NOT hold a renderer or GL context — that lives in each window.
 
     Each frame, call:
@@ -67,12 +69,12 @@ class FlameSheepCore:
     Then render with those values in your per-window renderer.
 
     Call .force_genome_swap() to kick a degenerate image.
-    Call .stop() on shutdown.
     """
 
-    def __init__(self, audio_device=DEFAULT_DEVICE, test_audio: bool = False,
-                 lib=None, clock=None, genome_factory=None,
-                 ):
+    def __init__(self, orchestrator: Orchestrator,
+                 lib=None, clock=None, genome_factory=None):
+        self._orch = orchestrator
+        self._consumer_id = orchestrator.register('wallpaper')
         self._clock = clock or time.perf_counter
         self.rng = np.random.default_rng()
         self._lib = lib
@@ -96,18 +98,6 @@ class FlameSheepCore:
         self._drift_mode = DriftMode(genome_factory=factory, lib=lib, rng=self.rng)
         self._pending_song_start = False
 
-        if test_audio:
-            self.audio = SyntheticAudioProcessor(
-                kick_interval=0.5,
-                snare_interval=1.0,
-                hihat_interval=0.25,
-                clock=clock,
-            )
-        else:
-            self.audio = AudioProcessor(device=audio_device)
-            log.info(f'audio device: {audio_device!r}')
-        self.audio.start()
-
     @dataclass
     class FrameState:
         """Per-frame output from tick() — three orthogonal axes + audio."""
@@ -118,19 +108,20 @@ class FlameSheepCore:
         iterations: int           # chaos game iterations — scales with bass energy
 
     def tick(self, frame_time: float) -> 'FlameSheepCore.FrameState':
-        """Advance audio/genome state one frame.
+        """Advance visualization one frame.
         Returns FrameState with three independent axes.
         """
-        snap = self.audio.drain()
+        snap = self._orch.audio_state
+        timestamped = self._orch.drain_events(self._consumer_id)
         now  = self._clock()
 
-        # Inject song_start event if pending
-        events = list(snap.events)
+        # Collect beat events from timestamped wrappers
+        events = [te.event for te in timestamped]
         if self._pending_song_start:
             events.insert(0, BeatEvent(kind='song_start', energy=0.0))
             self._pending_song_start = False
 
-        # Build AudioState for axes (mode + break_intensity come from audio engine)
+        # Build AudioState for axes
         audio = AudioState(
             events=events,
             bands=snap.bands,
@@ -271,9 +262,6 @@ class FlameSheepCore:
         """Immediately swap to a new genome — call when image looks degenerate."""
         self._genome_axis.force_swap()
 
-    def stop(self):
-        self.audio.stop()
-
     def load_loop(self, loop_id: int):
         self._genome_axis.load_loop(loop_id)
 
@@ -284,14 +272,14 @@ class FlameSheepCore:
         """Signal new song started — resets tempo, bands, drop detectors, mode.
         Injects a song_start event on the next tick via _pending_song_start.
         """
-        self.audio.song_started()
-        self.audio.reset_bands()
+        self._orch.audio.song_started()
+        self._orch.audio.reset_bands()
         self._pending_song_start = True
         log.info('[song] reset tempo, bands, drop detectors, mode')
 
     def hint_tempo(self, bpm: float):
         """Provide tempo hint from external source."""
-        self.audio.hint_tempo(bpm)
+        self._orch.audio.hint_tempo(bpm)
         log.info(f'[tempo] hint: {bpm:.1f} BPM')
 
 
@@ -305,7 +293,9 @@ class FlameSheepApp(mglw.WindowConfig):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._core     = FlameSheepCore(audio_device=_AUDIO_DEVICE, test_audio=_TEST_AUDIO)
+        self._orch = Orchestrator(audio_device=_AUDIO_DEVICE, test_audio=_TEST_AUDIO)
+        self._core = FlameSheepCore(orchestrator=self._orch)
+        self._orch.start()
         w, h = self.window_size
         self._renderer = FlameRenderer(self.ctx, w, h)
         self._viewport = Viewport(0, 0, w, h)
@@ -313,6 +303,7 @@ class FlameSheepApp(mglw.WindowConfig):
 
     def on_render(self, time_val: float, frame_time: float):
         self.ctx.clear(0.0, 0.0, 0.0)
+        self._orch.tick()
         frame = self._core.tick(frame_time)
         self._renderer.upload_audio(frame.spectrum)
         self._renderer.upload_genome(frame.genome)
@@ -329,13 +320,13 @@ class FlameSheepApp(mglw.WindowConfig):
     def key_event(self, key, action, modifiers):
         if action == self.wnd.keys.ACTION_PRESS:
             if key == self.wnd.keys.Q:
-                self._core.stop()
+                self._orch.stop()
                 self.wnd.close()
             elif key == self.wnd.keys.F:
                 self._core.force_genome_swap()
 
     def close(self):
-        self._core.stop()
+        self._orch.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -629,8 +620,9 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             save_best_loops(lib, candidates, n_keep=20)
         log.info(f'Composed {lib.loop_count()} loops')
 
-    core = FlameSheepCore(audio_device=audio_device, test_audio=test_audio, lib=lib,
-                          )
+    # --- Orchestrator: owns audio, control pipe, MPRIS, session ---
+    orch = Orchestrator(audio_device=audio_device, test_audio=test_audio)
+    core = FlameSheepCore(orchestrator=orch, lib=lib)
 
     _vote_count = 0
     _votes_per_evolve = 5       # first few cycles need more votes
@@ -677,85 +669,80 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
     if lib is not None:
         scorer.start()
 
-    # --- control pipe for external commands ---
-    control = ControlPipe()
-    control.start()
-    log.info(f'wallpaper running. Control pipe: {control.pipe_path}')
+    # --- Register command handlers on orchestrator ---
+    quit_requested = False
 
-    # --- MPRIS listener for song change detection ---
-    from .mpris import MprisListener
-    mpris = MprisListener(ctl_path=control.pipe_path)
-    mpris.start()
+    def _handle_quit(event):
+        nonlocal quit_requested
+        quit_requested = True
 
-    # --- Session monitor for VT switch detection ---
-    from .session import SessionMonitor
-    session_monitor = SessionMonitor()
-    session_monitor.start()
+    def _handle_swap(event):
+        core.force_genome_swap()
 
-    def handle_control_events() -> bool:
-        """Process control events. Returns True if quit requested."""
-        for event in control.poll_all():
-            log.info(f'[ctl] {event.command} {" ".join(event.args)}')
+    def _handle_like(event):
+        if core.active_loop_id is not None:
+            lib.rate('loop', core.active_loop_id, +1)
+            for pid in core._palette_axis.palette_history:
+                lib.rate('palette', pid, +1)
+            lib.update_loop_fitness(core.active_loop_id)
+            log.info(f'[ctl] liked loop #{core.active_loop_id} '
+                  f'(+{len(core._palette_axis.palette_history)} palettes)')
+            _maybe_evolve()
+        else:
+            log.warning('no active loop to rate')
 
-            if event.command == 'quit':
-                return True
-            elif event.command == 'swap':
-                core.force_genome_swap()
-            elif event.command == 'like':
-                if core.active_loop_id is not None:
-                    lib.rate('loop', core.active_loop_id, +1)
-                    # Propagate to recent palettes
-                    for pid in core._palette_axis.palette_history:
-                        lib.rate('palette', pid, +1)
-                    lib.update_loop_fitness(core.active_loop_id)
-                    log.info(f'[ctl] liked loop #{core.active_loop_id} '
-                          f'(+{len(core._palette_axis.palette_history)} palettes)')
-                    _maybe_evolve()
-                else:
-                    log.warning('no active loop to rate')
-            elif event.command == 'dislike':
-                if core.active_loop_id is not None:
-                    lib.rate('loop', core.active_loop_id, -1)
-                    for pid in core._palette_axis.palette_history:
-                        lib.rate('palette', pid, -1)
-                    lib.update_loop_fitness(core.active_loop_id)
-                    log.info(f'[ctl] disliked loop #{core.active_loop_id} '
-                          f'(+{len(core._palette_axis.palette_history)} palettes)')
-                    _maybe_evolve()
-                core.next_loop()  # switch to a different loop
-            elif event.command == 'next':
-                core.next_loop()
-                log.info(f'[ctl] next loop #{core.active_loop_id}')
-            elif event.command == 'song':
-                core.song_started()
-                core.force_genome_swap()  # fresh visual for new song
-            elif event.command == 'tempo':
-                if event.args:
-                    try:
-                        bpm = float(event.args[0])
-                        core.hint_tempo(bpm)
-                    except ValueError:
-                        log.info(f'[ctl] invalid tempo: {event.args[0]}')
-            elif event.command == 'seek':
-                core.audio.reset_tempo()
-                log.info('[ctl] seek — reset tempo + drop state')
-            elif event.command == 'pause':
-                # TODO: enter ambient/slow mode
-                pass
-            elif event.command == 'resume':
-                # TODO: exit ambient mode
-                pass
-            elif event.command == 'config':
-                if event.args and event.args[0] == 'reload':
-                    from .config import cfg
-                    from flame_sheep_audio.config import cfg as audio_cfg
-                    cfg.reload()
-                    audio_cfg.reload()
-                    log.info('[ctl] config reloaded (viz + audio)')
-        return False
+    def _handle_dislike(event):
+        if core.active_loop_id is not None:
+            lib.rate('loop', core.active_loop_id, -1)
+            for pid in core._palette_axis.palette_history:
+                lib.rate('palette', pid, -1)
+            lib.update_loop_fitness(core.active_loop_id)
+            log.info(f'[ctl] disliked loop #{core.active_loop_id} '
+                  f'(+{len(core._palette_axis.palette_history)} palettes)')
+            _maybe_evolve()
+        core.next_loop()
+
+    def _handle_next(event):
+        core.next_loop()
+        log.info(f'[ctl] next loop #{core.active_loop_id}')
+
+    def _handle_song(event):
+        core.song_started()
+        core.force_genome_swap()
+
+    def _handle_tempo(event):
+        if event.args:
+            try:
+                bpm = float(event.args[0])
+                core.hint_tempo(bpm)
+            except ValueError:
+                log.info(f'[ctl] invalid tempo: {event.args[0]}')
+
+    def _handle_seek(event):
+        orch.audio.reset_tempo()
+        log.info('[ctl] seek — reset tempo + drop state')
+
+    def _handle_config(event):
+        if event.args and event.args[0] == 'reload':
+            from .config import cfg
+            from flame_sheep_audio.config import cfg as audio_cfg
+            cfg.reload()
+            audio_cfg.reload()
+            log.info('[ctl] config reloaded (viz + audio)')
+
+    orch.on_command('quit', _handle_quit)
+    orch.on_command('swap', _handle_swap)
+    orch.on_command('like', _handle_like)
+    orch.on_command('dislike', _handle_dislike)
+    orch.on_command('next', _handle_next)
+    orch.on_command('song', _handle_song)
+    orch.on_command('tempo', _handle_tempo)
+    orch.on_command('seek', _handle_seek)
+    orch.on_command('config', _handle_config)
+
+    orch.start()
 
     last_time = time.perf_counter()
-    quit_requested = False
     _frame = 0
     _watchdog_last = time.perf_counter()
 
@@ -781,17 +768,17 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
         while not quit_requested and not all(s.should_close for s in surfaces.values()):
             _frame += 1
             _watchdog_last = time.perf_counter()
-            quit_requested = handle_control_events()
+            orch.tick()
 
             # Dispatch pending Wayland events (delivers frame callbacks)
             if not session.dispatch():
-                if session_monitor.gpu_paused:
+                if orch.session.gpu_paused:
                     log.info('[render] wayland connection lost during VT switch, '
                              'waiting for session to resume...')
-                    while not quit_requested and not session_monitor.is_active():
+                    while not quit_requested and not orch.session.is_active():
                         time.sleep(0.5)
                         _watchdog_last = time.perf_counter()
-                        quit_requested = handle_control_events()
+                        orch.tick()
                     if not quit_requested:
                         log.info('[render] session resumed, restarting wallpaper')
                         # Re-exec ourselves to get fresh Wayland connection
@@ -818,7 +805,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                     while not quit_requested:
                         session.wait_for_events(timeout=0.5)
                         _watchdog_last = time.perf_counter()
-                        quit_requested = handle_control_events()
+                        orch.tick()
                         ready = {n: s for n, s in surfaces.items()
                                  if s._frame_pending and not s.should_close}
                         if ready:
@@ -838,7 +825,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             _watchdog_last = time.perf_counter()
 
             # Skip ALL GL calls if GPU is paused (VT switch)
-            if session_monitor.gpu_paused:
+            if orch.session.gpu_paused:
                 _watchdog_last = time.perf_counter()
                 time.sleep(0.1)
                 continue
@@ -848,7 +835,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                 break  # surfaces died (sway reload?)
             # Double-check after make_current — VT switch can happen between
             # the check above and here
-            if session_monitor.gpu_paused:
+            if orch.session.gpu_paused:
                 session.release_current()
                 continue
             renderer.upload_audio(frame.spectrum)
@@ -876,9 +863,9 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
         log.error(f'[render] exception in render loop: {e}', exc_info=True)
     finally:
         # If surfaces closed during VT switch, wait and restart
-        if not quit_requested and session_monitor.gpu_paused:
+        if not quit_requested and orch.session.gpu_paused:
             log.info('[render] surfaces closed during VT switch, waiting for resume...')
-            while not session_monitor.is_active():
+            while not orch.session.is_active():
                 time.sleep(0.5)
             log.info('[render] session resumed, restarting')
             import sys
@@ -886,10 +873,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
 
         log.debug(f'[render] exiting render loop (quit_requested={quit_requested})')
         scorer.stop()
-        mpris.stop()
-        session_monitor.stop()
-        control.stop()
-        core.stop()
+        orch.stop()
         session.destroy()
 
 
