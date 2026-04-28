@@ -793,9 +793,9 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                 break
 
             # Block until the compositor signals it wants a new frame.
-            # This replaces eglSwapInterval(1) as our frame pacer.
-            # Wait for compositor to signal a frame callback.
-            # Audio thread runs independently — no need to tick audio here.
+            # If no frame callback arrives for 2s, assume VT switch or
+            # compositor suspended — pause rendering and keep watchdog alive.
+            _wait_start = time.perf_counter()
             while not quit_requested:
                 ready = {n: s for n, s in surfaces.items()
                          if s._frame_pending and not s.should_close}
@@ -803,6 +803,21 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                     break
                 session.wait_for_events(timeout=0.016)
                 _watchdog_last = time.perf_counter()
+                # VT switch detection: no frame callbacks for 2s
+                if time.perf_counter() - _wait_start > 2.0:
+                    log.info('[render] no frame callbacks — compositor suspended? '
+                             'Pausing render loop.')
+                    while not quit_requested:
+                        session.wait_for_events(timeout=0.5)
+                        _watchdog_last = time.perf_counter()
+                        quit_requested = handle_control_events()
+                        ready = {n: s for n, s in surfaces.items()
+                                 if s._frame_pending and not s.should_close}
+                        if ready:
+                            log.info('[render] frame callbacks resumed')
+                            break
+                        if all(s.should_close for s in surfaces.values()):
+                            break
 
             if not ready:
                 continue
