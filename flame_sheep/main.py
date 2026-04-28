@@ -12,6 +12,16 @@ shared between both modes.
 import faulthandler
 faulthandler.enable()  # print traceback on SIGSEGV instead of silent death
 
+import signal
+import os
+
+def _sigsegv_restart(signum, frame):
+    """On SIGSEGV (GPU crash on VT switch), restart ourselves."""
+    import sys
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+signal.signal(signal.SIGSEGV, _sigsegv_restart)
+
 import logging
 
 log = logging.getLogger(__name__)
