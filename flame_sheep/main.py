@@ -801,6 +801,9 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
 
     try:
         while not quit_requested and not all(s.should_close for s in surfaces.values()):
+            if all(s.should_close for s in surfaces.values()):
+                log.info('[render] all surfaces closed')
+                break
             _frame += 1
             _watchdog_last = time.perf_counter()
             quit_requested = handle_control_events()
@@ -894,7 +897,10 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
                     break  # wayland connection lost
                 _watchdog_last = time.perf_counter()
 
+    except Exception as e:
+        log.error(f'[render] exception in render loop: {e}', exc_info=True)
     finally:
+        log.info(f'[render] exiting render loop (quit_requested={quit_requested})')
         scorer.stop()
         mpris.stop()
         session_monitor.stop()
