@@ -1063,6 +1063,8 @@ def main() -> None:
                         help=f'audio input device name or index (default: {DEFAULT_DEVICE!r})')
     parser.add_argument('--test-audio', action='store_true',
                         help='use synthetic metronome instead of real audio (120bpm, predictable beats)')
+    parser.add_argument('--debug', action='store_true',
+                        help='open debug overlay window (audio analysis visualization)')
     parser.add_argument('--generate-genomes', type=int, metavar='N',
                         help='generate N random genomes into the library and exit')
     parser.add_argument('--compose-loops', type=int, metavar='N', default=None,
@@ -1101,6 +1103,15 @@ def main() -> None:
         from flame_sheep_audio import list_monitor_devices
         for d in list_monitor_devices():
             print(f"  [{d['index']:2d}] {d['name']}")
+        return
+
+    if args.debug:
+        from .debug import run_debug_overlay
+        audio_device = args.audio_device
+        if audio_device is None:
+            from .config import cfg
+            audio_device = cfg.audio_device
+        run_debug_overlay(audio_device=audio_device, test_audio=args.test_audio)
         return
 
     if args.benchmark_variations:
