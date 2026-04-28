@@ -81,7 +81,7 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
     elif var_idx == 21: # rings
         c = _current_var_params.get('rings_c', 0.5)
         cc = c*c + 1e-6
-        rr = (r % (2*cc)) - cc + r * (1 - cc)
+        rr = ((r + cc) % (2*cc)) - cc + r * (1 - cc)
         return w*rr*np.cos(th), w*rr*np.sin(th)
     elif var_idx == 22: # fan
         c = _current_var_params.get('fan_c', 0.5)
@@ -106,7 +106,7 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         fy = _current_var_params.get('fan2_y', 1.2)
         dx = np.pi * fx * fx + 1e-6
         dx2 = dx * 0.5
-        t = th + fy - int((th + fy) / dx) * dx
+        t = th + fy - np.floor((th + fy) / dx) * dx
         a = th - dx2 if t > dx2 else th + dx2
         return w*r*np.sin(a), w*r*np.cos(a)
     elif var_idx == 26: # rings2
@@ -154,21 +154,21 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         va = 2 * np.pi / power
         vc = cr / power
         vd = ci / power
-        ang = vc * a + vd * lnr + va * int(power * np.random.random())
-        m = w * np.exp(min(vc * lnr - vd * a, 10.0))
+        ang = vc * a + vd * lnr + va * np.floor(power * np.random.random())
+        m = w * np.exp(vc * lnr - vd * a)
         return m * np.cos(ang), m * np.sin(ang)
     elif var_idx == 49: # ngon
         circle = _current_var_params.get('ngon_circle', 1.0)
         corners = _current_var_params.get('ngon_corners', 2.0)
         power = _current_var_params.get('ngon_power', 3.0)
         sides = _current_var_params.get('ngon_sides', 5.0)
-        rf = max(r, 1e-10) ** power
+        rf = max(x*x + y*y, 1e-10) ** (power * 0.5)
         th_std = np.arctan2(y, x)
         b = 2 * np.pi / sides
-        ph = th_std - b * int(th_std / b)
+        ph = th_std - b * np.floor(th_std / b)
         if ph > b * 0.5:
             ph -= b
-        amp = (corners * (1.0 / max(abs(np.cos(ph)), 1e-6) - 1.0) + circle) / max(rf, 1e-6)
+        amp = (corners * (1.0 / max(np.cos(ph), 1e-6) - 1.0) + circle) / max(rf, 1e-6)
         return w * amp * x, w * amp * y
     elif var_idx == 50: # loonie
         rr = x*x + y*y
@@ -241,15 +241,15 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         d = max(re*re + im*im, 1e-6)
         return w*(x*re + y*im)/d, w*(y*re - x*im)/d
     elif var_idx == 38: # rectangles
-        rx = _current_var_params.get('rectangles_rx', 0.5)
-        ry = _current_var_params.get('rectangles_ry', 0.5)
+        rx = _current_var_params.get('rect_x', 0.5)
+        ry = _current_var_params.get('rect_y', 0.5)
         ox = x if abs(rx) < 1e-6 else (2.0*np.floor(x/rx) + 1.0)*rx - x
         oy = y if abs(ry) < 1e-6 else (2.0*np.floor(y/ry) + 1.0)*ry - y
         return w*ox, w*oy
     elif var_idx == 39: # checks
-        cs = _current_var_params.get('checks_cs', 1.0)
-        cx = _current_var_params.get('checks_cx', 0.5)
-        cy = _current_var_params.get('checks_cy', 0.5)
+        cs = _current_var_params.get('check_size', 1.0)
+        cx = _current_var_params.get('check_x', 0.5)
+        cy = _current_var_params.get('check_y', 0.5)
         ics = 1.0 / max(cs, 1e-6)
         cell = int(round(x*ics)) + int(round(y*ics))
         if cell % 2 == 0:
@@ -277,9 +277,9 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         fy = hz - rz_h
         return w*fx*weight, w*fy*weight
     elif var_idx == 41: # kaleidoscope
-        pull = _current_var_params.get('kaleidoscope_pull', 0.0)
-        rot = _current_var_params.get('kaleidoscope_rot', 0.0)
-        n = max(_current_var_params.get('kaleidoscope_n', 6.0), 2.0)
+        pull = _current_var_params.get('kal_pull', 0.0)
+        rot = _current_var_params.get('kal_rotate', 0.0)
+        n = max(_current_var_params.get('kal_n', 6.0), 2.0)
         cr = np.cos(rot)
         sr = np.sin(rot)
         rpx = cr*x - sr*y
