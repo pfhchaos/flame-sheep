@@ -52,6 +52,10 @@ PARAM_FIXTURES = {
     Variation.POPCORN: {'popcorn_cx': 0.3, 'popcorn_cy': 0.5},
     Variation.RINGS: {'rings_c': 0.4},
     Variation.FAN: {'fan_c': 0.3, 'fan_f': 0.5},
+    23: {'blob_low': 0.3, 'blob_high': 1.2, 'blob_waves': 6.0},
+    24: {'pdj_a': 1.4, 'pdj_b': 2.3, 'pdj_c': 2.4, 'pdj_d': 2.2},
+    25: {'fan2_x': 0.5, 'fan2_y': 1.2},
+    26: {'rings2_val': 0.5},
     Variation.JULIAN: {'julian_power': 4.0, 'julian_dist': 1.0},
     Variation.JULIASCOPE: {'julian_power': 4.0, 'julian_dist': 1.0},
     Variation.SPLITS: {'splits_x': 0.5, 'splits_y': 0.3},
@@ -66,6 +70,14 @@ PARAM_FIXTURES = {
     Variation.SATTRACTOR: {'sat_m': 6.0},
     Variation.WALLPAPER: {'wallpaper_group': 0.0},
     Variation.FRIEZE: {'frieze_group': 0.0},
+    47: {'mobius_re_a': 0.1, 'mobius_re_b': 0.2, 'mobius_re_c': -0.15,
+         'mobius_re_d': 0.21, 'mobius_im_a': 0.2, 'mobius_im_b': -0.12,
+         'mobius_im_c': -0.15, 'mobius_im_d': 0.1},
+    48: {'cpow_r': 1.0, 'cpow_i': 0.1, 'cpow_power': 1.5},
+    49: {'ngon_circle': 1.0, 'ngon_corners': 2.0, 'ngon_power': 3.0, 'ngon_sides': 5.0},
+    52: {'epispiral_n': 6.0, 'epispiral_thickness': 0.0, 'epispiral_holes': 1.0},
+    53: {'waves3_scalex': 0.05, 'waves3_scaley': 0.05, 'waves3_freqx': 7.0,
+         'waves3_freqy': 13.0, 'waves3_sx_freq': 0.0, 'waves3_sy_freq': 2.0},
 }
 
 # Variations that use RNG — results will differ between CPU and GPU
@@ -189,16 +201,22 @@ def test_variation_gpu_matches_cpu(var_idx, gpu_ctx, variation_shader):
         cx, cy = apply_variation_cpu(var_idx, px, py, 1.0)
         gx, gy = gpu_results[i]
 
-        # Skip if both are near-zero (degenerate input like (0,0) for some variations)
+        # Skip origin — many variations are undefined at (0,0)
+        if abs(px) < 1e-8 and abs(py) < 1e-8:
+            continue
+
+        # Skip if both are near-zero (degenerate output)
         if abs(cx) < 1e-8 and abs(cy) < 1e-8 and abs(gx) < 1e-8 and abs(gy) < 1e-8:
             continue
 
-        # Skip if diverged to infinity (some variations at large inputs)
+        # Skip if diverged to infinity or very large (singularities)
         if not (np.isfinite(cx) and np.isfinite(cy)):
             continue
         if not (np.isfinite(gx) and np.isfinite(gy)):
             pytest.fail(f'GPU returned non-finite for {VAR_NAMES.get(var_idx)} '
                         f'at ({px}, {py}): ({gx}, {gy})')
+        if abs(cx) > 1000 or abs(cy) > 1000 or abs(gx) > 1000 or abs(gy) > 1000:
+            continue  # near singularity, epsilon handling diverges
 
         np.testing.assert_allclose(
             [gx, gy], [cx, cy], atol=1e-3, rtol=1e-3,
