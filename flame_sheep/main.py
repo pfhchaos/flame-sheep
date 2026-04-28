@@ -525,8 +525,11 @@ def _ensure_singleton():
             old_pid = int(f.read().strip())
         # Check if it's actually running
         os.kill(old_pid, 0)
-        log.info(f'killing previous instance (pid {old_pid})')
-        os.kill(old_pid, signal.SIGTERM)
+        if old_pid == os.getpid():
+            pass  # that's us (re-exec after VT switch)
+        else:
+            log.info(f'killing previous instance (pid {old_pid})')
+            os.kill(old_pid, signal.SIGTERM)
         # Wait briefly for it to die
         for _ in range(20):
             time.sleep(0.1)
@@ -906,12 +909,6 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             while not session_monitor.is_active():
                 time.sleep(0.5)
             log.info('[render] session resumed, restarting')
-            # Clean up PID file so the new instance doesn't kill us
-            pid_path = os.path.expanduser('~/.local/share/flame-sheep/pid')
-            try:
-                os.unlink(pid_path)
-            except OSError:
-                pass
             import sys
             os.execv(sys.executable, [sys.executable, '-m', 'flame_sheep'] + sys.argv[1:])
 
