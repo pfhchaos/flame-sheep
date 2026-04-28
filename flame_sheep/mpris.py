@@ -10,10 +10,13 @@ player on the session bus. Detects:
 Runs a GLib main loop in a daemon thread.
 """
 
+from __future__ import annotations
+
 import logging
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -23,30 +26,30 @@ class MprisListener:
 
     DEBOUNCE_SEC = 2.0
 
-    def __init__(self, ctl_path: str | Path):
-        self._ctl_path = Path(ctl_path)
+    def __init__(self, ctl_path: str | Path) -> None:
+        self._ctl_path: Path = Path(ctl_path)
         self._thread: threading.Thread | None = None
-        self._loop = None  # GLib MainLoop
+        self._loop: Any = None  # GLib MainLoop
 
         # State
         self._last_track: str | None = None
         self._last_status: str | None = None
         self._last_track_time: float = 0.0
-        self._first_track = True
+        self._first_track: bool = True
 
-    def start(self):
+    def start(self) -> None:
         self._thread = threading.Thread(
             target=self._run, daemon=True, name='mpris-listener')
         self._thread.start()
 
-    def stop(self):
+    def stop(self) -> None:
         if self._loop is not None:
             self._loop.quit()
         if self._thread is not None:
             self._thread.join(timeout=2)
             self._thread = None
 
-    def _write_ctl(self, command: str):
+    def _write_ctl(self, command: str) -> None:
         try:
             if self._ctl_path.exists():
                 with open(self._ctl_path, 'w') as f:
@@ -54,7 +57,7 @@ class MprisListener:
         except OSError as e:
             log.debug(f'MPRIS ctl write failed: {e}')
 
-    def _run(self):
+    def _run(self) -> None:
         """Set up D-Bus signal handlers and run the GLib main loop."""
         try:
             import dbus
@@ -92,7 +95,8 @@ class MprisListener:
         self._loop.run()
         log.info('MPRIS listener stopped')
 
-    def _on_properties_changed(self, interface_name, changed, invalidated):
+    def _on_properties_changed(self, interface_name: str, changed: dict[str, Any],
+                                invalidated: list[str]) -> None:
         """Handle PropertiesChanged signal from MPRIS players."""
         if interface_name != 'org.mpris.MediaPlayer2.Player':
             return
@@ -134,7 +138,7 @@ class MprisListener:
                     self._write_ctl('song')
                     log.info(f'[MPRIS] track: {track_id}')
 
-    def _on_seeked(self, position_us):
+    def _on_seeked(self, position_us: int) -> None:
         """Handle Seeked signal — user scrubbed to a new position."""
         self._write_ctl('seek')
         log.info(f'[MPRIS] seeked to {int(position_us) / 1e6:.1f}s')
