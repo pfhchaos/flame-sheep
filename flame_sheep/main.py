@@ -838,7 +838,7 @@ def _run_wallpaper(audio_device, test_audio: bool, blur_radius: float = 1.0):
             # Check GL health before committing to expensive operations.
             # A VT switch can leave EGL "current" but the GPU inaccessible.
             gl_err = ctx.error
-            if gl_err:
+            if gl_err and gl_err != 'GL_NO_ERROR':
                 log.warning(f'[render] GL error before frame: {gl_err}, '
                             f'skipping frame (VT switch?)')
                 session.release_current()
