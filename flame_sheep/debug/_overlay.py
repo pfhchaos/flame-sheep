@@ -105,22 +105,16 @@ def run_debug_overlay(audio_device: str | int | None = None,
                       test_audio: bool = False) -> None:
     """Entry point: create orchestrator + open debug window."""
     from flame_sheep_audio import DEFAULT_DEVICE
-
-    # Configure window backend BEFORE importing moderngl_window
-    # so it uses GLFW (Wayland-compatible) instead of pyglet (X11).
-    from moderngl_window.conf import settings
-    settings.WINDOW['class'] = 'moderngl_window.context.glfw.Window'
-    settings.WINDOW['size'] = (cfg.debug.window_width, cfg.debug.window_height)
-    settings.WINDOW['title'] = 'flame-sheep debug'
-
     import moderngl_window as mglw
 
     global _ORCH
     _ORCH = Orchestrator(audio_device=audio_device or DEFAULT_DEVICE,
                          test_audio=test_audio)
 
-    # Strip unknown args so moderngl-window doesn't choke
-    sys.argv = [sys.argv[0]]
+    # Force GLFW backend (Wayland-compatible).
+    # moderngl-window uses sys.argv to pick the window class via --window flag.
+    sys.argv = [sys.argv[0], '--window', 'glfw',
+                '--size', f'{cfg.debug.window_width}x{cfg.debug.window_height}']
 
     OverlayClass = _make_overlay_class()
     mglw.run_window_config(OverlayClass)
