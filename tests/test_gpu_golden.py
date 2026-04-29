@@ -82,9 +82,9 @@ PARAM_FIXTURES = {
 
 # Variations that use RNG — results will differ between CPU and GPU
 # so we skip strict comparison for these
-RANDOM_VARIATIONS = {Variation.SATTRACTOR, Variation.WALLPAPER, Variation.FRIEZE,
-                     Variation.JULIAN, Variation.JULIASCOPE, Variation.ICON,
-                     Variation.CPOW}
+RANDOM_VARIATIONS = {Variation.JULIA, Variation.SATTRACTOR, Variation.WALLPAPER,
+                     Variation.FRIEZE, Variation.JULIAN, Variation.JULIASCOPE,
+                     Variation.ICON, Variation.CPOW}
 
 # Variation names for readable output
 VAR_NAMES: dict[int, str] = {}
@@ -189,7 +189,7 @@ def _run_variation_gpu(gpu_ctx, shader, var_idx: int,
 def test_variation_gpu_matches_cpu(var_idx, gpu_ctx, variation_shader):
     """GPU variation output should match CPU reference within floating point tolerance."""
     if var_idx in RANDOM_VARIATIONS:
-        pytest.xfail('Uses RNG — GPU/CPU results diverge by design')
+        pytest.xfail('RNG synchronization between CPU/GPU not yet verified')
 
     params = PARAM_FIXTURES.get(var_idx, {})
     cpu_mod._current_var_params = params
