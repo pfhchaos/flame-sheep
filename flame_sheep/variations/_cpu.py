@@ -13,6 +13,45 @@ import numpy as np
 _current_var_params: dict = {}
 
 
+class Xorshift32:
+    """Deterministic RNG matching the GPU's xorshift32 in rng.glsl.
+
+    Allows CPU variations to produce identical random sequences as the GPU
+    when seeded with the same initial state.
+    """
+
+    def __init__(self, seed: int = 1) -> None:
+        self.state: int = seed & 0xFFFFFFFF
+
+    def next(self) -> int:
+        self.state ^= (self.state << 13) & 0xFFFFFFFF
+        self.state ^= self.state >> 17
+        self.state ^= (self.state << 5) & 0xFFFFFFFF
+        return self.state
+
+    def float(self) -> float:
+        return self.next() / 0xFFFFFFFF
+
+
+# Module-level RNG — when set, CPU variations use this instead of np.random.
+# Set to None for normal behavior (np.random), or a Xorshift32 for GPU-matched testing.
+_rng: Xorshift32 | None = None
+
+
+def _rand() -> float:
+    """Get next random float — from deterministic xorshift if set, else np.random."""
+    if _rng is not None:
+        return _rng.float()
+    return np.random.random()
+
+
+def _rand_int_mod(n: int) -> int:
+    """Get next random uint mod n — from deterministic xorshift if set."""
+    if _rng is not None:
+        return _rng.next() % n
+    return int(np.random.random() * n)
+
+
 def apply_variations_cpu(variations: np.ndarray, x: float, y: float) -> tuple[float, float]:
     """Apply all active variations weighted, matching GPU behavior.
 
@@ -154,7 +193,7 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         va = 2 * np.pi / power
         vc = cr / power
         vd = ci / power
-        ang = vc * a + vd * lnr + va * np.floor(power * np.random.random())
+        ang = vc * a + vd * lnr + va * np.floor(power * _rand())
         m = w * np.exp(vc * lnr - vd * a)
         return m * np.cos(ang), m * np.sin(ang)
     elif var_idx == 49: # ngon
@@ -193,7 +232,7 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
             return w*x, w*y
         t = -holes
         if abs(thickness) > 1e-6:
-            t += (np.random.random() * thickness) / d
+            t += (_rand() * thickness) / d
         else:
             t += 1.0 / d
         return w * t * np.cos(th_std), w * t * np.sin(th_std)
@@ -304,6 +343,8 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
     elif var_idx == 13: # julia
         sqr = w * np.sqrt(r)
         t2  = th * 0.5
+        if _rand_int_mod(2) == 0:
+            t2 += np.pi
         return sqr*np.cos(t2), sqr*np.sin(t2)
     elif var_idx == 18: # exponential — exp(x), very dangerous
         scale = w * np.exp(min(x - 1.0, 10.0))  # clamp to avoid overflow
@@ -322,25 +363,71 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
             return w*x, w*y
         s = 1.0 / (d*d + 1e-6)
         return w*s*x, w*s*y
-    elif var_idx == 32: # julian — like julia but with nth root
-        sqr = w * np.sqrt(r)
-        t2 = th * 0.5  # simplified: power=2
-        return sqr*np.cos(t2), sqr*np.sin(t2)
-    elif var_idx == 33: # juliascope — same danger profile as julian
-        sqr = w * np.sqrt(r)
-        t2 = th * 0.5
-        return sqr*np.cos(t2), sqr*np.sin(t2)
-    elif var_idx == 42: # icon — complex polynomial, can blow up
-        # Simplified: just rotate by degree, bounded approximation
-        return w*x, w*y
-    elif var_idx == 43: # sattractor — pure rotation, always bounded
-        return w*x, w*y
+    elif var_idx == 32: # julian
+        power = _current_var_params.get('julian_power', 2.0)
+        dist = _current_var_params.get('julian_dist', 1.0)
+        abs_n = abs(power)
+        cn = dist / power * 0.5
+        t_rand = np.floor(abs_n * _rand())
+        phi_val = np.arctan2(y, x)  # standard atan2 for phi
+        a = (phi_val + 2*np.pi * t_rand) / power
+        ri = max(r, 1e-10) ** cn
+        return w*ri*np.cos(a), w*ri*np.sin(a)
+    elif var_idx == 33: # juliascope
+        power = _current_var_params.get('julian_power', 2.0)
+        dist = _current_var_params.get('julian_dist', 1.0)
+        abs_n = abs(power)
+        cn = dist / power * 0.5
+        t_rand = np.floor(abs_n * _rand())
+        phi_val = np.arctan2(y, x)
+        if _rand_int_mod(2) == 0:
+            phi_val = -phi_val
+        a = (phi_val + 2*np.pi * t_rand) / power
+        ri = max(r, 1e-10) ** cn
+        return w*ri*np.cos(a), w*ri*np.sin(a)
+    elif var_idx == 42: # icon — complex polynomial with n-fold rotational symmetry
+        n = _current_var_params.get('icon_degree', 4.0)
+        lam = _current_var_params.get('icon_lambda', 1.5)
+        alp = _current_var_params.get('icon_alpha', 0.5)
+        bet = _current_var_params.get('icon_beta', 0.3)
+        gam = _current_var_params.get('icon_gamma', 0.1)
+        ome = _current_var_params.get('icon_omega', 0.2)
+        # conj(z) = (x, -y)
+        cr, ci = x, -y
+        cr_r = np.sqrt(cr*cr + ci*ci)
+        cr_a = np.arctan2(ci, cr)
+        # conj(z)^(n-1)
+        nm1 = n - 1.0
+        cpow_r = max(cr_r, 1e-10) ** nm1
+        c1r = cpow_r * np.cos(nm1 * cr_a)
+        c1i = cpow_r * np.sin(nm1 * cr_a)
+        # conj(z)^(n-3)
+        nm3 = n - 3.0
+        cpow3_r = max(cr_r, 1e-10) ** nm3
+        c3r = cpow3_r * np.cos(nm3 * cr_a)
+        c3i = cpow3_r * np.sin(nm3 * cr_a)
+        # exp(i*omega) * conj(z)^(n-3)
+        eor, eoi = np.cos(ome), np.sin(ome)
+        ec3r = eor * c3r - eoi * c3i
+        ec3i = eor * c3i + eoi * c3r
+        # z' = lam*z + alp*conj(z)^(n-1) + bet*exp(i*ome)*conj(z)^(n-3)
+        rx = lam * x + alp * c1r + bet * ec3r
+        ry = lam * y + alp * c1i + bet * ec3i
+        return w*rx, w*ry
+    elif var_idx == 43: # sattractor — m-fold rotation
+        m = max(_current_var_params.get('sat_m', 6.0), 2.0)
+        k = np.floor(_rand() * m)
+        angle = k * 2*np.pi / m
+        ca, sa = np.cos(angle), np.sin(angle)
+        return w*(ca*x - sa*y), w*(sa*x + ca*y)
     elif var_idx == 44: # wallpaper — random group element
         from ._symmetry_groups import WALLPAPER_GROUPS
         group = int(_current_var_params.get('wallpaper_group', 0))
         group = max(0, min(16, group))
         elements = WALLPAPER_GROUPS[group]
-        elem = elements[int(np.random.random() * len(elements))]
+        idx = int(_rand() * len(elements))
+        idx = max(0, min(idx, len(elements) - 1))
+        elem = elements[idx]
         a, b, c, d, e, f = elem
         return w*(a*x + b*y + c), w*(d*x + e*y + f)
     elif var_idx == 45: # frieze — random group element
@@ -348,7 +435,9 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         group = int(_current_var_params.get('frieze_group', 0))
         group = max(0, min(6, group))
         elements = FRIEZE_GROUPS[group]
-        elem = elements[int(np.random.random() * len(elements))]
+        idx = int(_rand() * len(elements))
+        idx = max(0, min(idx, len(elements) - 1))
+        elem = elements[idx]
         a, b, c, d, e, f = elem
         return w*(a*x + b*y + c), w*(d*x + e*y + f)
     else:
