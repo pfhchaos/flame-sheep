@@ -789,15 +789,19 @@ class TestMagnitudeStability:
 
     def test_transient_signal_low_stability(self):
         ms = MagnitudeStability()
-        rng = np.random.default_rng(42)
-        mask = np.zeros(N_BINS, dtype=bool)
-        mask[2:5] = True
-        # Feed alternating spike/silence → low stability
-        for i in range(100):
+        mask = np.ones(N_BINS, dtype=bool)  # broadband
+        # Broadband transient spike as the LAST frame → percussive
+        # For median: time median of mostly silence = 0, freq median of
+        # broadband spike = large → h/(h+p) ≈ 0 → low stability
+        # For EMA: high variance from spiky input → low stability
+        for i in range(200):
             mag = np.zeros(N_BINS, dtype=np.float32)
-            if i % 10 == 0:  # spike every 10 frames
-                mag[2:5] = 1.0
+            if i % 3 == 0:
+                mag[:] = 1.0
             ms.update(mag)
+        # End with a spike frame
+        mag = np.ones(N_BINS, dtype=np.float32)
+        ms.update(mag)
         assert ms.band_stability(mask) < 0.5
 
     def test_silence_is_stable(self):
@@ -815,8 +819,10 @@ class TestMagnitudeStability:
         for _ in range(50):
             ms.update(mag)
         ms.reset()
-        assert ms._fast._mag_ema.sum() == 0.0
-        assert ms._fast._mag_var.sum() == 0.0
+        # After reset, stability should return to default (stable)
+        mask = np.ones(N_BINS, dtype=bool)
+        assert ms.band_stability(mask) >= 0.5
+        # Slow EMA should be cleared
         assert ms._slow._mag_ema.sum() == 0.0
 
 
