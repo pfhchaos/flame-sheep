@@ -129,6 +129,8 @@ class TimelinePanel(Panel):
     def update(self, snap: AudioSnapshot, timeline: TimelineBuffer, dt: float) -> None:
         self._now = time.perf_counter()
         self._timeline = timeline
+        self._bpm = snap.effective_bpm
+        self._tempo_confidence = snap.tempo_confidence
 
     def render(self, draw: SolidRenderer, text: TextRenderer,
                x: int, y: int, w: int, h: int) -> None:
@@ -162,9 +164,28 @@ class TimelinePanel(Panel):
                 draw.rect(mx - size / 2, lane_y + (lane_h - size) / 2,
                           size, size, c)
 
+        # Tempo beat prediction lines (vertical, across all lanes)
+        if self._bpm > 0 and self._tempo_confidence > 0.15:
+            beat_interval = 60.0 / self._bpm
+            # Walk backward from now, placing lines at beat intervals
+            alpha = min(0.5, self._tempo_confidence * 0.6)
+            beat_color = (1.0, 1.0, 1.0, alpha)
+            lanes_top = y + 4
+            lanes_bottom = y + 4 + len(self._band_names) * (lane_h + 4)
+            t = self._now
+            while t > cutoff:
+                frac = (t - cutoff) / window
+                lx = plot_x + frac * plot_w
+                draw.rect(lx, lanes_top, 1, lanes_bottom - lanes_top, beat_color)
+                t -= beat_interval
+
 
 class SpectrumPanel(Panel):
     """FFT spectrum with band frequency brackets underneath."""
+
+    # Noise floor: don't auto-scale below this peak magnitude.
+    # Prevents silence from amplifying recording noise to fill the display.
+    NOISE_FLOOR = 0.001
 
     def __init__(self, band_config: BandConfig) -> None:
         super().__init__(height=160)
@@ -252,8 +273,10 @@ class SpectrumPanel(Panel):
         n_strips = 3 if len(self._stability) == len(self._spectrum) else 1
         strip_h = (h - bracket_h) / n_strips
 
-        # Shared peak for all three strips so proportions are honest
-        shared_max = max(self._spectrum[1:].max(), 1e-10) if len(self._spectrum) > 1 else 1e-10
+        # Shared peak for all three strips so proportions are honest.
+        # Floor prevents silence from amplifying recording noise.
+        raw_max = self._spectrum[1:].max() if len(self._spectrum) > 1 else 0.0
+        shared_max = max(raw_max, self.NOISE_FLOOR)
 
         if n_strips == 3:
             harmonic = self._spectrum * self._stability
