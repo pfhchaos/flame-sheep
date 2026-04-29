@@ -52,6 +52,12 @@ DEFAULTS = {
         'min_genome_distance': 0.15,
         'cycles_per_loop': 3,
     },
+    'roles': {
+        'downbeat': 'kick',
+        'backbeat': 'snare',
+        'subdivision': 'hihat',
+        'energy': 'subbass',
+    },
     'debug': {
         'panels': ['header', 'timeline', 'spectrum', 'band_metrics', 'break'],
         'timeline_seconds': 8.0,
