@@ -50,8 +50,9 @@ PARAM_FIXTURES = {
     Variation.FRIEZE: {'frieze_group': 0.0},
 }
 
-RANDOM_VARIATIONS = {Variation.SATTRACTOR, Variation.WALLPAPER, Variation.FRIEZE,
-                     Variation.JULIAN, Variation.JULIASCOPE}
+RANDOM_VARIATIONS = {Variation.JULIA, Variation.SATTRACTOR, Variation.WALLPAPER,
+                     Variation.FRIEZE, Variation.JULIAN, Variation.JULIASCOPE,
+                     Variation.ICON, Variation.CPOW}
 
 
 @pytest.fixture(scope='module')
