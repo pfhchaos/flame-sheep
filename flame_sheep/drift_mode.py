@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from flame_sheep.loops import loop_sequence, cycle_length
+
 from flame_sheep_audio import AudioState
 from flame_sheep.genome import Genome
 from flame_sheep.config import cfg
@@ -62,7 +64,10 @@ class DriftMode:
 
         # Loop state (copied from genome_axis on enter())
         self._loop_genomes: list[Genome] = []
-        self._loop_pos = 0
+        self._loop_structure: str = 'cyclic'
+        self._loop_sequence = loop_sequence([], 'cyclic')
+        self._loop_step: int = 0
+        self._loop_cycle_len: int = 0
         self._loop_cycles = 0
         self.active_loop_id: int | None = None
         self._loop_history: list[int] = []
@@ -87,7 +92,7 @@ class DriftMode:
 
             # Track loop cycles for loop switching
             if (self._loop_genomes
-                    and self._loop_pos == 0
+                    and self._loop_step == 0
                     and self._lib is not None):
                 self._loop_cycles += 1
                 if self._loop_cycles >= self.CYCLES_PER_LOOP:
@@ -108,9 +113,15 @@ class DriftMode:
         self.morph_t = 0.0
         self._loop_cycles = 0
 
-        # Copy loop state
+        # Copy loop state — recreate sequence from genome_axis's genomes + structure
         self._loop_genomes = list(genome_axis._loop_genomes)
-        self._loop_pos = genome_axis._loop_pos
+        self._loop_structure = genome_axis._loop_structure
+        self._loop_cycle_len = genome_axis._loop_cycle_len
+        self._loop_step = genome_axis._loop_step
+        # Create fresh sequence, advance to match current position
+        self._loop_sequence = loop_sequence(self._loop_genomes, self._loop_structure)
+        for _ in range(self._loop_step):
+            next(self._loop_sequence)
         self.active_loop_id = genome_axis.active_loop_id
 
         # Pick next target
@@ -127,8 +138,10 @@ class DriftMode:
 
     def _swap_next_genome(self) -> None:
         if self._loop_genomes:
-            self._loop_pos = (self._loop_pos + 1) % len(self._loop_genomes)
-            self.target_genome = self._loop_genomes[self._loop_pos]
+            self.target_genome = next(self._loop_sequence)
+            self._loop_step += 1
+            if self._loop_step >= self._loop_cycle_len:
+                self._loop_step = 0
         else:
             with self._genome_lock:
                 if self._next_genome is not None:
@@ -172,15 +185,21 @@ class DriftMode:
         lid, info = candidates[idx]
         self._loop_history.append(lid)
 
-        # Load loop genomes
+        # Load loop genomes + structure
         items = self._lib.load_loop(lid)
         self._loop_genomes = [genome for _, genome, _ in items]
+        self._loop_structure = self._lib.loop_type(lid)
         n = len(self._loop_genomes)
+        self._loop_cycle_len = cycle_length(n, self._loop_structure)
+        self._loop_sequence = loop_sequence(self._loop_genomes, self._loop_structure)
         start = int(self.rng.integers(0, n))
-        self._loop_pos = (start + 1) % n
+        for _ in range(start):
+            next(self._loop_sequence)
+        self._loop_step = start
         self.active_loop_id = lid
         self.current_genome = self._loop_genomes[start]
-        self.target_genome = self._loop_genomes[self._loop_pos]
+        self.target_genome = next(self._loop_sequence)
+        self._loop_step += 1
         self.morph_t = 0.0
         log.info(f'[drift] switched to loop #{lid} '
-                 f'(fitness={info["fitness"]:.3f}, {n} genomes)')
+                 f'({self._loop_structure}, fitness={info["fitness"]:.3f}, {n} genomes)')

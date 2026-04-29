@@ -14,6 +14,7 @@ from flame_sheep.loops import (
     compose_loops, save_best_loops, LoopCandidate, _build_one_loop,
     crossover, mutate_loop, evolve_loops,
     loop_overlap, _too_similar,
+    loop_sequence, cycle_length, STRUCTURES,
 )
 
 
@@ -264,3 +265,92 @@ class TestLoopOverlap:
         ids = lib_with_loops.loop_genome_ids(loop_id)
         # Same IDs should be too similar
         assert _too_similar(lib_with_loops, ids, [loop_id], max_overlap=0.5)
+
+
+# ----------------------------------------------------------------
+# Loop sequence generator
+# ----------------------------------------------------------------
+
+class TestLoopSequence:
+
+    def _take(self, gen, n):
+        """Take n items from a generator."""
+        return [next(gen) for _ in range(n)]
+
+    def test_cyclic_repeats(self):
+        seq = loop_sequence(['A', 'B', 'C'], 'cyclic')
+        assert self._take(seq, 9) == ['A', 'B', 'C', 'A', 'B', 'C', 'A', 'B', 'C']
+
+    def test_palindrome_reverses(self):
+        seq = loop_sequence(['A', 'B', 'C', 'D'], 'palindrome')
+        # A B C D C B | A B C D C B | ...
+        result = self._take(seq, 12)
+        assert result == ['A', 'B', 'C', 'D', 'C', 'B', 'A', 'B', 'C', 'D', 'C', 'B']
+
+    def test_palindrome_no_doubled_endpoints(self):
+        seq = loop_sequence(['A', 'B', 'C'], 'palindrome')
+        result = self._take(seq, 8)
+        # A B C B | A B C B — never AA or CC
+        assert result == ['A', 'B', 'C', 'B', 'A', 'B', 'C', 'B']
+
+    def test_palindrome_two_items(self):
+        seq = loop_sequence(['A', 'B'], 'palindrome')
+        result = self._take(seq, 6)
+        assert result == ['A', 'B', 'A', 'B', 'A', 'B']
+
+    def test_rondo_alternates_with_home(self):
+        seq = loop_sequence(['A', 'B', 'C', 'D'], 'rondo')
+        result = self._take(seq, 12)
+        # A B A C A D | A B A C A D
+        assert result == ['A', 'B', 'A', 'C', 'A', 'D', 'A', 'B', 'A', 'C', 'A', 'D']
+
+    def test_rondo_home_is_first(self):
+        seq = loop_sequence(['X', 'Y', 'Z'], 'rondo')
+        result = self._take(seq, 8)
+        assert result[0] == 'X'
+        # Every even index should be home
+        for i in range(0, len(result), 2):
+            assert result[i] == 'X'
+
+    def test_rondo_single_item(self):
+        seq = loop_sequence(['A'], 'rondo')
+        result = self._take(seq, 4)
+        assert result == ['A', 'A', 'A', 'A']
+
+    def test_empty_produces_nothing(self):
+        seq = loop_sequence([], 'cyclic')
+        # Should not yield anything
+        result = []
+        for _ in range(3):
+            try:
+                result.append(next(seq))
+            except StopIteration:
+                break
+        assert result == []
+
+    def test_works_with_integers(self):
+        seq = loop_sequence([1, 2, 3], 'palindrome')
+        result = self._take(seq, 8)
+        assert result == [1, 2, 3, 2, 1, 2, 3, 2]
+
+
+class TestCycleLength:
+
+    def test_cyclic(self):
+        assert cycle_length(4, 'cyclic') == 4
+
+    def test_palindrome(self):
+        assert cycle_length(4, 'palindrome') == 6  # A B C D C B
+
+    def test_rondo(self):
+        assert cycle_length(4, 'rondo') == 6  # A B A C A D
+
+    def test_single_item(self):
+        assert cycle_length(1, 'cyclic') == 1
+        assert cycle_length(1, 'palindrome') == 1
+        assert cycle_length(1, 'rondo') == 1
+
+    def test_two_items(self):
+        assert cycle_length(2, 'cyclic') == 2
+        assert cycle_length(2, 'palindrome') == 2
+        assert cycle_length(2, 'rondo') == 2
