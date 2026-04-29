@@ -22,9 +22,12 @@ from flame_sheep.axes.brightness_axis import BrightnessAxis
 from flame_sheep.axes.detail_axis import DetailAxis
 from flame_sheep.drift_mode import DriftMode
 from flame_sheep.axes.genome_axis import GenomeAxis
+from flame_sheep.role_mapper import RoleMapper
 from flame_sheep_audio.mode import ModeDetector, Mode
 
 from .conftest import trivial_genome
+
+_default_role = RoleMapper()  # uses default mapping: kick→downbeat, snare→backbeat, etc.
 
 
 def _audio(events=None, rms=0.0, harmonic_rms=0.0, breaking=False,
@@ -223,30 +226,58 @@ class TestEnergyAnalyzer:
 
 
 # -------------------------------------------------------------------
+# RoleMapper
+# -------------------------------------------------------------------
+
+class TestRoleMapper:
+
+    def test_default_mapping(self):
+        rm = RoleMapper()
+        assert rm.band_for_role('downbeat') == 'kick'
+        assert rm.band_for_role('backbeat') == 'snare'
+        assert rm.band_for_role('subdivision') == 'hihat'
+        assert rm.band_for_role('energy') == 'subbass'
+
+    def test_role_for_event(self):
+        rm = RoleMapper()
+        event = BeatEvent(kind='kick', energy=1.0)
+        assert rm.role_for_event(event) == 'downbeat'
+
+    def test_custom_mapping(self):
+        rm = RoleMapper({'downbeat': 'bass', 'backbeat': 'clap'})
+        assert rm.band_for_role('downbeat') == 'bass'
+
+    def test_unknown_band(self):
+        rm = RoleMapper()
+        event = BeatEvent(kind='cowbell', energy=1.0)
+        assert rm.role_for_event(event) is None
+
+
+# -------------------------------------------------------------------
 # ZoomAxis
 # -------------------------------------------------------------------
 
 class TestZoomAxisUnit:
 
     def test_hihat_adds_boost(self):
-        axis = ZoomAxis()
+        axis = ZoomAxis(role=_default_role)
         axis.tick(_audio(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost > 0
 
     def test_non_hihat_ignored(self):
-        axis = ZoomAxis()
+        axis = ZoomAxis(role=_default_role)
         axis.tick(_audio(events=[BeatEvent('kick', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost == 0.0
 
     def test_boost_decays(self):
-        axis = ZoomAxis()
+        axis = ZoomAxis(role=_default_role)
         axis.tick(_audio(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
         peak = axis.zoom_boost
         axis.tick(_audio(rms=0.0), 1/60, 0.0)  # no events, just decay
         assert axis.zoom_boost < peak
 
     def test_boost_bounded(self):
-        axis = ZoomAxis()
+        axis = ZoomAxis(role=_default_role)
         for _ in range(100):
             axis.tick(_audio(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost <= axis.ZOOM_BOOST_MAX
@@ -259,17 +290,17 @@ class TestZoomAxisUnit:
 class TestBrightnessAxisUnit:
 
     def test_silence_returns_floor(self):
-        axis = BrightnessAxis(floor=0.7, ceiling=12.0)
+        axis = BrightnessAxis(role=_default_role, floor=0.7, ceiling=12.0)
         axis.tick(_audio(rms=0.0), 1/60, 0.0)
         assert axis.brightness == 0.7
 
     def test_loud_returns_ceiling(self):
-        axis = BrightnessAxis(floor=0.7, ceiling=12.0, rms_scale=0.01)
+        axis = BrightnessAxis(role=_default_role, floor=0.7, ceiling=12.0, rms_scale=0.01)
         axis.tick(_audio(harmonic_rms=1.0), 1/60, 0.0)
         assert axis.brightness == pytest.approx(12.0)
 
     def test_mid_rms_between_floor_and_ceiling(self):
-        axis = BrightnessAxis(floor=0.7, ceiling=12.0, rms_scale=0.01)
+        axis = BrightnessAxis(role=_default_role, floor=0.7, ceiling=12.0, rms_scale=0.01)
         axis.tick(_audio(harmonic_rms=0.005), 1/60, 0.0)
         assert 0.7 < axis.brightness < 12.0
 
@@ -281,12 +312,12 @@ class TestBrightnessAxisUnit:
 class TestDetailAxisUnit:
 
     def test_silence_returns_min(self):
-        axis = DetailAxis(min_iters=100, max_iters=500)
+        axis = DetailAxis(role=_default_role, min_iters=100, max_iters=500)
         axis.tick(_audio(rms=0.0), 1/60, 0.0)
         assert axis.iterations == 100
 
     def test_loud_returns_max(self):
-        axis = DetailAxis(min_iters=100, max_iters=500, rms_scale=0.01)
+        axis = DetailAxis(role=_default_role, min_iters=100, max_iters=500, rms_scale=0.01)
         axis.tick(_audio(harmonic_rms=1.0), 1/60, 0.0)
         assert axis.iterations == 500
 
@@ -300,7 +331,8 @@ class TestGenomeAxisUnit:
     def _make_axis(self):
         _seed = iter(range(1000))
         return GenomeAxis(
-            genome_factory=lambda: trivial_genome(next(_seed)))
+            genome_factory=lambda: trivial_genome(next(_seed)),
+            role=_default_role)
 
     def test_starts_with_genomes(self):
         axis = self._make_axis()
@@ -380,6 +412,7 @@ class TestNextLoopSelection:
         _genseed = iter(range(1000))
         return GenomeAxis(
             genome_factory=lambda: trivial_genome(next(_genseed)),
+            role=_default_role,
             lib=FakeLib(n_loops),
             rng=np.random.default_rng(seed),
         )
@@ -453,7 +486,7 @@ class TestDriftModeUnit:
     def _make(self):
         _seed = iter(range(1000))
         factory = lambda: trivial_genome(next(_seed))
-        genome_axis = GenomeAxis(genome_factory=factory)
+        genome_axis = GenomeAxis(genome_factory=factory, role=_default_role)
         drift = DriftMode(genome_factory=factory)
         return drift, genome_axis
 
@@ -987,7 +1020,8 @@ class TestGenomeAxisEvents:
     def _make_axis(self):
         _seed = iter(range(1000))
         return GenomeAxis(
-            genome_factory=lambda: trivial_genome(next(_seed)))
+            genome_factory=lambda: trivial_genome(next(_seed)),
+            role=_default_role)
 
     def test_ignores_unknown_events(self):
         axis = self._make_axis()
@@ -1046,7 +1080,7 @@ class TestGenomeAxisEvents:
             axis.tick(_audio(events=[BeatEvent('kick', 0.5)]), 1/60, float(i))
         # Song start should reset energy tracking
         axis.tick(_audio(events=[BeatEvent('song_start', 0.0)]), 1/60, 20.0)
-        assert axis._recent_kick_energy == 0.5
+        assert axis._recent_downbeat_energy == 0.5
 
     def test_low_percussiveness_slows_morph(self):
         axis = self._make_axis()

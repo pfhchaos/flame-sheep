@@ -1,4 +1,4 @@
-"""Palette axis — snare events drive palette graph traversal."""
+"""Palette axis — backbeat events drive palette graph traversal."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import numpy as np
 from flame_sheep_audio import AudioState
 from flame_sheep.genome import _lerp_arr
 from flame_sheep.config import cfg
+from flame_sheep.role_mapper import RoleMapper, BACKBEAT
 
 if TYPE_CHECKING:
     from flame_sheep.main import FlameSheepCore
@@ -20,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class PaletteAxis:
-    """Snare -> palette walk. Energy controls jump distance."""
+    """Backbeat -> palette walk. Energy controls jump distance."""
 
     PALETTE_HISTORY_SIZE = 8
 
@@ -30,9 +31,11 @@ class PaletteAxis:
     def DENSITY_DAMPING(self) -> float: return cfg.palette.density_damping
 
     def __init__(self, initial_palette: np.ndarray,
+                 role: RoleMapper,
                  lib: Library | None = None,
                  rng: np.random.Generator | None = None) -> None:
         self.enabled = True
+        self._role = role
         self._lib = lib
         self._rng = rng or np.random.default_rng()
         self._current_palette_id: int | None = None
@@ -52,11 +55,11 @@ class PaletteAxis:
             self.palette_t       = 0.0
             self.palette_speed   = self.DRIFT_MORPH_SPEED
 
-        # Handle snare events (scaled by density)
-        snare_density = audio.bands['snare'].onset_density
-        density_scale = 1.0 / (1.0 + snare_density * self.DENSITY_DAMPING)
+        # Handle backbeat events (scaled by density)
+        backbeat_density = self._role.band_state(audio, BACKBEAT).onset_density
+        density_scale = 1.0 / (1.0 + backbeat_density * self.DENSITY_DAMPING)
         for event in audio.events:
-            if event.kind == 'snare':
+            if event.kind == self._role.band_for_role(BACKBEAT):
                 self.palette_current = _lerp_arr(
                     self.palette_current, self.palette_target, self.palette_t)
                 next_palette = self._pick_next_palette(event.energy)
@@ -64,7 +67,7 @@ class PaletteAxis:
                     self.palette_target = next_palette
                 self.palette_t     = 0.0
                 self.palette_speed = 0.03 + event.energy * 0.1 * density_scale
-                log.debug(f'[snare] energy={event.energy:.2f}')
+                log.debug(f'[backbeat] energy={event.energy:.2f}')
 
         # Decay speed toward drift
         self.palette_speed = max(self.DRIFT_MORPH_SPEED, self.palette_speed * 0.98)

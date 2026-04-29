@@ -1,4 +1,4 @@
-"""Genome axis — kick/drop events drive genome morphing and swapping."""
+"""Genome axis — downbeat/drop events drive genome morphing and swapping."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from collections import deque
 from typing import TYPE_CHECKING
 
 from flame_sheep.config import cfg
+from flame_sheep.role_mapper import RoleMapper, DOWNBEAT, BACKBEAT
 import numpy as np
 
 log = logging.getLogger(__name__)
@@ -23,12 +24,12 @@ if TYPE_CHECKING:
 
 
 class GenomeAxis:
-    """Kick -> genome morph/swap. Manages genome lifecycle, loops, prefetch.
+    """Downbeat -> genome morph/swap. Manages genome lifecycle, loops, prefetch.
 
     Responds to event types:
-      - kick: count toward swap, pulse morph speed
+      - downbeat: count toward swap, pulse morph speed
       - drop: force swap + freeze morph for N bars
-      - song_start: reset drop/kick state
+      - song_start: reset drop/downbeat state
 
     Continuous features:
       - percussiveness: scales morph speed (low = slow drift, high = snappy)
@@ -75,10 +76,12 @@ class GenomeAxis:
         return cfg.drift.min_genome_distance
 
     def __init__(self, genome_factory: Callable[[], Genome],
+                 role: RoleMapper,
                  lib: Library | None = None,
                  rng: np.random.Generator | None = None) -> None:
         self.enabled = True
         self._genome_factory = genome_factory
+        self._role = role
         self._lib = lib
         self.rng = rng or np.random.default_rng()
 
@@ -92,8 +95,8 @@ class GenomeAxis:
         self._next_genome: Genome | None = None
         self._genome_lock = threading.Lock()
 
-        # Kick energy tracking (for strong beat detection)
-        self._recent_kick_energy = 0.5
+        # Downbeat energy tracking (for strong beat detection)
+        self._recent_downbeat_energy = 0.5
 
         # Section change: consumed on next beat to trigger loop swap
         self._section_change_pending = False
@@ -112,7 +115,7 @@ class GenomeAxis:
         self.needs_walker_reset = False
 
         # Timing
-        self._last_kick_time = 0.0
+        self._last_downbeat_time = 0.0
         self._break_damping = 1.0
 
         if lib is not None and lib.loop_count() > 0:
@@ -140,8 +143,8 @@ class GenomeAxis:
 
         # Handle discrete events
         for event in audio.events:
-            if event.kind == "kick":
-                self._handle_kick(event, clock, audio)
+            if event.kind == self._role.band_for_role(DOWNBEAT):
+                self._handle_downbeat(event, clock, audio)
             elif event.kind == "song_start":
                 self._handle_song_start()
 
@@ -183,9 +186,10 @@ class GenomeAxis:
             self.morph_speed = self.DRIFT_MORPH_SPEED
 
         # Ramp morph speed toward density-driven baseline
-        # Kick + snare drive morph (rhythm section), clap/hihat drive zoom
+        # Downbeat + backbeat drive morph (rhythm section), subdivision drives zoom
         rhythm_density = (
-            audio.bands["kick"].onset_density + audio.bands["snare"].onset_density * 0.5
+            self._role.band_state(audio, DOWNBEAT).onset_density
+            + self._role.band_state(audio, BACKBEAT).onset_density * 0.5
         )
         density_speed = (
             self.DRIFT_MORPH_SPEED + rhythm_density * self.DENSITY_MORPH_SCALE
@@ -201,14 +205,14 @@ class GenomeAxis:
 
     # --- Event handlers ---
 
-    def _handle_kick(self, event: BeatEvent, clock: float, audio: AudioState | None = None) -> None:
-        since = clock - self._last_kick_time
-        self._last_kick_time = clock
+    def _handle_downbeat(self, event: BeatEvent, clock: float, audio: AudioState | None = None) -> None:
+        since = clock - self._last_downbeat_time
+        self._last_downbeat_time = clock
 
-        self._recent_kick_energy = self._recent_kick_energy * 0.8 + event.energy * 0.2
+        self._recent_downbeat_energy = self._recent_downbeat_energy * 0.8 + event.energy * 0.2
 
-        kick_density = audio.bands["kick"].onset_density if audio else 0.0
-        density_scale = 1.0 / (1.0 + kick_density * self.DENSITY_DAMPING)
+        downbeat_density = self._role.band_state(audio, DOWNBEAT).onset_density if audio else 0.0
+        density_scale = 1.0 / (1.0 + downbeat_density * self.DENSITY_DAMPING)
 
         # Section change pending → consume on any kick (don't wait for strong beat)
         if self._section_change_pending and self._lib is not None:
@@ -223,8 +227,8 @@ class GenomeAxis:
             return
 
         # Strong beat → swap direction (harder to trigger at high density)
-        swap_thresh = self.STRONG_BEAT_THRESHOLD * (1.0 + kick_density * 0.5)
-        if event.energy > self._recent_kick_energy * swap_thresh:
+        swap_thresh = self.STRONG_BEAT_THRESHOLD * (1.0 + downbeat_density * 0.5)
+        if event.energy > self._recent_downbeat_energy * swap_thresh:
             self.current_genome = self.current_genome.lerp(
                 self.target_genome, self.morph_t
             )
@@ -233,20 +237,20 @@ class GenomeAxis:
             dist = self.current_genome.distance(self.target_genome)
             log.debug(
                 f"[SWAP]  +{since:.3f}s  energy={event.energy:.2f}  "
-                f"avg={self._recent_kick_energy:.2f}  dist={dist:.3f}"
+                f"avg={self._recent_downbeat_energy:.2f}  dist={dist:.3f}"
             )
         else:
-            # Normal kick — pulse morph speed (scaled by density)
+            # Normal downbeat — pulse morph speed (scaled by density)
             self.morph_speed = min(
                 0.15,
                 self.morph_speed + event.energy * self.KICK_MORPH_PULSE * density_scale,
             )
-            log.debug(f"[kick]  +{since:.3f}s  energy={event.energy:.2f}")
+            log.debug(f"[downbeat]  +{since:.3f}s  energy={event.energy:.2f}")
 
     def _handle_song_start(self) -> None:
         """Reset state for new song — swap loop + reset energy tracking."""
-        self._last_kick_time = 0.0
-        self._recent_kick_energy = 0.5
+        self._last_downbeat_time = 0.0
+        self._recent_downbeat_energy = 0.5
         self._break_damping = 1.0
         self._section_change_pending = False
         self._section_warmup = 0
@@ -261,7 +265,7 @@ class GenomeAxis:
         self.target_genome = genome
         self.morph_t = 0.0
         self.morph_speed = self.DRIFT_MORPH_SPEED
-        self._recent_kick_energy = 0.5
+        self._recent_downbeat_energy = 0.5
         self._break_damping = 1.0
         if loop_id is not None and loop_id != self.active_loop_id:
             self.load_loop(loop_id)

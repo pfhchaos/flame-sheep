@@ -57,6 +57,7 @@ from .axes.detail_axis import DetailAxis
 from .axes.genome_axis import GenomeAxis
 from .axes.palette_axis import PaletteAxis
 from .drift_mode import DriftMode
+from .role_mapper import RoleMapper
 
 
 # Set by main() before run_window_config — workaround for moderngl-window
@@ -97,13 +98,18 @@ class FlameSheepCore:
             factory = lambda: _pool[int(self.rng.integers(0, len(_pool)))]
         else:
             factory = lambda: Genome.random(self.rng)
-        self._genome_axis = GenomeAxis(genome_factory=factory, lib=lib, rng=self.rng)
+        # Role mapping (band names → visual roles)
+        role_cfg = cfg.roles
+        role_map = {k: getattr(role_cfg, k) for k in ('downbeat', 'backbeat', 'subdivision', 'energy')}
+        self._role = RoleMapper(role_map)
+
+        self._genome_axis = GenomeAxis(genome_factory=factory, role=self._role, lib=lib, rng=self.rng)
         self._palette_axis = PaletteAxis(
             initial_palette=self._genome_axis.current_genome.palette,
-            lib=lib, rng=self.rng)
-        self._zoom_axis = ZoomAxis()
-        self._brightness_axis = BrightnessAxis()
-        self._detail_axis = DetailAxis()
+            role=self._role, lib=lib, rng=self.rng)
+        self._zoom_axis = ZoomAxis(role=self._role)
+        self._brightness_axis = BrightnessAxis(role=self._role)
+        self._detail_axis = DetailAxis(role=self._role)
         self._drift_mode = DriftMode(genome_factory=factory, lib=lib, rng=self.rng)
         self._pending_song_start = False
 
