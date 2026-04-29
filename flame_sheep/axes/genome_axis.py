@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from flame_sheep.config import cfg
 from flame_sheep.role_mapper import RoleMapper, DOWNBEAT, BACKBEAT
+from flame_sheep.loops import loop_sequence, cycle_length
 import numpy as np
 
 log = logging.getLogger(__name__)
@@ -107,7 +108,10 @@ class GenomeAxis:
 
         # Loop playback
         self._loop_genomes: list[Genome] = []
-        self._loop_pos: int = 0
+        self._loop_structure: str = 'cyclic'
+        self._loop_sequence = loop_sequence([], 'cyclic')
+        self._loop_step: int = 0  # steps since cycle start
+        self._loop_cycle_len: int = 0
         self.active_loop_id: int | None = None
         self._loop_history: deque[int] = deque(maxlen=self.LOOP_HISTORY_SIZE)
 
@@ -296,16 +300,27 @@ class GenomeAxis:
     def _start_loop(self, loop_id: int) -> None:
         items = self._lib.load_loop(loop_id)
         self._loop_genomes = [genome for _, genome, _ in items]
+        self._loop_structure = self._lib.loop_type(loop_id)
         n = len(self._loop_genomes)
+
+        # Create sequence generator and skip to random start
+        self._loop_sequence = loop_sequence(self._loop_genomes, self._loop_structure)
+        self._loop_cycle_len = cycle_length(n, self._loop_structure)
         start = int(self.rng.integers(0, n))
-        self._loop_pos = (start + 1) % n
+        # Advance sequence to start position
+        for _ in range(start):
+            next(self._loop_sequence)
+        self._loop_step = start
+
         self.active_loop_id = loop_id
         self.current_genome = self._loop_genomes[start]
-        self.target_genome = self._loop_genomes[self._loop_pos]
+        self.target_genome = next(self._loop_sequence)
+        self._loop_step += 1
         self.morph_t = 0.0
         self.morph_speed = 0.05
         self.needs_walker_reset = True
-        log.info(f"[loop] loaded #{loop_id} ({n} genomes, start={start})")
+        log.info(f"[loop] loaded #{loop_id} ({self._loop_structure}, "
+                 f"{n} genomes, start={start})")
         for i, g in enumerate(self._loop_genomes):
             marker = " <--" if i == start else ""
             log.debug(f"  [{i}] {_describe_genome(g)}{marker}")
@@ -351,10 +366,12 @@ class GenomeAxis:
 
     def _swap_next_genome(self) -> None:
         if self._loop_genomes:
-            self._loop_pos = (self._loop_pos + 1) % len(self._loop_genomes)
-            self.target_genome = self._loop_genomes[self._loop_pos]
-            if self._loop_pos == 0:
-                log.debug(f"[loop] cycle complete, {len(self._loop_genomes)} genomes")
+            self.target_genome = next(self._loop_sequence)
+            self._loop_step += 1
+            if self._loop_step >= self._loop_cycle_len:
+                self._loop_step = 0
+                log.debug(f"[loop] cycle complete ({self._loop_structure}, "
+                          f"{len(self._loop_genomes)} genomes)")
         else:
             with self._genome_lock:
                 if self._next_genome is not None:

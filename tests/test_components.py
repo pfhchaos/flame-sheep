@@ -405,6 +405,9 @@ class FakeLib:
         g = trivial_genome(loop_id)
         return [(loop_id, g, 0)]
 
+    def loop_type(self, loop_id):
+        return 'cyclic'
+
 
 class TestNextLoopSelection:
 

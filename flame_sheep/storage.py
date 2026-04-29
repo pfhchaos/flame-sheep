@@ -120,6 +120,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if 'score_version' not in existing:
         conn.execute('ALTER TABLE genomes ADD COLUMN score_version INTEGER DEFAULT 0')
 
+    # Add loop_type column if it doesn't exist
+    loop_cols = {r[1] for r in conn.execute('PRAGMA table_info(loops)').fetchall()}
+    if 'loop_type' not in loop_cols:
+        conn.execute("ALTER TABLE loops ADD COLUMN loop_type TEXT DEFAULT 'cyclic'")
+
     conn.commit()
 
 
@@ -578,6 +583,7 @@ class Library:
     def save_loop(self, genome_ids: list[int],
                   motion_fields: list[np.ndarray] | None = None,
                   name: str | None = None,
+                  loop_type: str = 'cyclic',
                   parent_a: int | None = None,
                   parent_b: int | None = None) -> int:
         """
@@ -586,6 +592,7 @@ class Library:
         motion_fields: list of 3x3x2 arrays, one per transition.
                        Length should equal len(genome_ids) (last wraps to first).
                        If None, motion fields are computed automatically.
+        loop_type: 'cyclic', 'palindrome', or 'rondo'.
         parent_a/b: loop IDs of breeding parents (for tracking lineage).
         """
         genomes = [self.load_genome(gid) for gid in genome_ids]
@@ -601,11 +608,13 @@ class Library:
 
         cur = self.conn.execute(
             '''INSERT INTO loops (name, fitness, mean_coherence, min_coherence,
-                                  diversity, palette_flow, smoothness, parent_a, parent_b)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                  diversity, palette_flow, smoothness, loop_type,
+                                  parent_a, parent_b)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (name, scores['fitness'], scores['mean_coherence'],
              scores['min_coherence'], scores['diversity'],
-             scores['palette_flow'], scores['smoothness'], parent_a, parent_b),
+             scores['palette_flow'], scores['smoothness'], loop_type,
+             parent_a, parent_b),
         )
         loop_id = cur.lastrowid
 
@@ -618,6 +627,13 @@ class Library:
             )
         self.conn.commit()
         return loop_id
+
+    def loop_type(self, loop_id: int) -> str:
+        """Get the structure type of a loop ('cyclic', 'palindrome', 'rondo')."""
+        row = self.conn.execute(
+            'SELECT loop_type FROM loops WHERE id = ?', (loop_id,)
+        ).fetchone()
+        return row[0] if row and row[0] else 'cyclic'
 
     def load_loop(self, loop_id: int) -> list[tuple[int, Genome, np.ndarray | None]]:
         """
