@@ -117,4 +117,9 @@ def run_debug_overlay(audio_device: str | int | None = None,
                 '--size', f'{cfg.debug.window_width}x{cfg.debug.window_height}']
 
     OverlayClass = _make_overlay_class()
-    mglw.run_window_config(OverlayClass)
+    try:
+        mglw.run_window_config(OverlayClass)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _ORCH.stop()
