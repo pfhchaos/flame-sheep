@@ -1,0 +1,177 @@
+# Test corpus for flame-sheep audio analysis tuning.
+#
+# Audio files are NOT in git — run the downloader to fetch them.
+# Only this config file is committed.
+#
+# Tags: genre, tempo characteristics, problem cases, what it tests.
+
+[sources.osu]
+cache_dir = "~/.cache/flame-sheep/corpus/osu"
+
+# --- Electronic / EDM ---
+[[sources.osu.beatmaps]]
+id = 332532
+name = "Panda Eyes & Teminite - Highscore"
+tags = ["edm", "dubstep", "drops"]
+expected_bpm = 110
+
+[[sources.osu.beatmaps]]
+id = 653534
+name = "Panda Eyes - ILY"
+tags = ["edm", "future_bass"]
+expected_bpm = 150
+
+[[sources.osu.beatmaps]]
+id = 813569
+name = "Laur - Sound Chimera"
+tags = ["edm", "hardcore", "fast", "complex"]
+expected_bpm = 190
+
+[[sources.osu.beatmaps]]
+id = 190390
+name = "Rameses B - Flaklypa"
+tags = ["dnb", "drum_and_bass"]
+expected_bpm = 175
+
+[[sources.osu.beatmaps]]
+id = 864013
+name = "Various Artists - Drum and Bass Compilation"
+tags = ["dnb", "compilation", "fast"]
+expected_bpm = 174
+
+# --- Rock / Pop ---
+[[sources.osu.beatmaps]]
+id = 399358
+name = "KANA-BOON - Silhouette"
+tags = ["rock", "jpop", "anime"]
+expected_bpm = 162
+
+[[sources.osu.beatmaps]]
+id = 372510
+name = "THE ORAL CIGARETTES - Kyouran Hey Kids!!"
+tags = ["rock", "anime", "energetic"]
+expected_bpm = 165
+
+[[sources.osu.beatmaps]]
+id = 63112
+name = "ONE OK ROCK - Answer is Near"
+tags = ["rock", "jrock"]
+expected_bpm = 148
+
+[[sources.osu.beatmaps]]
+id = 765778
+name = "Icon For Hire - Make a Move"
+tags = ["rock", "alt_rock"]
+expected_bpm = 140
+
+# --- Metal ---
+[[sources.osu.beatmaps]]
+id = 158023
+name = "UNDEAD CORPORATION - Everything will freeze"
+tags = ["metal", "death_metal", "blast_beats", "fast"]
+expected_bpm = 230
+
+[[sources.osu.beatmaps]]
+id = 28705
+name = "Yousei Teikoku - Kokou no Sousei"
+tags = ["metal", "symphonic_metal"]
+expected_bpm = 172
+
+# --- Jazz / Swing ---
+[[sources.osu.beatmaps]]
+id = 503958
+name = "Hank Levy Jazz LLC - Whiplash"
+tags = ["jazz", "big_band", "fast"]
+expected_bpm = 180
+
+[[sources.osu.beatmaps]]
+id = 1306575
+name = "ARM (IOSYS) + Brasscapsule - Jazz is Rad"
+tags = ["jazz", "fusion"]
+expected_bpm = 155
+
+[[sources.osu.beatmaps]]
+id = 687801
+name = "BOSSA NOVA - Moe Jazz Dreamer"
+tags = ["jazz", "bossa_nova", "slow"]
+expected_bpm = 120
+
+# --- Classical ---
+[[sources.osu.beatmaps]]
+id = 1796615
+name = "Frederic Chopin - Black Key Etude"
+tags = ["classical", "piano", "rubato", "no_percussion"]
+expected_bpm = 140
+
+[[sources.osu.beatmaps]]
+id = 1117990
+name = "Frederic Chopin - Etude Op. 10 No. 1"
+tags = ["classical", "piano", "fast", "no_percussion"]
+expected_bpm = 168
+
+# --- Pop / Vocal ---
+[[sources.osu.beatmaps]]
+id = 163112
+name = "Kuba Oms - My Love"
+tags = ["pop", "vocal", "slow"]
+expected_bpm = 88
+
+[[sources.osu.beatmaps]]
+id = 513590
+name = "RADWIMPS - Zen Zen Zense"
+tags = ["pop", "jpop", "anime"]
+expected_bpm = 190
+
+[[sources.osu.beatmaps]]
+id = 522857
+name = "Porter Robinson & Madeon - Shelter"
+tags = ["pop", "electronic", "vocal"]
+expected_bpm = 100
+
+# --- Slow / Edge Cases ---
+[[sources.osu.beatmaps]]
+id = 68893
+name = "Yiruma - River Flows In You"
+tags = ["piano", "slow", "ambient", "no_percussion"]
+expected_bpm = 68
+
+[[sources.osu.beatmaps]]
+id = 869760
+name = "Joji - SLOW DANCING IN THE DARK"
+tags = ["pop", "slow", "vocal", "rnb"]
+expected_bpm = 90
+
+# --- Meme / Fun (but good timing data) ---
+[[sources.osu.beatmaps]]
+id = 41823
+name = "The Quick Brown Fox - The Big Black"
+tags = ["electronic", "fast", "extreme"]
+expected_bpm = 360
+
+[[sources.osu.beatmaps]]
+id = 387700
+name = "toby fox - MEGALOVANIA"
+tags = ["electronic", "game_ost"]
+expected_bpm = 120
+
+# --- YouTube clips (edge cases, speech, problem samples) ---
+[sources.youtube]
+cache_dir = "~/.cache/flame-sheep/corpus/youtube"
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=qMTAFGPc0Vs"
+name = "cell_block_tango"
+start = 0
+duration = 180
+tags = ["tango", "slow", "vocal", "tempo_edge", "musical_theater"]
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=ER7bIGwJeJk"
+name = "patrick_boyle_speech"
+start = 60
+duration = 120
+tags = ["speech", "pure_speech"]
+
+# --- MUSDB18 (optional, needs separate download) ---
+[sources.musdb18]
+# root = "datasets/MUSDB18/MUSDB18-7"
