@@ -60,8 +60,9 @@ PARAM_FIXTURES = {
 
 # Variations that use randomness internally (sattractor, wallpaper, frieze)
 # — set a fixed seed for determinism
-RANDOM_VARIATIONS = {Variation.SATTRACTOR, Variation.WALLPAPER, Variation.FRIEZE,
-                     Variation.JULIAN, Variation.JULIASCOPE}
+RANDOM_VARIATIONS = {Variation.JULIA, Variation.SATTRACTOR, Variation.WALLPAPER,
+                     Variation.FRIEZE, Variation.JULIAN, Variation.JULIASCOPE,
+                     Variation.ICON, Variation.CPOW}
 
 
 def generate_transform_golden():
