@@ -390,7 +390,8 @@ def motion_field_from_blob(blob: bytes) -> np.ndarray:
 # ------------------------------------------------------------------
 
 def score_loop(genomes: list[Genome],
-               motion_fields: list[np.ndarray]) -> dict[str, float]:
+               motion_fields: list[np.ndarray],
+               structure: str = 'cyclic') -> dict[str, float]:
     """
     Compute automated fitness metrics for a loop.
 
@@ -400,6 +401,8 @@ def score_loop(genomes: list[Genome],
         The genomes in loop order.
     motion_fields : list[np.ndarray]
         Motion field for each transition (len == len(genomes), wrapping).
+    structure : str
+        'cyclic', 'palindrome', or 'rondo'.
 
     Returns
     -------
@@ -476,20 +479,35 @@ def score_loop(genomes: list[Genome],
     else:
         smoothness = 0.0
 
-    # -- composite fitness --
-    # Weights reflect relative importance:
-    #   smoothness matters most (no visual snaps)
-    #   coherence matters (motion quality)
-    #   diversity matters (visual variety)
-    #   palette flow is a bonus
-    #   min_coherence penalty prevents one bad transition from hiding
-    fitness = (
-        smoothness * 0.3
-        + mean_coh * 0.25
-        + diversity * 0.2
-        + palette_flow * 0.15
-        + min_coh * 0.1   # penalizes loops with one terrible transition
-    )
+    # -- composite fitness (structure-dependent weights) --
+    if structure == 'palindrome':
+        # Palindrome: wrap-around less important (reversal is smooth),
+        # bidirectional coherence matters, smoothness still king
+        fitness = (
+            smoothness * 0.30
+            + mean_coh * 0.30   # higher — coherence in both directions
+            + diversity * 0.20
+            + palette_flow * 0.15
+            + min_coh * 0.05    # lower — wrap transition less critical
+        )
+    elif structure == 'rondo':
+        # Rondo: home genome quality matters, diversity of episodes matters
+        # min_coherence less important (transitions to/from home vary)
+        fitness = (
+            smoothness * 0.25
+            + mean_coh * 0.20
+            + diversity * 0.30   # higher — episodes should be distinct
+            + palette_flow * 0.15
+            + min_coh * 0.10
+        )
+    else:  # cyclic
+        fitness = (
+            smoothness * 0.30
+            + mean_coh * 0.25
+            + diversity * 0.20
+            + palette_flow * 0.15
+            + min_coh * 0.10
+        )
 
     return dict(
         mean_coherence=mean_coh,
@@ -604,7 +622,7 @@ class Library:
                     genomes[i], genomes[(i + 1) % len(genomes)]
                 ))
 
-        scores = score_loop(genomes, motion_fields)
+        scores = score_loop(genomes, motion_fields, structure=loop_type)
 
         cur = self.conn.execute(
             '''INSERT INTO loops (name, fitness, mean_coherence, min_coherence,
