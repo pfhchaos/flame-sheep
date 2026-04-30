@@ -356,8 +356,10 @@ DEFAULT_MONITOR_SIZE = 27.0  # fallback — works for most monitors
 
 def _get_output_layout() -> dict[str, dict]:
     """
-    Query Wayland outputs for geometry via the wl_output protocol.
-    Compositor-agnostic — works on sway, Hyprland, river, etc.
+    Query Wayland outputs for geometry via wl_output + xdg-output-manager.
+
+    Uses xdg-output-manager-v1 for logical positions (compositor-agnostic),
+    falling back to wl_output.geometry and then swaymsg.
 
     Returns {name: {x, y, w, h, ppi, phys_w_mm, phys_h_mm}}.
     """
@@ -369,11 +371,22 @@ def _get_output_layout() -> dict[str, dict]:
     display.connect()
     registry = display.get_registry()
     outputs = []
+    xdg_output_manager = None
+
+    # Try to bind xdg-output-manager for logical positions
+    try:
+        from .protocol.xdg_output_unstable_v1.zxdg_output_manager_v1 import ZxdgOutputManagerV1
+        _has_xdg_output = True
+    except ImportError:
+        _has_xdg_output = False
 
     def _on_global(reg, name, interface, version):
+        nonlocal xdg_output_manager
         if interface == WlOutput.name:
             out = reg.bind(name, WlOutput, min(version, 4))
             outputs.append(out)
+        elif _has_xdg_output and interface == ZxdgOutputManagerV1.name:
+            xdg_output_manager = reg.bind(name, ZxdgOutputManagerV1, min(version, 3))
 
     registry.dispatcher['global'] = _on_global
     display.roundtrip()
@@ -383,7 +396,7 @@ def _get_output_layout() -> dict[str, dict]:
 
     def _make_handlers(out):
         info = {'name': None, 'x': 0, 'y': 0, 'phys_w_mm': 0, 'phys_h_mm': 0,
-                'mode_w': 0, 'mode_h': 0}
+                'mode_w': 0, 'mode_h': 0, 'xdg_x': None, 'xdg_y': None}
         output_info[id(out)] = info
 
         def _on_geometry(output, x, y, phys_w, phys_h, subpixel, make, model, transform):
@@ -404,6 +417,24 @@ def _get_output_layout() -> dict[str, dict]:
         out.dispatcher['mode'] = _on_mode
         out.dispatcher['name'] = _on_name
 
+        # If xdg-output-manager is available, get logical position
+        if xdg_output_manager is not None:
+            xdg_out = xdg_output_manager.get_xdg_output(out)
+
+            def _on_logical_position(xdg_output, x, y):
+                info['xdg_x'] = x
+                info['xdg_y'] = y
+
+            def _on_logical_size(xdg_output, w, h):
+                pass  # we use mode size instead
+
+            def _on_done(xdg_output):
+                pass
+
+            xdg_out.dispatcher['logical_position'] = _on_logical_position
+            xdg_out.dispatcher['logical_size'] = _on_logical_size
+            xdg_out.dispatcher['done'] = _on_done
+
     for out in outputs:
         _make_handlers(out)
 
@@ -420,6 +451,10 @@ def _get_output_layout() -> dict[str, dict]:
         if w == 0 or h == 0:
             continue
 
+        # Use xdg-output position if available, else wl_output geometry
+        x = info['xdg_x'] if info['xdg_x'] is not None else info['x']
+        y = info['xdg_y'] if info['xdg_y'] is not None else info['y']
+
         # Compute PPI from physical size or fallback
         if info['phys_w_mm'] > 0 and info['phys_h_mm'] > 0:
             phys_w_mm = info['phys_w_mm']
@@ -428,34 +463,30 @@ def _get_output_layout() -> dict[str, dict]:
             diag_px = math.sqrt(w**2 + h**2)
             ppi = diag_px / (diag_mm / 25.4) if diag_mm > 0 else 96.0
         else:
-            # Headless or unknown — use default
             diag_px = math.sqrt(w**2 + h**2)
             ppi = diag_px / DEFAULT_MONITOR_SIZE
             phys_w_mm = w / ppi * 25.4
             phys_h_mm = h / ppi * 25.4
 
         result[name] = {
-            'x': info['x'], 'y': info['y'],
+            'x': x, 'y': y,
             'w': w, 'h': h,
             'ppi': ppi,
             'phys_w_mm': phys_w_mm,
             'phys_h_mm': phys_h_mm,
         }
 
+    # If xdg-output didn't work and positions are all zero, try swaymsg
+    if result and all(g['x'] == 0 and g['y'] == 0 for g in result.values()):
+        sway_result = _swaymsg_fallback(result)
+        if sway_result:
+            return sway_result
+
     return result
 
 
-def _get_sway_layout() -> dict[str, dict]:
-    """Get output layout — try swaymsg first for accurate positions,
-    fall back to Wayland protocol (wl_output.geometry may return 0,0)."""
-    # TODO: use xdg-output-manager protocol for compositor-agnostic positions
-    wl_result = _get_output_layout()
-
-    # If Wayland gave real positions (not all zero), use them
-    if wl_result and any(g['x'] != 0 or g['y'] != 0 for g in wl_result.values()):
-        return wl_result
-
-    # swaymsg fallback — has correct positions, merge with Wayland physical sizes
+def _swaymsg_fallback(wl_result: dict[str, dict]) -> dict[str, dict]:
+    """swaymsg fallback for output positions — sway-specific."""
     import json, subprocess, math
     try:
         raw = subprocess.check_output(['swaymsg', '-t', 'get_outputs'], timeout=3)
@@ -466,7 +497,6 @@ def _get_sway_layout() -> dict[str, dict]:
                 continue
             r = o['rect']
             name = o['name']
-            # Use physical size from Wayland if available, else estimate
             if wl_result and name in wl_result:
                 phys_w_mm = wl_result[name]['phys_w_mm']
                 phys_h_mm = wl_result[name]['phys_h_mm']
@@ -488,7 +518,7 @@ def _get_sway_layout() -> dict[str, dict]:
             }
         return result
     except Exception as e:
-        log.error(f'Output layout query failed: {e}')
+        log.error(f'swaymsg fallback failed: {e}')
         return {}
 
 
@@ -541,7 +571,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     output_names = WallpaperSession.list_outputs()
     log.info(f'outputs: {output_names}')
 
-    layout = _get_sway_layout()
+    layout = _get_output_layout()
     active = {n: layout[n] for n in output_names if n in layout}
     if not active:
         raise RuntimeError('No active sway outputs found — is sway running?')
