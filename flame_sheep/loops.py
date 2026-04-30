@@ -448,6 +448,53 @@ def mutate_loop(
     return new_id
 
 
+def jitter_loop(
+    lib: Library,
+    loop_id: int,
+    rng: np.random.Generator | None = None,
+    scale: float = 0.1,
+) -> int | None:
+    """
+    Mutate a loop by jittering variation parameters of one genome.
+
+    Picks a random position and creates a jittered copy of that genome.
+    The new genome is saved to the library, and a new loop is created
+    with the jittered genome in place of the original.
+
+    Returns the new loop ID, or None if the genome has no params to jitter.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    ids = lib.loop_genome_ids(loop_id)
+    if not ids:
+        return None
+
+    pos = int(rng.integers(0, len(ids)))
+    genome = lib.load_genome(ids[pos])
+
+    # Check if any transform has params to jitter
+    has_params = any(tr.var_params for tr in genome.transforms)
+    if not has_params:
+        return None
+
+    jittered = genome.jitter(rng, scale=scale)
+    if not jittered.is_viable():
+        return None
+
+    new_gid = lib.save_genome(jittered)
+    child_ids = list(ids)
+    child_ids[pos] = new_gid
+
+    parent_structure = lib.loop_type(loop_id)
+    name = f'jitter-{loop_id}-pos{pos}'
+    new_id = lib.save_loop(child_ids, name=name, loop_type=parent_structure,
+                           parent_a=loop_id)
+    log.debug('Jittered loop %d -> %d (pos %d, scale %.2f)',
+              loop_id, new_id, pos, scale)
+    return new_id
+
+
 def mutate_structure(
     lib: Library,
     loop_id: int,
@@ -554,9 +601,10 @@ def evolve_loops(
                     new_ids.append(child)
                     all_existing.append(child)
 
-        # Genome mutations + structure mutations (20% structure, 80% genome)
+        # Mutations: 50% genome swap, 30% param jitter, 20% structure
         n_structure_mut = max(1, n_mutation // 5)
-        n_genome_mut = n_mutation - n_structure_mut
+        n_jitter_mut = max(1, (n_mutation - n_structure_mut) * 3 // 7)
+        n_genome_mut = n_mutation - n_structure_mut - n_jitter_mut
 
         for _ in range(n_genome_mut):
             parent = int(rng.choice(top_ids))
@@ -568,6 +616,13 @@ def evolve_loops(
                 else:
                     new_ids.append(child)
                     all_existing.append(child)
+
+        for _ in range(n_jitter_mut):
+            parent = int(rng.choice(top_ids))
+            child = jitter_loop(lib, parent, rng)
+            if child is not None:
+                new_ids.append(child)
+                all_existing.append(child)
 
         for _ in range(n_structure_mut):
             parent = int(rng.choice(top_ids))
