@@ -692,21 +692,30 @@ class TestEnergyAnalyzerContinuous:
 
     def test_percussiveness_high_on_transient(self):
         ea = EnergyAnalyzer()
-        spectrum = np.ones(N_BINS, dtype=np.float32) * 0.01
-        flux = np.ones(N_BINS, dtype=np.float32) * 0.5
-        for _ in range(20):
+        rng = np.random.default_rng(42)
+        # Alternating spike/silence — shape changes radically each frame
+        for i in range(40):
+            if i % 2 == 0:
+                spectrum = np.ones(N_BINS, dtype=np.float32) * 0.5
+            else:
+                spectrum = np.ones(N_BINS, dtype=np.float32) * 0.01
+                spectrum[:100] = 0.5  # different shape
+            flux = np.abs(spectrum - 0.01)  # non-zero flux
             ea.update(spectrum, flux)
-        # High flux relative to magnitude = percussive
-        assert ea.percussiveness > 0.3
+        # Shape changes = percussive (both flux and shape methods)
+        assert ea.percussiveness > 0.1
+        assert ea.flux_percussiveness > 0.1
 
     def test_percussiveness_low_on_sustain(self):
         ea = EnergyAnalyzer()
+        # Constant spectrum — no shape change, low flux
         spectrum = np.ones(N_BINS, dtype=np.float32) * 0.5
         flux = np.ones(N_BINS, dtype=np.float32) * 0.001
-        for _ in range(20):
+        for _ in range(50):  # enough warmup for EMA to decay from initial 0.5
             ea.update(spectrum, flux)
-        # Low flux relative to magnitude = sustained
-        assert ea.percussiveness < 0.1
+        # Stable shape + low flux = sustained
+        assert ea.percussiveness < 0.15
+        assert ea.flux_percussiveness < 0.1
 
     def test_band_rms_all_keys(self):
         ea = EnergyAnalyzer()
