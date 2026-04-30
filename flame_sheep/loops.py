@@ -448,6 +448,125 @@ def mutate_loop(
     return new_id
 
 
+def insert_genome(
+    lib: Library,
+    loop_id: int,
+    rng: np.random.Generator | None = None,
+    max_length: int = 10,
+) -> int | None:
+    """
+    Insert a genome at the roughest transition to smooth it out.
+
+    Finds the transition with the highest genome distance, then picks
+    a genome from the library that's between the two endpoints
+    (distance to each < distance between them).
+
+    Returns new loop ID, or None if loop is already at max length or
+    no suitable bridging genome found.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    ids = lib.loop_genome_ids(loop_id)
+    if not ids or len(ids) >= max_length:
+        return None
+
+    # Find transition distances
+    genomes = [lib.load_genome(gid) for gid in ids]
+    n = len(genomes)
+    dists = []
+    for i in range(n):
+        dists.append(genomes[i].distance(genomes[(i + 1) % n]))
+
+    # Pick the roughest transition
+    worst_idx = int(np.argmax(dists))
+    g_before = genomes[worst_idx]
+    g_after = genomes[(worst_idx + 1) % n]
+    gap_dist = dists[worst_idx]
+
+    # Find a bridging genome: close to both endpoints
+    candidates = lib.top_genomes(n=50)
+    bridges = []
+    for cid, _ in candidates:
+        if cid in ids:
+            continue
+        cg = lib.load_genome(cid)
+        d_before = g_before.distance(cg)
+        d_after = cg.distance(g_after)
+        # Must be closer to each endpoint than the gap itself
+        if d_before < gap_dist * 0.8 and d_after < gap_dist * 0.8:
+            score = d_before + d_after  # lower = better bridge
+            bridges.append((cid, score))
+
+    if not bridges:
+        return None
+
+    # Pick from best bridges (weighted toward lower total distance)
+    bridges.sort(key=lambda x: x[1])
+    top_bridges = bridges[:min(5, len(bridges))]
+    scores = np.array([b[1] for b in top_bridges])
+    weights = 1.0 / (scores + 0.01)
+    weights /= weights.sum()
+    chosen = top_bridges[int(rng.choice(len(top_bridges), p=weights))][0]
+
+    # Insert after worst_idx
+    child_ids = list(ids)
+    insert_pos = worst_idx + 1
+    child_ids.insert(insert_pos, chosen)
+
+    parent_structure = lib.loop_type(loop_id)
+    name = f'insert-{loop_id}-pos{insert_pos}'
+    new_id = lib.save_loop(child_ids, name=name, loop_type=parent_structure,
+                           parent_a=loop_id)
+    log.debug('Inserted into loop %d -> %d (pos %d, gap=%.3f)',
+              loop_id, new_id, insert_pos, gap_dist)
+    return new_id
+
+
+def delete_genome(
+    lib: Library,
+    loop_id: int,
+    rng: np.random.Generator | None = None,
+    min_length: int = 3,
+) -> int | None:
+    """
+    Delete a genome at the smoothest transition to tighten the loop.
+
+    Finds the transition with the lowest genome distance (most similar
+    neighbors), removes the second genome of that pair.
+
+    Returns new loop ID, or None if loop is already at min length.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    ids = lib.loop_genome_ids(loop_id)
+    if not ids or len(ids) <= min_length:
+        return None
+
+    # Find transition distances
+    genomes = [lib.load_genome(gid) for gid in ids]
+    n = len(genomes)
+    dists = []
+    for i in range(n):
+        dists.append(genomes[i].distance(genomes[(i + 1) % n]))
+
+    # Pick the smoothest transition — remove the second genome
+    smoothest_idx = int(np.argmin(dists))
+    remove_pos = (smoothest_idx + 1) % n
+
+    child_ids = list(ids)
+    child_ids.pop(remove_pos)
+
+    parent_structure = lib.loop_type(loop_id)
+    name = f'delete-{loop_id}-pos{remove_pos}'
+    new_id = lib.save_loop(child_ids, name=name, loop_type=parent_structure,
+                           parent_a=loop_id)
+    log.debug('Deleted from loop %d -> %d (pos %d, smoothest=%.3f)',
+              loop_id, new_id, remove_pos, dists[smoothest_idx])
+    return new_id
+
+
 def jitter_loop(
     lib: Library,
     loop_id: int,
@@ -601,10 +720,11 @@ def evolve_loops(
                     new_ids.append(child)
                     all_existing.append(child)
 
-        # Mutations: 50% genome swap, 30% param jitter, 20% structure
+        # Mutations: 40% genome swap, 25% param jitter, 15% length, 20% structure
         n_structure_mut = max(1, n_mutation // 5)
-        n_jitter_mut = max(1, (n_mutation - n_structure_mut) * 3 // 7)
-        n_genome_mut = n_mutation - n_structure_mut - n_jitter_mut
+        n_length_mut = max(1, n_mutation * 3 // 20)
+        n_jitter_mut = max(1, n_mutation // 4)
+        n_genome_mut = n_mutation - n_structure_mut - n_length_mut - n_jitter_mut
 
         for _ in range(n_genome_mut):
             parent = int(rng.choice(top_ids))
@@ -613,6 +733,20 @@ def evolve_loops(
                 child_ids = lib.loop_genome_ids(child)
                 if _too_similar(lib, child_ids, all_existing, max_overlap):
                     log.debug('Discarded mutation %d (too similar)', child)
+                else:
+                    new_ids.append(child)
+                    all_existing.append(child)
+
+        for _ in range(n_length_mut):
+            parent = int(rng.choice(top_ids))
+            if rng.random() < 0.5:
+                child = insert_genome(lib, parent, rng)
+            else:
+                child = delete_genome(lib, parent, rng)
+            if child is not None:
+                child_ids = lib.loop_genome_ids(child)
+                if _too_similar(lib, child_ids, all_existing, max_overlap):
+                    log.debug('Discarded length mutation %d (too similar)', child)
                 else:
                     new_ids.append(child)
                     all_existing.append(child)
