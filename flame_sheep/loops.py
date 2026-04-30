@@ -380,10 +380,13 @@ def crossover(
     if len(set(child_ids)) < len(child_ids):
         return None
 
+    # Inherit structure from fitter parent (loop_a is typically the fitter one)
+    child_structure = lib.loop_type(loop_a_id)
     name = f'breed-{loop_a_id}x{loop_b_id}'
-    loop_id = lib.save_loop(child_ids, name=name,
+    loop_id = lib.save_loop(child_ids, name=name, loop_type=child_structure,
                             parent_a=loop_a_id, parent_b=loop_b_id)
-    log.debug('Bred loop %d from %d x %d', loop_id, loop_a_id, loop_b_id)
+    log.debug('Bred loop %d (%s) from %d x %d',
+              loop_id, child_structure, loop_a_id, loop_b_id)
     return loop_id
 
 
@@ -435,10 +438,54 @@ def mutate_loop(
     child_ids = list(ids)
     child_ids[pos] = replacement
 
+    # Inherit parent's structure
+    parent_structure = lib.loop_type(loop_id)
     name = f'mutate-{loop_id}-pos{pos}'
-    new_id = lib.save_loop(child_ids, name=name, parent_a=loop_id)
+    new_id = lib.save_loop(child_ids, name=name, loop_type=parent_structure,
+                           parent_a=loop_id)
     log.debug('Mutated loop %d -> %d (pos %d: %d -> %d)',
               loop_id, new_id, pos, target_id, replacement)
+    return new_id
+
+
+def mutate_structure(
+    lib: Library,
+    loop_id: int,
+    rng: np.random.Generator | None = None,
+) -> int | None:
+    """
+    Mutate a loop's structure type.
+
+    Mutations:
+    - cyclic ↔ palindrome (natural flip, just changes playback)
+    - cyclic/palindrome → rondo (if loop has ≥3 genomes)
+    - rondo → palindrome (demotion)
+
+    Returns new loop ID with the same genomes but different structure,
+    or None if no valid mutation.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    current = lib.loop_type(loop_id)
+    ids = lib.loop_genome_ids(loop_id)
+    if not ids:
+        return None
+
+    # Choose a new structure
+    if current == 'cyclic':
+        new_structure = rng.choice(['palindrome', 'rondo']) if len(ids) >= 3 else 'palindrome'
+    elif current == 'palindrome':
+        new_structure = rng.choice(['cyclic', 'rondo']) if len(ids) >= 3 else 'cyclic'
+    elif current == 'rondo':
+        new_structure = rng.choice(['cyclic', 'palindrome'])
+    else:
+        new_structure = 'cyclic'
+
+    name = f'structure-{loop_id}-{current}-to-{new_structure}'
+    new_id = lib.save_loop(ids, name=name, loop_type=new_structure, parent_a=loop_id)
+    log.debug('Structure mutation %d (%s -> %s) -> %d',
+              loop_id, current, new_structure, new_id)
     return new_id
 
 
@@ -507,7 +554,11 @@ def evolve_loops(
                     new_ids.append(child)
                     all_existing.append(child)
 
-        for _ in range(n_mutation):
+        # Genome mutations + structure mutations (20% structure, 80% genome)
+        n_structure_mut = max(1, n_mutation // 5)
+        n_genome_mut = n_mutation - n_structure_mut
+
+        for _ in range(n_genome_mut):
             parent = int(rng.choice(top_ids))
             child = mutate_loop(lib, parent, rng)
             if child is not None:
@@ -517,6 +568,13 @@ def evolve_loops(
                 else:
                     new_ids.append(child)
                     all_existing.append(child)
+
+        for _ in range(n_structure_mut):
+            parent = int(rng.choice(top_ids))
+            child = mutate_structure(lib, parent, rng)
+            if child is not None:
+                new_ids.append(child)
+                all_existing.append(child)
 
         # Fresh blood: randomly composed loops from the genome pool
         fresh_candidates = compose_loops(
