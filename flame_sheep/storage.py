@@ -555,14 +555,30 @@ class Library:
         self.conn.commit()
         return cur.lastrowid
 
-    def load_genome(self, genome_id: int) -> Genome:
-        """Load a genome by ID."""
+    def load_genome(self, genome_id: int, auto_center: bool = True) -> Genome:
+        """Load a genome by ID.
+
+        If auto_center is True and the genome has been scored with centroid
+        offsets, nudge genome.center to compensate so the attractor renders
+        centered in the viewport.
+        """
         row = self.conn.execute(
-            'SELECT params FROM genomes WHERE id = ?', (genome_id,)
+            'SELECT params, centroid_x, centroid_y FROM genomes WHERE id = ?',
+            (genome_id,),
         ).fetchone()
         if row is None:
             raise KeyError(f'No genome with id {genome_id}')
-        return _genome_from_json(row[0])
+        genome = _genome_from_json(row[0])
+        if auto_center and row[1] is not None and row[2] is not None:
+            # Partial correction — nudge toward center, don't slam there.
+            # centroid_offset is in [-1, 1], representing fraction of half-grid.
+            # In world space with bound=4.0, offset * 4.0 gives the displacement.
+            # Apply 50% correction to preserve some artistic randomness.
+            bound = 4.0
+            correction = 0.5
+            genome.center = genome.center - correction * np.array(
+                [row[1] * bound, row[2] * bound], dtype=np.float32)
+        return genome
 
     def genome_scores(self, genome_id: int) -> dict[str, float]:
         """Get stored aesthetic scores for a genome."""
