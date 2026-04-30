@@ -156,6 +156,25 @@ class Genome:
 
         return hits > (n_test - 20) * 0.5
 
+    def jitter(self, rng: np.random.Generator, scale: float = 0.1) -> 'Genome':
+        """Create a mutated copy with gaussian noise on variation parameters.
+
+        Each transform's var_params are jittered by gaussian noise scaled
+        to each parameter's valid range. Affine, weights, color, and palette
+        are unchanged — this is a small exploratory mutation.
+
+        Args:
+            rng: numpy random generator
+            scale: noise magnitude as fraction of parameter range (default 10%)
+        """
+        from .variations._params import jitter_var_params
+        import copy
+        g = copy.deepcopy(self)
+        for tr in g.transforms:
+            if tr.var_params:
+                tr.var_params = jitter_var_params(tr.var_params, rng, scale=scale)
+        return g
+
     def distance(self, other: 'Genome') -> float:
         """
         Perceptual distance between two genomes, in [0, 1].

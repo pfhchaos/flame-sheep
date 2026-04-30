@@ -240,3 +240,78 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
         }
 
     return {}
+
+
+# Parameter ranges for jitter mutation — (min, max) per param name.
+# Derived from the random_var_params() ranges above.
+_PARAM_RANGES: dict[str, tuple[float, float]] = {
+    # Default range (most JWildfire params)
+    'waves_freq_x': (-2.5, 2.5), 'waves_freq_y': (-2.5, 2.5),
+    'waves_amp_x': (-2.5, 2.5), 'waves_amp_y': (-2.5, 2.5),
+    'popcorn_cx': (-2.5, 2.5), 'popcorn_cy': (-2.5, 2.5),
+    'rings_c': (-2.5, 2.5),
+    'fan_c': (-2.5, 2.5), 'fan_f': (-2.5, 2.5),
+    'julian_power': (-12.0, 12.0), 'julian_dist': (-3.5, 3.5),
+    'blob_low': (-1.0, 1.0), 'blob_high': (0.0, 3.0), 'blob_waves': (1.0, 31.0),
+    'pdj_a': (-2.5, 2.5), 'pdj_b': (-2.5, 2.5),
+    'pdj_c': (-2.5, 2.5), 'pdj_d': (-2.5, 2.5),
+    'fan2_x': (-2.5, 2.5), 'fan2_y': (-2.5, 2.5),
+    'rings2_val': (-2.5, 2.5),
+    'splits_x': (-2.5, 2.5), 'splits_y': (-2.5, 2.5),
+    'curl_c1': (-2.5, 2.5), 'curl_c2': (-2.5, 2.5),
+    'rect_x': (-2.5, 2.5), 'rect_y': (-2.5, 2.5),
+    'check_size': (-2.5, 2.5), 'check_x': (-2.5, 2.5), 'check_y': (-2.5, 2.5),
+    'hex_size': (-2.5, 2.5),
+    'kal_pull': (-2.5, 2.5), 'kal_rotate': (-2.5, 2.5), 'kal_n': (3.0, 8.0),
+    'icon_degree': (3.0, 23.0), 'icon_lambda': (-2.7, 2.6),
+    'icon_alpha': (-2.5, 10.0), 'icon_beta': (-16.79, 1.5),
+    'icon_gamma': (-0.82, 1.0), 'icon_omega': (-0.15, 0.188),
+    'sat_m': (2.0, 12.0),
+    'wallpaper_group': (0.0, 16.0), 'frieze_group': (0.0, 6.0),
+    'rings3_val': (-2.5, 2.5), 'rings3_n': (-2.5, 2.5),
+    'mobius_re_a': (-0.5, 0.5), 'mobius_re_b': (-0.5, 0.5),
+    'mobius_re_c': (-0.5, 0.5), 'mobius_re_d': (-0.5, 0.5),
+    'mobius_im_a': (-0.5, 0.5), 'mobius_im_b': (-0.5, 0.5),
+    'mobius_im_c': (-0.5, 0.5), 'mobius_im_d': (-0.5, 0.5),
+    'cpow_r': (0.5, 2.0), 'cpow_i': (-0.5, 0.5), 'cpow_power': (2.0, 7.0),
+    'ngon_circle': (0.5, 2.0), 'ngon_corners': (0.5, 4.0),
+    'ngon_power': (1.0, 5.0), 'ngon_sides': (3.0, 8.0),
+    'epispiral_n': (2.0, 50.0), 'epispiral_thickness': (-2.5, 2.5),
+    'epispiral_holes': (-5.0, 5.0),
+    'waves3_scalex': (0.01, 0.2), 'waves3_scaley': (0.01, 0.2),
+    'waves3_freqx': (2.0, 15.0), 'waves3_freqy': (2.0, 15.0),
+    'waves3_sx_freq': (0.0, 4.0), 'waves3_sy_freq': (0.0, 4.0),
+}
+
+# Integer params that should be rounded after jitter
+_INTEGER_PARAMS = {
+    'julian_power', 'blob_waves', 'kal_n', 'icon_degree', 'sat_m',
+    'wallpaper_group', 'frieze_group', 'cpow_power', 'ngon_sides',
+}
+
+
+def jitter_var_params(params: dict[str, float], rng: np.random.Generator,
+                      scale: float = 0.1) -> dict[str, float]:
+    """Apply gaussian noise to variation parameters.
+
+    Each parameter is jittered by gaussian noise scaled to its valid range.
+    The result is clamped to the valid range. Integer parameters are rounded.
+
+    Args:
+        params: existing parameter dict
+        rng: numpy random generator
+        scale: noise magnitude as fraction of parameter range (default 10%)
+
+    Returns:
+        New dict with jittered values (original is not modified).
+    """
+    result = {}
+    for name, value in params.items():
+        lo, hi = _PARAM_RANGES.get(name, (-2.5, 2.5))
+        param_range = hi - lo
+        noise = rng.normal(0, scale * param_range)
+        new_val = float(np.clip(value + noise, lo, hi))
+        if name in _INTEGER_PARAMS:
+            new_val = float(round(new_val))
+        result[name] = new_val
+    return result
