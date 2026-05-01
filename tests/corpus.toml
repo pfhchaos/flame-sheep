@@ -250,6 +250,13 @@ start = 60
 duration = 60
 tags = ["noise", "environmental", "crowd", "voices"]
 
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=4nTwYnYSE20"
+name = "speech_beat_mode_false_positive"
+start = 0
+duration = 60
+tags = ["speech", "pure_speech", "false_positive", "beat_mode_bug"]
+
 # --- MUSDB18 (optional, needs separate download) ---
 [sources.musdb18]
 # root = "datasets/MUSDB18/MUSDB18-7"
