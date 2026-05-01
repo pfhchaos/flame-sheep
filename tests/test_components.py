@@ -868,8 +868,9 @@ class TestMagnitudeStability:
         # After reset, stability should return to default (stable)
         mask = np.ones(N_BINS, dtype=bool)
         assert ms.band_stability(mask) >= 0.5
-        # Slow EMA should be cleared
-        assert ms._slow._mag_ema.sum() == 0.0
+        # After reset + one new frame, should behave like fresh start
+        ms.update(mag)
+        assert ms.band_stability(mask) >= 0.5
 
 
 # -------------------------------------------------------------------
