@@ -190,8 +190,13 @@ class FlameSheepCore:
             self._zoom_axis.tick(audio, frame_time, now)
             self._genome_axis.tick(audio, frame_time, now)
         elif current_mode == Mode.ENERGY:
-            # Genome drifts slowly, no palette/zoom events
-            self._genome_axis.tick(audio, frame_time, now)
+            # Speech/ambient: slow drift only, no beat-driven morph speed
+            from flame_sheep.config import cfg
+            self._genome_axis.morph_t = min(1.0,
+                self._genome_axis.morph_t + cfg.drift.morph_speed)
+            if self._genome_axis.morph_t >= 1.0:
+                self._genome_axis.morph_t = 0.0
+                self._genome_axis._swap_next_genome()
 
         # Assemble frame state
         frame = self.FrameState(
