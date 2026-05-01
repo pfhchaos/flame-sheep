@@ -78,7 +78,7 @@ class TestTrustedSource:
     def test_tempo_hint_sets_hypothesis(self):
         tracker = TempoTracker()
         tracker.hint_tempo(120)
-        assert tracker._has_hypothesis
+        assert tracker.bpm > 0, "hint should produce a nonzero bpm"
         assert _bpm_close(tracker.bpm, 120)
 
     def test_hint_locks_faster(self):

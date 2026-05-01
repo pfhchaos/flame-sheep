@@ -215,7 +215,7 @@ class TestSpringBand:
         sb.reset()
         assert sb.center == sb.default_center
         assert sb.width == sb.default_width
-        assert sb._flux_ema.sum() == 0
+        assert sb.flux_centroid() == sb.default_center
 
     def test_flux_centroid_default_when_empty(self):
         sb = SpringBand('kick', default_range=(30, 200),

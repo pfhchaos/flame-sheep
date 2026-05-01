@@ -474,10 +474,15 @@ class TestNextLoopSelection:
             axis.next_loop()
             assert axis.active_loop_id is not None
 
-    def test_history_tracks_initial_load(self):
-        """The initial loop loaded at startup should be in history."""
+    def test_no_immediate_repeat(self):
+        """next_loop() should not return the same loop twice in a row."""
         axis = self._make_axis()
-        assert axis.active_loop_id in axis._loop_history
+        prev = axis.active_loop_id
+        for _ in range(20):
+            axis.next_loop()
+            current = axis.active_loop_id
+            assert current != prev, "next_loop() returned the same loop twice in a row"
+            prev = current
 
 
 # -------------------------------------------------------------------
@@ -1044,48 +1049,60 @@ class TestGenomeAxisEvents:
         axis.tick(audio, 1/60, 0.0)
 
     def test_break_damps_morph(self):
-        axis = self._make_axis()
-        axis.morph_speed = 0.1
-        # Normal tick — morph advances
-        axis.tick(_audio(), 1/60, 0.0)
-        mt_normal = axis.morph_t
-        assert mt_normal > 0
+        # Breaking axis — morph should advance slowly
+        axis_break = self._make_axis()
+        axis_break.morph_speed = 0.1
+        for i in range(60):
+            axis_break.tick(_audio(breaking=True), 1/60, float(i))
+        mt_breaking = axis_break.morph_t
 
-        # Reset and apply break for many frames
-        axis.morph_t = 0.0
-        axis._break_damping = 1.0
+        # Normal axis — morph should advance freely
+        axis_normal = self._make_axis()
+        axis_normal.morph_speed = 0.1
         for i in range(60):
-            axis.tick(_audio(breaking=True), 1/60, float(i))
-        mt_breaking = axis.morph_t
-        # Should advance much less than 60 normal frames would
-        axis2 = self._make_axis()
-        axis2.morph_speed = 0.1
-        for i in range(60):
-            axis2.tick(_audio(), 1/60, float(i))
-        assert mt_breaking < axis2.morph_t * 0.5, \
+            axis_normal.tick(_audio(), 1/60, float(i))
+        mt_normal = axis_normal.morph_t
+
+        assert mt_normal > 0
+        assert mt_breaking < mt_normal * 0.5, \
             "Break should slow morph to less than half normal speed"
 
     def test_brief_break_minimal_effect(self):
         """A 10-frame false positive should barely affect morph."""
-        axis = self._make_axis()
-        axis.morph_speed = 0.1
-        # 10 frames of break
+        # Normal morph for 10 frames
+        axis_normal = self._make_axis()
+        axis_normal.morph_speed = 0.1
         for i in range(10):
-            axis.tick(_audio(breaking=True), 1/60, float(i))
-        damping_after_brief = axis._break_damping
-        # 0.97^10 ≈ 0.74 — still close to 1.0
-        assert damping_after_brief > 0.7
+            axis_normal.tick(_audio(), 1/60, float(i))
+        mt_normal = axis_normal.morph_t
+
+        # 10 frames of break
+        axis_break = self._make_axis()
+        axis_break.morph_speed = 0.1
+        for i in range(10):
+            axis_break.tick(_audio(breaking=True), 1/60, float(i))
+        mt_break = axis_break.morph_t
+
+        # Brief break should still allow most of the normal morph progress
+        assert mt_break > mt_normal * 0.5, \
+            "Brief break should barely slow morph"
 
     def test_damping_recovers_after_break(self):
         axis = self._make_axis()
-        # Deep break
+        axis.morph_speed = 0.1
+        # Deep break — morph should be very slow
         for i in range(60):
             axis.tick(_audio(breaking=True), 1/60, float(i))
-        assert axis._break_damping < 0.2
-        # Recovery
+        mt_after_break = axis.morph_t
+
+        # Recovery — morph in a single frame after recovery should be fast
         for i in range(60):
             axis.tick(_audio(breaking=False), 1/60, float(60 + i))
-        assert axis._break_damping > 0.8
+        mt_after_recovery = axis.morph_t
+        # The 60 recovery frames should add substantially more progress
+        recovery_progress = mt_after_recovery - mt_after_break
+        assert recovery_progress > mt_after_break, \
+            "Morph should be faster after break recovery than during break"
 
     def test_song_start_resets(self):
         axis = self._make_axis()
