@@ -208,7 +208,10 @@ class TestSpringBand:
                         allowed_range=(25, 150))
         sb.center = 999
         sb.width = 1
-        sb._flux_ema[:] = 1.0
+        # Trigger lazy init of _flux_ema, then dirty it
+        flux = np.ones(N_BINS, dtype=np.float32)
+        stab = np.zeros(N_BINS, dtype=np.float32)
+        sb.update_flux_ema(flux, stab)
         sb.reset()
         assert sb.center == sb.default_center
         assert sb.width == sb.default_width
