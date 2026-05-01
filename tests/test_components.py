@@ -553,62 +553,63 @@ class TestModeDetector:
     def test_silence_stays_idle(self):
         md = ModeDetector()
         for _ in range(100):
-            md.tick(_audio(rms=0.0, percussiveness=0.0))
+            md.tick(_audio(rms=0.0, spectral_novelty=0.0))
         assert md.mode == Mode.IDLE
 
-    def test_percussive_audio_enters_beat(self):
+    def test_music_enters_beat(self):
         md = ModeDetector()
-        # Highly percussive audio exits idle immediately
-        md.tick(_audio(rms=0.1, percussiveness=0.8))
+        # Low spectral novelty = music -> beat mode
+        md.tick(_audio(rms=0.1, spectral_novelty=0.10))
         assert md.mode == Mode.BEAT
 
-    def test_moderate_percussiveness_enters_energy_not_beat(self):
-        """With energy mode enabled, percussiveness between thresholds
-        should enter energy from idle, not beat."""
+    def test_speech_transitions_to_energy(self):
+        """Sustained high spectral novelty = speech -> eventually energy mode.
+        Cold start from idle goes to beat first (EMA starts at 0), then
+        transitions to energy as novelty EMA ramps up past threshold."""
         md = ModeDetector()
-        md._energy_mode_enabled = True
-        md.tick(_audio(rms=0.1, percussiveness=0.45))
+        # First frame: EMA is 0, enters beat from idle
+        md.tick(_audio(rms=0.1, spectral_novelty=0.30))
+        assert md.mode == Mode.BEAT  # cold start
+        # Sustained speech: novelty EMA rises, eventually exits beat
+        for _ in range(2000):
+            md.tick(_audio(rms=0.1, spectral_novelty=0.30))
         assert md.mode == Mode.ENERGY
 
-    def test_any_audio_enters_beat_when_energy_disabled(self):
-        """With energy mode disabled, any audio exits idle to beat."""
-        md = ModeDetector()
-        md.tick(_audio(rms=0.1, percussiveness=0.1))
-        assert md.mode == Mode.BEAT
-
-    def test_non_percussive_audio_enters_energy_when_enabled(self):
-        md = ModeDetector()
-        md._energy_mode_enabled = True
-        md.tick(_audio(rms=0.1, percussiveness=0.1))
-        assert md.mode == Mode.ENERGY
-
-    def test_energy_to_beat_requires_sustained_percussiveness(self):
+    def test_energy_to_beat_requires_sustained_music(self):
         md = ModeDetector()
         md.mode = Mode.ENERGY
-        # One frame of percussiveness isn't enough
-        md.tick(_audio(rms=0.1, percussiveness=0.8))
+        # One frame of low novelty isn't enough
+        md.tick(_audio(rms=0.1, spectral_novelty=0.10))
         assert md.mode == Mode.ENERGY
-        # Sustained high percussiveness transitions to beat
+        # Sustained low novelty transitions to beat
         for _ in range(100):
-            md.tick(_audio(rms=0.1, percussiveness=0.8))
+            md.tick(_audio(rms=0.1, spectral_novelty=0.10))
         assert md.mode == Mode.BEAT
 
-    def test_beat_to_energy_requires_long_quiet(self):
+    def test_beat_to_energy_on_sustained_speech(self):
         md = ModeDetector()
         md.mode = Mode.BEAT
-        md._perc_ema = 0.8  # was confident
-        # Brief non-percussive section shouldn't exit beat
-        for _ in range(60):  # 1 second
-            md.tick(_audio(rms=0.1, percussiveness=0.1))
+        md._novelty_ema = 0.10  # was music
+        # Sustained high novelty (speech) exits beat eventually
+        for _ in range(1500):
+            md.tick(_audio(rms=0.1, spectral_novelty=0.30))
+        assert md.mode == Mode.ENERGY
+
+    def test_brief_speech_doesnt_exit_beat(self):
+        md = ModeDetector()
+        md.mode = Mode.BEAT
+        md._novelty_ema = 0.10
+        # Brief speech section shouldn't exit beat
+        for _ in range(60):
+            md.tick(_audio(rms=0.1, spectral_novelty=0.30))
         assert md.mode == Mode.BEAT
 
-    def test_speech_stays_energy(self):
-        """Speech-level percussiveness (~0.27) should not trigger beat mode."""
+    def test_acf_confidence_helps_enter_beat(self):
+        """Moderate novelty + high tempo confidence = music."""
         md = ModeDetector()
-        md.mode = Mode.ENERGY
-        for _ in range(200):
-            md.tick(_audio(rms=0.1, percussiveness=0.27))
-        assert md.mode == Mode.ENERGY
+        # Novelty in the ambiguous zone (0.16-0.20) but strong ACF
+        md.tick(_audio(rms=0.1, spectral_novelty=0.18, tempo_confidence=0.8))
+        assert md.mode == Mode.BEAT
 
     def test_reset_returns_to_idle(self):
         md = ModeDetector()

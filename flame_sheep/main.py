@@ -145,6 +145,7 @@ class FlameSheepCore:
             centroid_rms=snap.centroid_rms,
             centroid_harmonic_rms=snap.centroid_harmonic_rms,
             percussiveness=snap.percussiveness,
+            spectral_novelty=snap.spectral_novelty,
             section_change=snap.section_change,
             bpm=snap.bpm,
             effective_bpm=snap.effective_bpm,

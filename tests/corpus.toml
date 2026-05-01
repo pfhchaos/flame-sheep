@@ -172,6 +172,84 @@ start = 60
 duration = 120
 tags = ["speech", "pure_speech"]
 
+# --- Speech / noise / vocal samples for spectral novelty testing ---
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=Pd9P7CibbHc"
+name = "dr_becky_intro"
+start = 0
+duration = 60
+tags = ["speech_over_music", "speech", "intro_music"]
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=LEZHDHIf_FA"
+name = "william_spaniel_negotiation"
+start = 0
+duration = 60
+tags = ["speech", "pure_speech", "lecture"]
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=_-gnycJVovw"
+name = "idle_cub_commentary"
+start = 960
+duration = 60
+tags = ["speech_over_music", "speech", "gaming", "quiet_music"]
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=srk-tPbQVcs"
+name = "lindsay_ellis_essay"
+start = 90
+duration = 60
+tags = ["speech", "pure_speech", "video_essay"]
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=fh3EdeGNKus"
+name = "traffic_noise"
+start = 60
+duration = 60
+tags = ["noise", "environmental", "traffic"]
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=UgHKb_7884o"
+name = "fire_ambience"
+start = 60
+duration = 60
+tags = ["noise", "environmental", "fire"]
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=bn9F19Hi1Lk"
+name = "ocean_waves"
+start = 60
+duration = 60
+tags = ["noise", "environmental", "waves"]
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=cWc7vYjgnTs"
+name = "opera_male_orchestra"
+start = 60
+duration = 60
+tags = ["singing", "vocal", "orchestra", "vibrato", "classical"]
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=o25_6i4jS2k"
+name = "terra_ff6_piano"
+start = 10
+duration = 60
+tags = ["instrumental", "piano", "no_percussion", "game_ost"]
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=FUob2dcQTWA"
+name = "string_quartet"
+start = 150
+duration = 60
+tags = ["instrumental", "strings", "no_percussion", "classical"]
+
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=IKB3Qiglyro"
+name = "crowd_noise"
+start = 60
+duration = 60
+tags = ["noise", "environmental", "crowd", "voices"]
+
 # --- MUSDB18 (optional, needs separate download) ---
 [sources.musdb18]
 # root = "datasets/MUSDB18/MUSDB18-7"
