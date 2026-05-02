@@ -155,41 +155,34 @@ def eval_beat_detection(engine_name: str, stability: str, onset_weight: str,
 
 
 def eval_tempo(engine_name: str, stability: str, onset_weight: str,
-               musdb_root: str, limit: int = 50) -> dict:
-    """Run tempo estimation eval on MUSDB18."""
-    try:
-        import musdb
-    except ImportError:
-        return {'exact': 0.0, 'octave': 0.0}
-
-    db = musdb.DB(root=musdb_root, is_wav=True)
-    tracks = db.load_mus_tracks()[:limit]
-
-    import librosa
+               **kwargs) -> dict:
+    """Run tempo estimation eval on osu! corpus (BPM from timing points)."""
     exact, octave, total = 0, 0, 0
 
-    for track in tracks:
+    for tid, name in BEAT_TRACKS:
         try:
-            mix = track.audio.mean(axis=1).astype(np.float32)
-            mix = resample_to_48k(mix, track.rate)
-
-            drums = track.targets['drums'].audio.mean(axis=1).astype(np.float32)
-            drums = resample_to_48k(drums, track.rate)
-            ref_tempo = librosa.beat.beat_track(y=drums.astype(np.float64),
-                                                 sr=SAMPLE_RATE)[0]
-            if not np.isfinite(ref_tempo) or ref_tempo <= 0:
+            path = download_osz(tid)
+            osu_files = find_osu_files(path)
+            bm = parse_osu_file(osu_files[0])
+            ref_bpm = bm.bpm
+            if ref_bpm <= 0:
                 continue
 
-            _, est_bpm = _run_pipeline(mix, ENGINES[engine_name], stability, onset_weight)
+            audio_path = find_audio_file(path, bm.audio_filename)
+            audio, sr = load_audio(audio_path)
+            audio = resample_to_48k(audio, sr)
+
+            _, est_bpm = _run_pipeline(audio, ENGINES[engine_name],
+                                       stability, onset_weight)
 
             total += 1
-            error = abs(est_bpm - ref_tempo) / ref_tempo
+            error = abs(est_bpm - ref_bpm) / ref_bpm
             if error <= 0.04:
                 exact += 1
                 octave += 1
             else:
                 for ratio in [0.5, 2.0, 1 / 3, 3.0]:
-                    if abs(est_bpm - ref_tempo * ratio) / (ref_tempo * ratio) <= 0.04:
+                    if abs(est_bpm - ref_bpm * ratio) / (ref_bpm * ratio) <= 0.04:
                         octave += 1
                         break
         except Exception:
@@ -212,8 +205,7 @@ def main():
                         choices=ONSET_WEIGHTS)
     parser.add_argument('--beat-only', action='store_true')
     parser.add_argument('--tempo-only', action='store_true')
-    parser.add_argument('--musdb-root', default='datasets/MUSDB18/MUSDB18-7')
-    parser.add_argument('--tempo-limit', type=int, default=50)
+    parser.add_argument('--musdb-root', default=None, help='(unused, tempo uses osu! corpus)')
     args = parser.parse_args()
 
     results: list[SweepResult] = []
@@ -237,8 +229,7 @@ def main():
             r.beat_recall = beat['recall']
 
         if not args.beat_only:
-            tempo = eval_tempo(eng, stab, onset, args.musdb_root,
-                               limit=args.tempo_limit)
+            tempo = eval_tempo(eng, stab, onset)
             r.tempo_exact = tempo.get('exact', 0.0)
             r.tempo_octave = tempo.get('octave', 0.0)
 
