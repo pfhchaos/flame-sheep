@@ -216,6 +216,13 @@ class FlameRenderer:
         self.palette_tex.write(palette.tobytes())
 
     def upload_audio(self, spectrum: np.ndarray) -> None:
+        # Resize spectrum to match GPU texture (N_BINS wide)
+        # Octave bank produces 108 bins; interpolate to fill the texture
+        if len(spectrum) != N_BINS:
+            import numpy as np
+            x_old = np.linspace(0, 1, len(spectrum))
+            x_new = np.linspace(0, 1, N_BINS)
+            spectrum = np.interp(x_new, x_old, spectrum).astype(np.float32)
         self.audio_tex.write(spectrum.astype(np.float32).tobytes())
 
     def clear_histogram(self) -> None:
