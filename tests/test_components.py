@@ -898,7 +898,7 @@ class TestDropDetector:
         # Only a few kicks — below MIN_KICKS_BEFORE_DROP
         for _ in range(5):
             dd.detect(kick, 1.0, 120.0, False, 1/60)
-        for _ in range(80):
+        for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert not dd.breaking
 
@@ -908,7 +908,7 @@ class TestDropDetector:
         kick = [BeatEvent('kick', 1.0)]
         for _ in range(20):
             dd.detect(kick, 1.0, 120.0, False, 1/60)
-        for _ in range(80):
+        for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert dd.breaking
 
@@ -918,7 +918,7 @@ class TestDropDetector:
         kick = [BeatEvent('kick', 1.0)]
         for _ in range(20):
             dd.detect(kick, 1.0, 120.0, False, 1/60)
-        for _ in range(80):
+        for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert dd.breaking
         dd.detect(kick, 0.5, 120.0, False, 1/60)
@@ -931,7 +931,7 @@ class TestDropDetector:
         # First break
         for _ in range(20):
             dd.detect(kick, 1.0, 120.0, False, 1/60)
-        for _ in range(80):
+        for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert dd.breaking
         # End it
@@ -940,7 +940,7 @@ class TestDropDetector:
         # Second attempt — should be blocked by cooldown
         for _ in range(10):
             dd.detect(kick, 1.0, 120.0, False, 1/60)
-        for _ in range(80):
+        for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert not dd.breaking  # cooldown active
 
@@ -950,7 +950,7 @@ class TestDropDetector:
         kick = [BeatEvent('kick', 1.0)]
         for _ in range(20):
             dd.detect(kick, 1.0, 120.0, False, 1/60)
-        for _ in range(80):
+        for _ in range(150):
             dd.detect([], 0.0, 120.0, True, 1/60)
         assert not dd.breaking
 
@@ -980,7 +980,7 @@ class TestBassDropDetector:
         kick = [BeatEvent('kick', 1.0)]
         for _ in range(20):
             dd.detect(kick, 0.5, 120.0, False, 1/60)
-        for _ in range(60):
+        for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert dd.breaking
 
@@ -991,7 +991,7 @@ class TestBassDropDetector:
         kick = [BeatEvent('kick', 1.0)]
         for _ in range(20):
             dd.detect(kick, 0.5, 120.0, False, 1/60)
-        for _ in range(60):
+        for _ in range(150):
             dd.detect([], 0.3, 120.0, False, 1/60)
         assert not dd.breaking
 
@@ -1001,7 +1001,7 @@ class TestBassDropDetector:
         kick = [BeatEvent('kick', 1.0)]
         for _ in range(20):
             dd.detect(kick, 0.5, 120.0, False, 1/60)
-        for _ in range(60):
+        for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert dd.breaking
         dd.detect(kick, 0.5, 120.0, False, 1/60)
@@ -1013,7 +1013,7 @@ class TestBassDropDetector:
         kick = [BeatEvent('kick', 1.0)]
         for _ in range(20):
             dd.detect(kick, 0.5, 120.0, False, 1/60)
-        for _ in range(60):
+        for _ in range(150):
             dd.detect([], 0.0, 120.0, True, 1/60)
         assert not dd.breaking
 
