@@ -102,7 +102,12 @@ def estimate_bpm_pipeline(mix_audio: np.ndarray, orig_sr: int) -> float:
             density.process_onset(e.kind, now)
         density.update(now)
         total_density = sum(density.densities.values())
-        tracker.feed(frame.onset_strength, onset_density=total_density)
+        # Percussive-weighted onset strength (matches processor pipeline)
+        perc_weight = np.sqrt(1.0 - stability.stability_per_bin())
+        from flame_sheep_audio._bands import A_WEIGHTS, a_weight_curve
+        a_w = A_WEIGHTS if len(frame.flux) == len(A_WEIGHTS) else a_weight_curve(np.arange(len(frame.flux)))
+        perc_onset = float(np.dot(frame.flux * perc_weight, a_w))
+        tracker.feed(perc_onset, onset_density=total_density)
         pos += HOP_SIZE
 
     return tracker.effective_bpm
