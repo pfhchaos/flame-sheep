@@ -1,139 +1,158 @@
-"""Tests for the sigmoid tempo scaler.
+"""Tests for the tempo scaler — beat-relative constant conversion.
 
-Covers sigmoid shape, scale() blending, beats_to_frames conversion,
-and alpha_for_beats EMA calculation.
+Covers Beats/Percentile types, frames conversion, alpha (95% decay),
+sigmoid blending, and smooth tempo tracking.
 """
 
-import math
+from __future__ import annotations
 
 import pytest
 
-from flame_sheep_audio.tempo_scaler import TempoScaler, _FRAMES_PER_SECOND
+from flame_sheep_audio.tempo_scaler import (
+    TempoScaler, Beats, Percentile, _FRAMES_PER_SECOND,
+)
 
 
-class TestSigmoid:
-    """Verify sigmoid shape properties."""
-
-    def test_midpoint_is_half(self):
-        s = TempoScaler(midpoint=120)
-        assert abs(s.sigmoid(120) - 0.5) < 1e-6
-
-    def test_low_bpm_near_zero(self):
-        s = TempoScaler(midpoint=120, steepness=0.03)
-        assert s.sigmoid(0) < 0.05
-
-    def test_high_bpm_near_one(self):
-        s = TempoScaler(midpoint=120, steepness=0.03)
-        assert s.sigmoid(300) > 0.95
-
-    def test_monotonically_increasing(self):
-        s = TempoScaler()
-        vals = [s.sigmoid(bpm) for bpm in range(40, 300, 10)]
-        for i in range(1, len(vals)):
-            assert vals[i] > vals[i-1]
-
-    def test_steepness_controls_sharpness(self):
-        gentle = TempoScaler(steepness=0.01)
-        sharp = TempoScaler(steepness=0.1)
-        # At 60 BPM (below midpoint), sharper steepness = lower value
-        assert sharp.sigmoid(60) < gentle.sigmoid(60)
-        # At 180 BPM (above midpoint), sharper steepness = higher value
-        assert sharp.sigmoid(180) > gentle.sigmoid(180)
+def _scaler_at(bpm: float) -> TempoScaler:
+    """Create a TempoScaler converged to a specific BPM."""
+    s = TempoScaler()
+    for _ in range(300):
+        s.update(bpm)
+    return s
 
 
-class TestScale:
-    """Test slow/fast value blending."""
+class TestBeatsType:
 
-    def test_midpoint_is_average(self):
-        s = TempoScaler(midpoint=120)
-        result = s.scale(120, slow_val=10.0, fast_val=20.0)
-        assert abs(result - 15.0) < 0.01
+    def test_is_float(self):
+        b = Beats(1.5)
+        assert isinstance(b, float)
+        assert float(b) == 1.5
 
-    def test_slow_tempo_returns_slow_val(self):
-        s = TempoScaler(midpoint=120, steepness=0.03)
-        result = s.scale(0, slow_val=10.0, fast_val=20.0)
-        assert abs(result - 10.0) < 0.5
-
-    def test_fast_tempo_returns_fast_val(self):
-        s = TempoScaler(midpoint=120, steepness=0.03)
-        result = s.scale(300, slow_val=10.0, fast_val=20.0)
-        assert abs(result - 20.0) < 0.5
-
-    def test_steepness_override(self):
-        s = TempoScaler(midpoint=120, steepness=0.03)
-        # Very steep: 60 BPM should be near slow_val
-        result = s.scale(60, slow_val=0.0, fast_val=1.0, steepness=0.1)
-        assert result < 0.01
-
-    def test_inverted_range(self):
-        """slow_val > fast_val should work (e.g. cooldown shrinks with tempo)."""
-        s = TempoScaler(midpoint=120)
-        result = s.scale(120, slow_val=20.0, fast_val=4.0)
-        assert abs(result - 12.0) < 0.1
+    def test_arithmetic(self):
+        assert Beats(0.5) * 2 == 1.0
 
 
-class TestBeatsToFrames:
-    """Test beat-duration to frame conversion."""
+class TestPercentileType:
+
+    def test_is_float(self):
+        p = Percentile(90)
+        assert isinstance(p, float)
+        assert float(p) == 90
+
+
+class TestFrames:
 
     def test_120bpm_one_beat(self):
-        s = TempoScaler()
-        frames = s.beats_to_frames(120, beats=1.0)
-        # 1 beat at 120 BPM = 0.5s
-        expected = int(0.5 * _FRAMES_PER_SECOND)
+        s = _scaler_at(120)
+        frames = s.frames(Beats(1.0))
+        expected = round(0.5 * _FRAMES_PER_SECOND)
         assert frames == expected
 
     def test_60bpm_one_beat(self):
-        s = TempoScaler()
-        frames = s.beats_to_frames(60, beats=1.0)
-        expected = int(1.0 * _FRAMES_PER_SECOND)
+        s = _scaler_at(60)
+        frames = s.frames(Beats(1.0))
+        expected = round(1.0 * _FRAMES_PER_SECOND)
         assert frames == expected
 
     def test_faster_tempo_fewer_frames(self):
-        s = TempoScaler()
-        slow = s.beats_to_frames(60, beats=1.0)
-        fast = s.beats_to_frames(240, beats=1.0)
+        slow = _scaler_at(60).frames(Beats(1.0))
+        fast = _scaler_at(240).frames(Beats(1.0))
         assert fast < slow
 
-    def test_zero_bpm_uses_midpoint(self):
-        s = TempoScaler(midpoint=120)
-        result = s.beats_to_frames(0, beats=1.0)
-        expected = s.beats_to_frames(120, beats=1.0)
-        assert result == expected
+    def test_fractional_beats(self):
+        s = _scaler_at(120)
+        full = s.frames(Beats(1.0))
+        half = s.frames(Beats(0.5))
+        assert abs(half - full / 2) <= 1  # within 1 frame of half
 
     def test_minimum_one_frame(self):
-        s = TempoScaler()
-        # Extremely fast tempo, tiny beat fraction
-        assert s.beats_to_frames(9999, beats=0.001) >= 1
+        s = _scaler_at(999)
+        assert s.frames(Beats(0.001)) >= 1
+
+    def test_accepts_plain_float(self):
+        s = _scaler_at(120)
+        assert s.frames(1.0) == s.frames(Beats(1.0))
 
 
-class TestAlphaForBeats:
-    """Test EMA alpha calculation from beat duration."""
+class TestAlpha:
 
-    def test_range_bounds(self):
-        s = TempoScaler()
-        for bpm in [30, 60, 120, 240, 400]:
-            alpha = s.alpha_for_beats(bpm, beats=2.0)
-            assert 0.5 <= alpha <= 0.999
+    def test_95_percent_decay(self):
+        """After N frames, 95% should have decayed (5% remains)."""
+        s = _scaler_at(120)
+        a = s.alpha(Beats(1.0))
+        n = s.frames(Beats(1.0))
+        remaining = a ** n
+        assert abs(remaining - 0.05) < 0.01
 
     def test_faster_tempo_lower_alpha(self):
-        """Faster tempo = shorter beats = fewer frames = lower alpha (faster decay)."""
-        s = TempoScaler()
-        slow_alpha = s.alpha_for_beats(60, beats=2.0)
-        fast_alpha = s.alpha_for_beats(240, beats=2.0)
-        assert fast_alpha < slow_alpha
+        slow = _scaler_at(60).alpha(Beats(1.0))
+        fast = _scaler_at(240).alpha(Beats(1.0))
+        assert fast < slow
 
     def test_more_beats_higher_alpha(self):
-        """More beats of memory = more frames = higher alpha (slower decay)."""
-        s = TempoScaler()
-        short = s.alpha_for_beats(120, beats=1.0)
-        long = s.alpha_for_beats(120, beats=4.0)
+        s = _scaler_at(120)
+        short = s.alpha(Beats(0.5))
+        long = s.alpha(Beats(2.0))
         assert long > short
 
-    def test_alpha_clamped_at_extremes(self):
+    def test_reasonable_range(self):
+        for bpm in [60, 120, 240]:
+            s = _scaler_at(bpm)
+            a = s.alpha(Beats(1.0))
+            assert 0.5 < a < 0.999
+
+
+class TestBlend:
+
+    def test_midpoint_is_average(self):
+        s = _scaler_at(120)
+        result = s.blend(10.0, 20.0, midpoint=120.0)
+        assert abs(result - 15.0) < 0.1
+
+    def test_slow_tempo_returns_slow_val(self):
+        s = _scaler_at(40)
+        result = s.blend(10.0, 20.0, steepness=0.05, midpoint=120.0)
+        assert abs(result - 10.0) < 0.5
+
+    def test_fast_tempo_returns_fast_val(self):
+        s = _scaler_at(300)
+        result = s.blend(10.0, 20.0, steepness=0.05, midpoint=120.0)
+        assert abs(result - 20.0) < 0.5
+
+    def test_inverted_range(self):
+        s = _scaler_at(120)
+        result = s.blend(20.0, 4.0, midpoint=120.0)
+        assert abs(result - 12.0) < 0.1
+
+
+class TestSmoothing:
+
+    def test_gradual_convergence(self):
+        """Tempo changes should converge smoothly, not snap."""
+        s = _scaler_at(120)
+        frames_before = s.frames(Beats(1.0))
+        # Sudden tempo change
+        s.update(60.0)
+        frames_after_one = s.frames(Beats(1.0))
+        # Should not have fully converged after one update
+        frames_target = _scaler_at(60).frames(Beats(1.0))
+        assert frames_before < frames_after_one < frames_target
+
+    def test_default_bpm(self):
+        """Fresh scaler should default to 120 BPM."""
         s = TempoScaler()
-        # Very fast, very short — should hit floor
-        alpha = s.alpha_for_beats(400, beats=0.1)
-        assert alpha >= 0.5
-        # Very slow, very long — should hit ceiling
-        alpha = s.alpha_for_beats(30, beats=16.0)
-        assert alpha <= 0.999
+        assert s.bpm == 120.0
+
+
+class TestStaticConvenience:
+
+    def test_beats_to_frames(self):
+        s = TempoScaler()
+        assert s.beats_to_frames(120, 1.0) == round(0.5 * _FRAMES_PER_SECOND)
+
+    def test_alpha_for_beats(self):
+        s = TempoScaler()
+        a = s.alpha_for_beats(120, 1.0)
+        n = round(0.5 * _FRAMES_PER_SECOND)
+        remaining = a ** n
+        assert abs(remaining - 0.05) < 0.01
