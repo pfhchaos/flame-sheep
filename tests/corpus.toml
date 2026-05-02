@@ -257,6 +257,13 @@ start = 0
 duration = 180
 tags = ["speech", "pure_speech", "false_positive", "beat_mode_bug"]
 
+[[sources.youtube.clips]]
+url = "https://www.youtube.com/watch?v=8LnwsYL7Apk"
+name = "speech_false_positive_2"
+start = 0
+duration = 180
+tags = ["speech", "pure_speech", "false_positive", "beat_mode_bug"]
+
 # --- MUSDB18 (optional, needs separate download) ---
 [sources.musdb18]
 # root = "datasets/MUSDB18/MUSDB18-7"
