@@ -10,8 +10,9 @@ import numpy as np
 import pytest
 
 from flame_sheep_audio._constants import SAMPLE_RATE, HOP_SIZE
-from flame_sheep_audio._spectrum import SpectrumFrame
+from flame_sheep_audio._spectrum import SpectrumFrame, SpectrumEngineBase
 from flame_sheep_audio.stability import (
+    StabilityMethod,
     MagnitudeStability, _StabilityEMA, _StabilityMedian, _StabilityShape,
 )
 from flame_sheep_audio.energy import EnergyAnalyzer
@@ -35,11 +36,20 @@ BIN_COUNTS = [108, 1025, 64]
 # Stability interface conformance
 # ===================================================================
 
+# All concrete StabilityMethod subclasses with their factory functions.
+# Adding a new stability method? Add it here — the tests are automatic.
 STABILITY_CLASSES = [
     ("ema", lambda: _StabilityEMA(alpha=0.95)),
     ("median", lambda: _StabilityMedian(kernel_time=15, kernel_freq=7)),
     ("shape", lambda: _StabilityShape(alpha=0.95, kernel=7)),
 ]
+
+def test_all_stability_methods_registered():
+    """Ensure every StabilityMethod subclass has a test entry."""
+    concrete = {cls.__name__ for cls in StabilityMethod.__subclasses__()}
+    tested = {factory().__class__.__name__ for _, factory in STABILITY_CLASSES}
+    missing = concrete - tested
+    assert not missing, f"StabilityMethod subclasses without test entries: {missing}"
 
 
 class TestStabilityConformance:
@@ -188,9 +198,29 @@ class TestEnergyConformance:
 # Spectrum engine conformance
 # ===================================================================
 
+# All concrete SpectrumEngineBase subclasses.
+# Adding a new engine? Add it here — the tests are automatic.
 ENGINES = [("octave_bank", OctaveBankEngine)]
 if _HAS_CQT:
     ENGINES.append(("cqt", CqtEngine))
+
+def test_all_spectrum_engines_registered():
+    """Ensure every SpectrumEngineBase subclass has a test entry."""
+    from flame_sheep_audio._spectrum import SpectrumEngine
+    # Exclude the FFT SpectrumEngine (it doesn't implement push_hop the same way)
+    # and optional engines that aren't installed
+    tested = {cls.__name__ for _, cls in ENGINES}
+    concrete = set()
+    for cls in SpectrumEngineBase.__subclasses__():
+        if cls is SpectrumEngine:
+            continue  # legacy FFT engine, separate interface
+        try:
+            # Only check if the class can be imported
+            concrete.add(cls.__name__)
+        except Exception:
+            pass
+    missing = concrete - tested
+    assert not missing, f"SpectrumEngineBase subclasses without test entries: {missing}"
 
 
 class TestSpectrumEngineConformance:
