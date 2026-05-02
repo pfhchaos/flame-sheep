@@ -46,7 +46,7 @@ class Orchestrator:
     def __init__(self, audio_device: str | int | None = DEFAULT_DEVICE,
                  test_audio: bool = False,
                  clock: Callable[[], float] | None = None,
-                 spectrum_engine: str = 'octave_bank') -> None:
+                 spectrum_engine: str = 'cqt') -> None:
         self._clock: Callable[[], float] = clock or time.perf_counter
 
         # Audio engine
@@ -67,7 +67,9 @@ class Orchestrator:
                     log.info('spectrum engine: CQT (rt-cqt SlidingCqt)')
                 except ImportError:
                     log.warning('CQT requested but prtcqt not available, falling back to octave bank')
-            if engine is None:
+            if spectrum_engine == 'octave_bank' or engine is None:
+                from flame_sheep_audio._octave_bank import OctaveBankEngine
+                engine = OctaveBankEngine()
                 log.info('spectrum engine: octave bank')
             self.audio = AudioProcessor(device=audio_device, spectrum_engine=engine)
             log.info(f'audio device: {audio_device!r}')

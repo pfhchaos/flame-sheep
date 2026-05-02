@@ -1144,8 +1144,8 @@ def main() -> None:
     parser.add_argument('--benchmark-variations', action='store_true',
                         help='benchmark each variation solo (GPU timing) and exit')
     parser.add_argument('--spectrum-engine', choices=['octave_bank', 'cqt'],
-                        default='octave_bank',
-                        help='spectrum analysis engine (default: octave_bank)')
+                        default='cqt',
+                        help='spectrum analysis engine (default: cqt)')
     parser.add_argument('--log-level', action='append', default=[],
                         help='logging verbosity: global (INFO) or per-component '
                              '(flame_sheep_audio.tempo_acf=DEBUG). Repeatable.')
