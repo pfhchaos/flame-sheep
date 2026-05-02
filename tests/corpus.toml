@@ -184,21 +184,21 @@ tags = ["speech_over_music", "speech", "intro_music"]
 url = "https://www.youtube.com/watch?v=LEZHDHIf_FA"
 name = "william_spaniel_negotiation"
 start = 0
-duration = 60
+duration = 180
 tags = ["speech", "pure_speech", "lecture"]
 
 [[sources.youtube.clips]]
 url = "https://www.youtube.com/watch?v=_-gnycJVovw"
 name = "idle_cub_commentary"
 start = 960
-duration = 60
+duration = 180
 tags = ["speech_over_music", "speech", "gaming", "quiet_music"]
 
 [[sources.youtube.clips]]
 url = "https://www.youtube.com/watch?v=srk-tPbQVcs"
 name = "lindsay_ellis_essay"
 start = 90
-duration = 60
+duration = 180
 tags = ["speech", "pure_speech", "video_essay"]
 
 [[sources.youtube.clips]]
@@ -254,7 +254,7 @@ tags = ["noise", "environmental", "crowd", "voices"]
 url = "https://www.youtube.com/watch?v=4nTwYnYSE20"
 name = "speech_beat_mode_false_positive"
 start = 0
-duration = 60
+duration = 180
 tags = ["speech", "pure_speech", "false_positive", "beat_mode_bug"]
 
 # --- MUSDB18 (optional, needs separate download) ---
