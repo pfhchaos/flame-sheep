@@ -1,0 +1,66 @@
+Sweeping 12 combinations...
+
+[1/12] fft/ema/raw... [src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.496 T_exact=33% T_oct=33% (163s)
+[2/12] fft/ema/percussive... [src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.496 T_exact=17% T_oct=33% (163s)
+[3/12] fft/median/raw... [src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.499 T_exact=33% T_oct=33% (556s)
+[4/12] fft/median/percussive... [src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.499 T_exact=33% T_oct=33% (572s)
+[5/12] fft/shape/raw... [src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.469 T_exact=33% T_oct=33% (235s)
+[6/12] fft/shape/percussive... [src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.469 T_exact=50% T_oct=50% (238s)
+[7/12] octave_bank/ema/raw... [src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.500 T_exact=33% T_oct=67% (626s)
+[8/12] octave_bank/ema/percussive... [src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.500 T_exact=33% T_oct=67% (634s)
+[9/12] octave_bank/median/raw... [src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.504 T_exact=33% T_oct=67% (684s)
+[10/12] octave_bank/median/percussive... [src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.504 T_exact=33% T_oct=50% (686s)
+[11/12] octave_bank/shape/raw...   WARNING: Megalovania failed: operands could not be broadcast together with shapes (108,) (1025,) 
+  WARNING: My Love failed: operands could not be broadcast together with shapes (108,) (1025,) 
+  WARNING: Shelter failed: operands could not be broadcast together with shapes (108,) (1025,) 
+  WARNING: Silhouette failed: operands could not be broadcast together with shapes (108,) (1025,) 
+  WARNING: Everything Will Freeze failed: operands could not be broadcast together with shapes (108,) (1025,) 
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+  WARNING: River Flows In You failed: operands could not be broadcast together with shapes (108,) (1025,) 
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.000 T_exact=0% T_oct=0% (7s)
+[12/12] octave_bank/shape/percussive...   WARNING: Megalovania failed: operands could not be broadcast together with shapes (108,) (1025,) 
+  WARNING: My Love failed: operands could not be broadcast together with shapes (108,) (1025,) 
+  WARNING: Shelter failed: operands could not be broadcast together with shapes (108,) (1025,) 
+  WARNING: Silhouette failed: operands could not be broadcast together with shapes (108,) (1025,) 
+  WARNING: Everything Will Freeze failed: operands could not be broadcast together with shapes (108,) (1025,) 
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+  WARNING: River Flows In You failed: operands could not be broadcast together with shapes (108,) (1025,) 
+[src/libmpg123/id3.c:INT123_parse_new_id3():950] warning: ID3v2: unrealistic small tag lengh 0, skipping
+F1=0.000 T_exact=0% T_oct=0% (7s)
+
+=====================================================================================
+Combination                     Beat F1  Beat P  Beat R  T Exact   T Oct   Time
+-------------------------------------------------------------------------------------
+octave_bank/median/raw            0.504   0.450   0.675     33%     67%   684s
+octave_bank/ema/raw               0.500   0.473   0.630     33%     67%   626s
+octave_bank/ema/percussive        0.500   0.473   0.630     33%     67%   634s
+octave_bank/median/percussive     0.504   0.450   0.675     33%     50%   686s
+fft/shape/percussive              0.469   0.514   0.519     50%     50%   238s
+fft/median/raw                    0.499   0.454   0.643     33%     33%   556s
+fft/median/percussive             0.499   0.454   0.643     33%     33%   572s
+fft/ema/raw                       0.496   0.467   0.617     33%     33%   163s
+fft/ema/percussive                0.496   0.467   0.617     17%     33%   163s
+fft/shape/raw                     0.469   0.514   0.519     33%     33%   235s
+octave_bank/shape/raw             0.000   0.000   0.000      0%      0%     7s
+octave_bank/shape/percussive      0.000   0.000   0.000      0%      0%     7s
