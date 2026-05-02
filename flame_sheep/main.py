@@ -64,6 +64,7 @@ from .role_mapper import RoleMapper
 # not passing CLI args through to WindowConfig.__init__
 _AUDIO_DEVICE: str | int = DEFAULT_DEVICE
 _TEST_AUDIO:   bool = False
+_SPECTRUM_ENGINE: str = 'octave_bank'
 
 
 class FlameSheepCore:
@@ -314,7 +315,8 @@ class FlameSheepApp(mglw.WindowConfig):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._orch = Orchestrator(audio_device=_AUDIO_DEVICE, test_audio=_TEST_AUDIO)
+        self._orch = Orchestrator(audio_device=_AUDIO_DEVICE, test_audio=_TEST_AUDIO,
+                                  spectrum_engine=_SPECTRUM_ENGINE)
         self._core = FlameSheepCore(orchestrator=self._orch)
         self._orch.start()
         w, h = self.window_size
@@ -566,7 +568,8 @@ def _ensure_singleton() -> None:
 
 def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                    blur_radius: float = 1.0,
-                   log_features: bool = False, log_file: str | None = None) -> None:
+                   log_features: bool = False, log_file: str | None = None,
+                   spectrum_engine: str = 'octave_bank') -> None:
     """
     Wallpaper mode — one continuous flame fractal image across all monitors.
     """
@@ -674,7 +677,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         log.info(f'Composed {lib.loop_count()} loops')
 
     # --- Orchestrator: owns audio, control pipe, MPRIS, session ---
-    orch = Orchestrator(audio_device=audio_device, test_audio=test_audio)
+    orch = Orchestrator(audio_device=audio_device, test_audio=test_audio,
+                        spectrum_engine=spectrum_engine)
     core = FlameSheepCore(orchestrator=orch, lib=lib)
 
     _vote_count = 0
@@ -1139,6 +1143,9 @@ def main() -> None:
                         help='path for feature log (default: ~/.local/share/flame-sheep/features.jsonl)')
     parser.add_argument('--benchmark-variations', action='store_true',
                         help='benchmark each variation solo (GPU timing) and exit')
+    parser.add_argument('--spectrum-engine', choices=['octave_bank', 'cqt'],
+                        default='octave_bank',
+                        help='spectrum analysis engine (default: octave_bank)')
     parser.add_argument('--log-level', action='append', default=[],
                         help='logging verbosity: global (INFO) or per-component '
                              '(flame_sheep_audio.tempo_acf=DEBUG). Repeatable.')
@@ -1169,9 +1176,10 @@ def main() -> None:
             global_level = spec.upper()
     setup_logging(level=global_level, component_levels=component_levels)
 
-    global _AUDIO_DEVICE, _TEST_AUDIO
+    global _AUDIO_DEVICE, _TEST_AUDIO, _SPECTRUM_ENGINE
     _AUDIO_DEVICE = args.audio_device
     _TEST_AUDIO   = args.test_audio
+    _SPECTRUM_ENGINE = args.spectrum_engine
 
     if args.list_audio:
         from flame_sheep_audio import list_monitor_devices
@@ -1203,7 +1211,8 @@ def main() -> None:
             from .config import cfg
             audio_device = cfg.audio_device
         _run_wallpaper(audio_device, args.test_audio, blur_radius=args.blur_radius,
-                       log_features=args.log_features, log_file=args.log_file)
+                       log_features=args.log_features, log_file=args.log_file,
+                       spectrum_engine=args.spectrum_engine)
         return
 
     # Strip our flags from sys.argv so moderngl-window's arg parser
