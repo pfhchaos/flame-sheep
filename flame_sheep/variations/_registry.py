@@ -62,9 +62,15 @@ class Variation:
     SCRY        = 51
     EPISPIRAL   = 52
     WAVES3      = 53
+    # --- tiling batch 2 ---
+    BOARDERS    = 54
+    HYPERTILE   = 55
+    CELL        = 56
+    WHORL       = 57
+    DISC2       = 58
 
 
-NUM_VARIATIONS = 54
+NUM_VARIATIONS = 59
 
 # Variations that require per-transform parameters (var_params dict)
 PARAMETRIC_VARIATIONS = {
@@ -79,6 +85,8 @@ PARAMETRIC_VARIATIONS = {
     Variation.RINGS3,
     Variation.MOBIUS, Variation.CPOW, Variation.NGON,
     Variation.EPISPIRAL, Variation.WAVES3,
+    Variation.BOARDERS, Variation.HYPERTILE, Variation.CELL,
+    Variation.WHORL, Variation.DISC2,
 }
 
 # Per-variation parameter spec: ordered list of param names.
@@ -118,6 +126,11 @@ VAR_PARAMS_SPEC = {
     Variation.EPISPIRAL:    ['epispiral_n', 'epispiral_thickness', 'epispiral_holes'],
     Variation.WAVES3:       ['waves3_scalex', 'waves3_scaley', 'waves3_freqx',
                               'waves3_freqy', 'waves3_sx_freq', 'waves3_sy_freq'],
+    Variation.BOARDERS:     ['boarders_c', 'boarders_cl', 'boarders_cr'],
+    Variation.HYPERTILE:    ['hypertile_re', 'hypertile_im'],
+    Variation.CELL:         ['cell_size'],
+    Variation.WHORL:        ['whorl_inside', 'whorl_outside'],
+    Variation.DISC2:        ['disc2_twist', 'disc2_cosadd', 'disc2_sinadd'],
 }
 
 # Backwards compat — old code may reference this
