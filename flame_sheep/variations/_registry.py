@@ -74,9 +74,16 @@ class Variation:
     SPIRALWING  = 61
     COLLIDEOSCOPE = 62
     AUGER       = 63
+    # --- reflective & misc batch ---
+    FLIPCIRCLE  = 64
+    ECLIPSE     = 65
+    LAYERED_SPIRAL = 66
+    STRIPES     = 67
+    LISSAJOUS   = 68
+    RIPPLE      = 69
 
 
-NUM_VARIATIONS = 64
+NUM_VARIATIONS = 70
 
 # Variations that require per-transform parameters (var_params dict)
 PARAMETRIC_VARIATIONS = {
@@ -94,6 +101,8 @@ PARAMETRIC_VARIATIONS = {
     Variation.BOARDERS, Variation.HYPERTILE, Variation.CELL,
     Variation.WHORL, Variation.DISC2,
     Variation.FLOWER, Variation.COLLIDEOSCOPE, Variation.AUGER,
+    Variation.ECLIPSE, Variation.LAYERED_SPIRAL, Variation.STRIPES,
+    Variation.LISSAJOUS, Variation.RIPPLE,
 }
 
 # Per-variation parameter spec: ordered list of param names.
@@ -141,6 +150,14 @@ VAR_PARAMS_SPEC = {
     Variation.FLOWER:       ['flower_holes', 'flower_petals'],
     Variation.COLLIDEOSCOPE: ['collide_a', 'collide_num'],
     Variation.AUGER:        ['auger_freq', 'auger_weight', 'auger_sym', 'auger_scale'],
+    Variation.ECLIPSE:      ['eclipse_shift'],
+    Variation.LAYERED_SPIRAL: ['layered_spiral_radius'],
+    Variation.STRIPES:      ['stripes_space', 'stripes_warp'],
+    Variation.LISSAJOUS:    ['liss_tmin', 'liss_tmax', 'liss_a', 'liss_b',
+                             'liss_c', 'liss_d', 'liss_e'],
+    Variation.RIPPLE:       ['ripple_freq', 'ripple_vel', 'ripple_amp',
+                             'ripple_cx', 'ripple_cy', 'ripple_phase',
+                             'ripple_scale', 'ripple_fixd'],
 }
 
 # Backwards compat — old code may reference this

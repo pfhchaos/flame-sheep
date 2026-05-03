@@ -666,6 +666,86 @@ vec2 var_auger(vec2 p, int slot) {
     return vec2(p.x + sym * (dx - p.x), dy);
 }
 
+// --- Reflective & misc batch ---
+
+vec2 var_flipcircle(vec2 p) {
+    // FlipCircle — flip y inside a circle
+    if (dot(p, p) > 1.0)
+        return vec2(p.x, p.y);
+    else
+        return vec2(p.x, -p.y);
+}
+
+vec2 var_eclipse(vec2 p, int slot) {
+    // Eclipse — shifted circular masking
+    float shift = u_active_vars[slot + PARAM_OFFSET + 0];
+    if (abs(p.y) <= 1.0) {
+        float c2 = sqrt(1.0 - p.y * p.y);
+        if (abs(p.x) <= c2) {
+            float x = p.x + shift;
+            if (abs(x) >= c2)
+                return vec2(-p.x, p.y);
+            else
+                return vec2(x, p.y);
+        }
+    }
+    return p;
+}
+
+vec2 var_layered_spiral(vec2 p, int slot) {
+    // LayeredSpiral — multi-layer spiral modulation
+    float radius = u_active_vars[slot + PARAM_OFFSET + 0];
+    float a = p.x * radius;
+    float t = p.x * p.x + p.y * p.y + 1e-6;
+    return vec2(a * cos(t), a * sin(t));
+}
+
+vec2 var_stripes(vec2 p, int slot) {
+    // Stripes — stripe pattern with warp
+    float space = u_active_vars[slot + PARAM_OFFSET + 0];
+    float warp  = u_active_vars[slot + PARAM_OFFSET + 1];
+    float roundx = floor(p.x + 0.5);
+    float offx = p.x - roundx;
+    return vec2(offx * (1.0 - space) + roundx,
+                p.y + offx * offx * warp);
+}
+
+vec2 var_lissajous(vec2 p, int slot) {
+    // Lissajous — parametric curve patterns (stochastic)
+    float tmin = u_active_vars[slot + PARAM_OFFSET + 0];
+    float tmax = u_active_vars[slot + PARAM_OFFSET + 1];
+    float la   = u_active_vars[slot + PARAM_OFFSET + 2];
+    float lb   = u_active_vars[slot + PARAM_OFFSET + 3];
+    float lc   = u_active_vars[slot + PARAM_OFFSET + 4];
+    float ld   = u_active_vars[slot + PARAM_OFFSET + 5];
+    float le   = u_active_vars[slot + PARAM_OFFSET + 6];
+    float t = (tmax - tmin) * rng_float() + tmin;
+    float y = rng_float() - 0.5;
+    return vec2(sin(la * t + ld) + lc * t + le * y,
+                sin(lb * t) + lc * t + le * y);
+}
+
+vec2 var_ripple(vec2 p, int slot) {
+    // Ripple — cosine wave distortion from center
+    float freq   = u_active_vars[slot + PARAM_OFFSET + 0];
+    float vel    = u_active_vars[slot + PARAM_OFFSET + 1];
+    float amp    = u_active_vars[slot + PARAM_OFFSET + 2];
+    float cx     = u_active_vars[slot + PARAM_OFFSET + 3];
+    float cy     = u_active_vars[slot + PARAM_OFFSET + 4];
+    float phase  = u_active_vars[slot + PARAM_OFFSET + 5];
+    float scale  = u_active_vars[slot + PARAM_OFFSET + 6];
+    float fixd   = u_active_vars[slot + PARAM_OFFSET + 7];
+    float x = p.x * scale - cx;
+    float y = p.y * scale + cy;
+    float d = (fixd > 0.5) ? sqrt(x*x + y*y) : sqrt(x*x * y*y);
+    d = max(d, 1e-6);
+    float nx = x / d;
+    float ny = y / d;
+    float wave = cos(freq * d - vel + phase);
+    float os = amp * wave;
+    return vec2(p.x + nx * os, p.y + ny * os);
+}
+
 // ------------------------------------------------------------
 // Apply single variation by index (switch-based dispatch)
 // ------------------------------------------------------------
@@ -735,6 +815,12 @@ vec2 apply_single_variation(int var_idx, vec2 p, int slot) {
         case 61: return var_spiralwing(p);
         case 62: return var_collideoscope(p, slot);
         case 63: return var_auger(p, slot);
+        case 64: return var_flipcircle(p);
+        case 65: return var_eclipse(p, slot);
+        case 66: return var_layered_spiral(p, slot);
+        case 67: return var_stripes(p, slot);
+        case 68: return var_lissajous(p, slot);
+        case 69: return var_ripple(p, slot);
         default: return p;
     }
 }

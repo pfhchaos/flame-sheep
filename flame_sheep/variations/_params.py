@@ -293,6 +293,45 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
             'auger_scale': float(rng.uniform(0.1, 1.0)),
         }
 
+    elif var_idx == Variation.ECLIPSE:
+        return {
+            'eclipse_shift': float(rng.uniform(-1.0, 1.0)),
+        }
+
+    elif var_idx == Variation.LAYERED_SPIRAL:
+        return {
+            'layered_spiral_radius': float(rng.uniform(0.5, 3.0)),
+        }
+
+    elif var_idx == Variation.STRIPES:
+        return {
+            'stripes_space': float(rng.uniform(0.0, 1.0)),
+            'stripes_warp': float(rng.uniform(-2.0, 2.0)),
+        }
+
+    elif var_idx == Variation.LISSAJOUS:
+        return {
+            'liss_tmin': float(rng.uniform(-3.14, 0.0)),
+            'liss_tmax': float(rng.uniform(0.0, 3.14)),
+            'liss_a': float(rng.integers(1, 6)),
+            'liss_b': float(rng.integers(1, 6)),
+            'liss_c': float(rng.uniform(0.0, 0.5)),
+            'liss_d': float(rng.uniform(0.0, 3.14)),
+            'liss_e': float(rng.uniform(0.0, 0.3)),
+        }
+
+    elif var_idx == Variation.RIPPLE:
+        return {
+            'ripple_freq': float(rng.uniform(1.0, 10.0)),
+            'ripple_vel': float(rng.uniform(0.0, 1.0)),
+            'ripple_amp': float(rng.uniform(0.01, 0.5)),
+            'ripple_cx': float(rng.uniform(-0.5, 0.5)),
+            'ripple_cy': float(rng.uniform(-0.5, 0.5)),
+            'ripple_phase': float(rng.uniform(0.0, 6.28)),
+            'ripple_scale': float(rng.uniform(0.5, 2.0)),
+            'ripple_fixd': float(rng.choice([0.0, 1.0])),
+        }
+
     return {}
 
 
@@ -344,6 +383,16 @@ _PARAM_RANGES: dict[str, tuple[float, float]] = {
     'collide_a': (0.0, 2.0), 'collide_num': (2.0, 9.0),
     'auger_freq': (1.0, 8.0), 'auger_weight': (0.1, 1.0),
     'auger_sym': (0.0, 1.0), 'auger_scale': (0.1, 1.0),
+    'eclipse_shift': (-1.0, 1.0),
+    'layered_spiral_radius': (0.5, 3.0),
+    'stripes_space': (0.0, 1.0), 'stripes_warp': (-2.0, 2.0),
+    'liss_tmin': (-3.14, 0.0), 'liss_tmax': (0.0, 3.14),
+    'liss_a': (1.0, 5.0), 'liss_b': (1.0, 5.0),
+    'liss_c': (0.0, 0.5), 'liss_d': (0.0, 3.14), 'liss_e': (0.0, 0.3),
+    'ripple_freq': (1.0, 10.0), 'ripple_vel': (0.0, 1.0),
+    'ripple_amp': (0.01, 0.5), 'ripple_cx': (-0.5, 0.5),
+    'ripple_cy': (-0.5, 0.5), 'ripple_phase': (0.0, 6.28),
+    'ripple_scale': (0.5, 2.0), 'ripple_fixd': (0.0, 1.0),
 }
 
 # Integer params that should be rounded after jitter
@@ -351,6 +400,7 @@ _INTEGER_PARAMS = {
     'julian_power', 'blob_waves', 'kal_n', 'icon_degree', 'sat_m',
     'wallpaper_group', 'frieze_group', 'cpow_power', 'ngon_sides',
     'flower_petals', 'collide_num',
+    'liss_a', 'liss_b',
 }
 
 
