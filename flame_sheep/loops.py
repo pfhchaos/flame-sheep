@@ -448,6 +448,118 @@ def mutate_loop(
     return new_id
 
 
+def refine_loop(
+    lib: Library,
+    loop_id: int,
+    rng: np.random.Generator | None = None,
+) -> int | None:
+    """
+    Replace the weakest genome in a loop with a crossover of its neighbors.
+
+    1. Find the genome with lowest fitness in the loop.
+    2. Crossover its two neighbors (wrapping for cyclic loops).
+    3. Mutate the offspring slightly.
+    4. If the offspring has higher fitness, create a new loop with it.
+
+    This preserves the loop's character while improving its weakest link.
+    The offspring is naturally "between" its neighbors in parameter space,
+    so morph transitions should be smooth.
+
+    Returns the new loop ID, or None if refinement failed.
+    """
+    from .genome import Genome
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    ids = lib.loop_genome_ids(loop_id)
+    if not ids or len(ids) < 3:
+        return None
+
+    # Find weakest genome by fitness
+    fitnesses = [(i, lib.genome_fitness(gid)) for i, gid in enumerate(ids)]
+    worst_pos, worst_fitness = min(fitnesses, key=lambda x: x[1])
+    worst_id = ids[worst_pos]
+
+    # Get neighbors (wrapping for cyclic)
+    n = len(ids)
+    prev_pos = (worst_pos - 1) % n
+    next_pos = (worst_pos + 1) % n
+    parent_a = lib.load_genome(ids[prev_pos])
+    parent_b = lib.load_genome(ids[next_pos])
+
+    # Crossover: interpolate between neighbors
+    # Blend factor biased toward center (0.3-0.7) for smooth transitions
+    blend = float(rng.uniform(0.3, 0.7))
+    child = parent_a.lerp(parent_b, blend)
+
+    # Light mutation: jitter the child's parameters
+    child = child.jitter(rng, scale=0.05)
+
+    # Score the child
+    from .genome import _score_from_histogram
+    from .variations import apply_variations_cpu
+
+    grid_size = 64
+    n_iter = 20_000
+    fuse = 20
+    bound = 4.0
+
+    hit_grid = np.zeros((grid_size, grid_size), dtype=np.float64)
+    color_grid = np.zeros((grid_size, grid_size), dtype=np.float64)
+
+    weights = np.array([tr.weight for tr in child.transforms], dtype=np.float64)
+    if weights.sum() == 0:
+        return None
+    weights /= weights.sum()
+    cumw = np.cumsum(weights)
+
+    x, y, c = 0.0, 0.0, 0.5
+    for i in range(fuse + n_iter):
+        r = rng.random()
+        tidx = min(int(np.searchsorted(cumw, r)), len(child.transforms) - 1)
+        tr = child.transforms[tidx]
+        a, b, cc, d, e, f = tr.affine
+        nx = a * x + b * y + cc
+        ny = d * x + e * y + f
+        nx, ny = apply_variations_cpu(tr.variations, nx, ny)
+        x, y = nx, ny
+        c = (c + tr.color) * 0.5
+        if not (np.isfinite(x) and np.isfinite(y)):
+            return None  # child diverged
+        if i >= fuse and abs(x) < bound and abs(y) < bound:
+            gx = max(0, min(grid_size - 1, int((x + bound) / (2 * bound) * grid_size)))
+            gy = max(0, min(grid_size - 1, int((y + bound) / (2 * bound) * grid_size)))
+            hit_grid[gy, gx] += 1.0
+            color_grid[gy, gx] += c
+
+    scores = _score_from_histogram(hit_grid, color_grid)
+    child_fitness = (
+        scores.get('coverage', 0) + scores.get('entropy', 0)
+        + scores.get('edge_sharpness', 0) + scores.get('contour_coherence', 0)
+        + scores.get('complexity', 0)
+    )
+
+    # Only replace if child is better than the worst
+    if child_fitness <= worst_fitness:
+        log.debug('Refine loop %d: child fitness %.3f <= worst %.3f, skipped',
+                  loop_id, child_fitness, worst_fitness)
+        return None
+
+    # Save child genome and create new loop
+    child_gid = lib.save_genome(child)
+    child_ids = list(ids)
+    child_ids[worst_pos] = child_gid
+
+    parent_structure = lib.loop_type(loop_id)
+    name = f'refine-{loop_id}-pos{worst_pos}'
+    new_id = lib.save_loop(child_ids, name=name, loop_type=parent_structure,
+                           parent_a=loop_id)
+    log.info('Refined loop %d -> %d (pos %d: fitness %.3f -> %.3f)',
+             loop_id, new_id, worst_pos, worst_fitness, child_fitness)
+    return new_id
+
+
 def insert_genome(
     lib: Library,
     loop_id: int,
@@ -754,6 +866,15 @@ def evolve_loops(
         for _ in range(n_jitter_mut):
             parent = int(rng.choice(top_ids))
             child = jitter_loop(lib, parent, rng)
+            if child is not None:
+                new_ids.append(child)
+                all_existing.append(child)
+
+        # Refinement: replace weakest genome in top loops
+        n_refine = max(1, n_mutation // 5)
+        for _ in range(n_refine):
+            parent = int(rng.choice(top_ids))
+            child = refine_loop(lib, parent, rng)
             if child is not None:
                 new_ids.append(child)
                 all_existing.append(child)
