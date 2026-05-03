@@ -488,6 +488,48 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         t = twist * (x + y)
         rv = np.arctan2(y, x) / np.pi
         return w*(np.sin(t) + ca)*rv, w*(np.cos(t) + sa)*rv
+    elif var_idx == 59: # flower
+        holes = _current_var_params.get('flower_holes', 0.5)
+        petals = _current_var_params.get('flower_petals', 6.0)
+        th = np.arctan2(y, x)
+        d = np.sqrt(x*x + y*y) + 1e-10
+        r = w * (_rand() - holes) * np.cos(petals * th) / d
+        return r*x, r*y
+    elif var_idx == 60: # blade
+        rr = _rand() * w * np.sqrt(x*x + y*y)
+        sr, cr = np.sin(rr), np.cos(rr)
+        return w*x*(cr + sr), w*x*(cr - sr)
+    elif var_idx == 61: # spiralwing
+        c1 = x*x; c2 = y*y
+        d = w / (c1 + c2 + 1e-10)
+        s2 = np.sin(c2)
+        return d*np.cos(c1)*s2, d*np.sin(c1)*s2
+    elif var_idx == 62: # collideoscope
+        ka = _current_var_params.get('collide_a', 0.5)
+        num = max(_current_var_params.get('collide_num', 4.0), 1.0)
+        kn_pi = num / np.pi
+        pi_kn = np.pi / num
+        ka_kn = ka / num
+        a = np.arctan2(y, x)
+        rr = w * np.sqrt(x*x + y*y)
+        if a >= 0:
+            alt = int(a * kn_pi)
+            if alt % 2 == 0: a = alt*pi_kn + (ka_kn + a) % pi_kn
+            else: a = alt*pi_kn + (-ka_kn + a) % pi_kn
+        else:
+            alt = int(-a * kn_pi)
+            if alt % 2 != 0: a = -(alt*pi_kn + (-ka_kn - a) % pi_kn)
+            else: a = -(alt*pi_kn + (ka_kn - a) % pi_kn)
+        return rr*np.cos(a), rr*np.sin(a)
+    elif var_idx == 63: # auger
+        freq = _current_var_params.get('auger_freq', 3.0)
+        wt = _current_var_params.get('auger_weight', 0.5)
+        sym = _current_var_params.get('auger_sym', 0.5)
+        scale = _current_var_params.get('auger_scale', 0.5)
+        s = np.sin(freq * x); t = np.sin(freq * y)
+        dy = y + wt * (scale * s * 0.5 + abs(y) * s)
+        dx = x + wt * (scale * t * 0.5 + abs(x) * t)
+        return w*(x + sym*(dx - x)), w*dy
     else:
         # treat unknown/safe variations as linear for viability purposes
         return w*x, w*y

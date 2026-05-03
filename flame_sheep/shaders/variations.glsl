@@ -596,6 +596,76 @@ vec2 var_disc2(vec2 p, int slot) {
                 (cos(t) + sinadd) * r_val);
 }
 
+// --- Shape & spiral batch ---
+
+vec2 var_flower(vec2 p, int slot) {
+    // Flower — petal structures via cos(petals * theta) modulation
+    float holes  = u_active_vars[slot + PARAM_OFFSET + 0];
+    float petals = u_active_vars[slot + PARAM_OFFSET + 1];
+    float th = atan(p.y, p.x);
+    float d = length(p);
+    if (d < 1e-6) return vec2(0.0);
+    float r = (rng_float() - holes) * cos(petals * th) / d;
+    return r * p;
+}
+
+vec2 var_blade(vec2 p) {
+    // Blade — sharp radial structures (stochastic)
+    float r = rng_float() * length(p);
+    float sr = sin(r);
+    float cr = cos(r);
+    return vec2(p.x * (cr + sr), p.x * (cr - sr));
+}
+
+vec2 var_spiralwing(vec2 p) {
+    // Spiralwing — wing-like spiral distortion
+    float c1 = p.x * p.x;
+    float c2 = p.y * p.y;
+    float d = 1.0 / (c1 + c2 + 1e-6);
+    float s2 = sin(c2);
+    return vec2(d * cos(c1) * s2, d * sin(c1) * s2);
+}
+
+vec2 var_collideoscope(vec2 p, int slot) {
+    // Collideoscope — kaleidoscopic angular folding
+    float ka  = u_active_vars[slot + PARAM_OFFSET + 0];
+    float num = u_active_vars[slot + PARAM_OFFSET + 1];
+    num = max(num, 1.0);
+    float kn_pi = num / 3.14159265;
+    float pi_kn = 3.14159265 / num;
+    float ka_kn = ka / num;
+    float a = atan(p.y, p.x);
+    float r = length(p);
+    int alt;
+    if (a >= 0.0) {
+        alt = int(a * kn_pi);
+        if (alt % 2 == 0)
+            a = float(alt) * pi_kn + mod(ka_kn + a, pi_kn);
+        else
+            a = float(alt) * pi_kn + mod(-ka_kn + a, pi_kn);
+    } else {
+        alt = int(-a * kn_pi);
+        if (alt % 2 != 0)
+            a = -(float(alt) * pi_kn + mod(-ka_kn - a, pi_kn));
+        else
+            a = -(float(alt) * pi_kn + mod(ka_kn - a, pi_kn));
+    }
+    return r * vec2(cos(a), sin(a));
+}
+
+vec2 var_auger(vec2 p, int slot) {
+    // Auger — ridged/augmented distortion
+    float freq   = u_active_vars[slot + PARAM_OFFSET + 0];
+    float weight = u_active_vars[slot + PARAM_OFFSET + 1];
+    float sym    = u_active_vars[slot + PARAM_OFFSET + 2];
+    float scale  = u_active_vars[slot + PARAM_OFFSET + 3];
+    float s = sin(freq * p.x);
+    float t = sin(freq * p.y);
+    float dy = p.y + weight * (scale * s * 0.5 + abs(p.y) * s);
+    float dx = p.x + weight * (scale * t * 0.5 + abs(p.x) * t);
+    return vec2(p.x + sym * (dx - p.x), dy);
+}
+
 // ------------------------------------------------------------
 // Apply single variation by index (switch-based dispatch)
 // ------------------------------------------------------------
@@ -660,6 +730,11 @@ vec2 apply_single_variation(int var_idx, vec2 p, int slot) {
         case 56: return var_cell(p, slot);
         case 57: return var_whorl(p, slot);
         case 58: return var_disc2(p, slot);
+        case 59: return var_flower(p, slot);
+        case 60: return var_blade(p);
+        case 61: return var_spiralwing(p);
+        case 62: return var_collideoscope(p, slot);
+        case 63: return var_auger(p, slot);
         default: return p;
     }
 }

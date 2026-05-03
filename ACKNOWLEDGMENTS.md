@@ -20,6 +20,10 @@
 
 ## Papers
 
+**Tempo, Beat and Downbeat Estimation Tutorial**
+- https://tempobeatdownbeat.github.io/tutorial/ch2_basics/baseline.html
+- Comprehensive overview of beat tracking approaches, fixed-frame vs beat-synchronous
+
 **Streamlined Tempo Estimation Based on Autocorrelation and Cross-correlation With Pulses**
 - Graham Percival & George Tzanetakis (2014)
 - IEEE/ACM Transactions on Audio, Speech, and Language Processing
