@@ -273,6 +273,26 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
             'disc2_sinadd': float(rng.uniform(-0.5, 0.5)),
         }
 
+    elif var_idx == Variation.FLOWER:
+        return {
+            'flower_holes': float(rng.uniform(0.0, 1.0)),
+            'flower_petals': float(rng.integers(3, 12)),
+        }
+
+    elif var_idx == Variation.COLLIDEOSCOPE:
+        return {
+            'collide_a': float(rng.uniform(0.0, 2.0)),
+            'collide_num': float(rng.integers(2, 10)),
+        }
+
+    elif var_idx == Variation.AUGER:
+        return {
+            'auger_freq': float(rng.uniform(1.0, 8.0)),
+            'auger_weight': float(rng.uniform(0.1, 1.0)),
+            'auger_sym': float(rng.uniform(0.0, 1.0)),
+            'auger_scale': float(rng.uniform(0.1, 1.0)),
+        }
+
     return {}
 
 
@@ -320,12 +340,17 @@ _PARAM_RANGES: dict[str, tuple[float, float]] = {
     'cell_size': (0.5, 2.5),
     'whorl_inside': (-1.0, 1.0), 'whorl_outside': (-1.0, 1.0),
     'disc2_twist': (0.5, 3.0), 'disc2_cosadd': (-0.5, 0.5), 'disc2_sinadd': (-0.5, 0.5),
+    'flower_holes': (0.0, 1.0), 'flower_petals': (3.0, 11.0),
+    'collide_a': (0.0, 2.0), 'collide_num': (2.0, 9.0),
+    'auger_freq': (1.0, 8.0), 'auger_weight': (0.1, 1.0),
+    'auger_sym': (0.0, 1.0), 'auger_scale': (0.1, 1.0),
 }
 
 # Integer params that should be rounded after jitter
 _INTEGER_PARAMS = {
     'julian_power', 'blob_waves', 'kal_n', 'icon_degree', 'sat_m',
     'wallpaper_group', 'frieze_group', 'cpow_power', 'ngon_sides',
+    'flower_petals', 'collide_num',
 }
 
 
