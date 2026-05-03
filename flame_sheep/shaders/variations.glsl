@@ -504,6 +504,98 @@ vec2 var_waves3(vec2 p, int slot) {
                 p.y + sin(p.x * freqy) * scaleyy);
 }
 
+// --- Tiling batch 2 ---
+
+vec2 var_boarders(vec2 p, int slot) {
+    // Boarders / Boarders2 combined — parameterized border tiling
+    // c: border width scale (0.5 = original boarders)
+    // cl: border offset (0.25 = original boarders)
+    // cr: randomization threshold (0.75 = original boarders)
+    float c  = u_active_vars[slot + PARAM_OFFSET + 0];
+    float cl = u_active_vars[slot + PARAM_OFFSET + 1];
+    float cr = u_active_vars[slot + PARAM_OFFSET + 2];
+    float roundX = floor(p.x + 0.5);
+    float roundY = floor(p.y + 0.5);
+    float offX = p.x - roundX;
+    float offY = p.y - roundY;
+    if (rng_float() >= cr) {
+        return vec2(offX * c + roundX, offY * c + roundY);
+    }
+    if (abs(offX) >= abs(offY)) {
+        if (offX >= 0.0) {
+            return vec2(offX * c + roundX + cl,
+                        offY * c + roundY + cl * offY / offX);
+        } else {
+            return vec2(offX * c + roundX - cl,
+                        offY * c + roundY - cl * offY / offX);
+        }
+    } else {
+        if (offY >= 0.0) {
+            return vec2(offX * c + roundX + cl * offX / offY,
+                        offY * c + roundY + cl);
+        } else {
+            return vec2(offX * c + roundX - cl * offX / offY,
+                        offY * c + roundY - cl);
+        }
+    }
+}
+
+vec2 var_hypertile(vec2 p, int slot) {
+    // Hyperbolic tiling — Escher-like tessellation
+    float ht_re = u_active_vars[slot + PARAM_OFFSET + 0];
+    float ht_im = u_active_vars[slot + PARAM_OFFSET + 1];
+    float a = p.x + ht_re;
+    float b = p.y - ht_im;
+    float c = ht_re * p.x - ht_im * p.y + 1.0;
+    float d = ht_re * p.y + ht_im * p.x;
+    float vr = 1.0 / max(c * c + d * d, 1e-6);
+    return vec2(vr * (a * c + b * d), vr * (b * c - a * d));
+}
+
+vec2 var_cell(vec2 p, int slot) {
+    // Cell — interleaved cell tiling
+    float size = u_active_vars[slot + PARAM_OFFSET + 0];
+    float inv_size = 1.0 / max(abs(size), 1e-6);
+    int ix = int(floor(p.x * inv_size));
+    int iy = int(floor(p.y * inv_size));
+    float dx = p.x - float(ix) * size;
+    float dy = p.y - float(iy) * size;
+    // Interleave cells
+    if (iy >= 0) {
+        if (ix >= 0) { iy *= 2; ix *= 2; }
+        else { iy *= 2; ix = -(2 * ix + 1); }
+    } else {
+        if (ix >= 0) { iy = -(2 * iy + 1); ix *= 2; }
+        else { iy = -(2 * iy + 1); ix = -(2 * ix + 1); }
+    }
+    return vec2(dx + float(ix) * size, -dy - float(iy) * size);
+}
+
+vec2 var_whorl(vec2 p, int slot) {
+    // Whorl — parameterized radial twist (generalized swirl)
+    float inside  = u_active_vars[slot + PARAM_OFFSET + 0];
+    float outside = u_active_vars[slot + PARAM_OFFSET + 1];
+    float rr = length(p);
+    float a;
+    if (rr < 1.0) {
+        a = atan(p.y, p.x) + inside / max(1.0 - rr, 1e-6);
+    } else {
+        a = atan(p.y, p.x) + outside / max(1.0 - rr, 1e-6);
+    }
+    return rr * vec2(cos(a), sin(a));
+}
+
+vec2 var_disc2(vec2 p, int slot) {
+    // Disc2 — parameterized disc mapping
+    float twist   = u_active_vars[slot + PARAM_OFFSET + 0];
+    float cosadd  = u_active_vars[slot + PARAM_OFFSET + 1];
+    float sinadd  = u_active_vars[slot + PARAM_OFFSET + 2];
+    float t = twist * (p.x + p.y);
+    float r_val = atan(p.y, p.x) / 3.14159265;
+    return vec2((sin(t) + cosadd) * r_val,
+                (cos(t) + sinadd) * r_val);
+}
+
 // ------------------------------------------------------------
 // Apply single variation by index (switch-based dispatch)
 // ------------------------------------------------------------
@@ -563,6 +655,11 @@ vec2 apply_single_variation(int var_idx, vec2 p, int slot) {
         case 51: return var_scry(p);
         case 52: return var_epispiral(p, slot);
         case 53: return var_waves3(p, slot);
+        case 54: return var_boarders(p, slot);
+        case 55: return var_hypertile(p, slot);
+        case 56: return var_cell(p, slot);
+        case 57: return var_whorl(p, slot);
+        case 58: return var_disc2(p, slot);
         default: return p;
     }
 }

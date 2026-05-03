@@ -239,6 +239,40 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
             'waves3_sy_freq': float(rng.uniform(0.0, 4.0)),
         }
 
+    elif var_idx == Variation.BOARDERS:
+        return {
+            'boarders_c': float(rng.uniform(0.3, 0.7)),    # border width scale
+            'boarders_cl': float(rng.uniform(0.1, 0.4)),   # border offset
+            'boarders_cr': float(rng.uniform(0.5, 0.9)),   # randomization threshold
+        }
+
+    elif var_idx == Variation.HYPERTILE:
+        # Möbius transform params — need to be inside unit disk for convergence
+        angle = float(rng.uniform(0, 2 * np.pi))
+        radius = float(rng.uniform(0.1, 0.8))
+        return {
+            'hypertile_re': radius * np.cos(angle),
+            'hypertile_im': radius * np.sin(angle),
+        }
+
+    elif var_idx == Variation.CELL:
+        return {
+            'cell_size': float(rng.uniform(0.5, 2.5)),
+        }
+
+    elif var_idx == Variation.WHORL:
+        return {
+            'whorl_inside': float(rng.uniform(-1.0, 1.0)),
+            'whorl_outside': float(rng.uniform(-1.0, 1.0)),
+        }
+
+    elif var_idx == Variation.DISC2:
+        return {
+            'disc2_twist': float(rng.uniform(0.5, 3.0)),
+            'disc2_cosadd': float(rng.uniform(-0.5, 0.5)),
+            'disc2_sinadd': float(rng.uniform(-0.5, 0.5)),
+        }
+
     return {}
 
 
@@ -281,6 +315,11 @@ _PARAM_RANGES: dict[str, tuple[float, float]] = {
     'waves3_scalex': (0.01, 0.2), 'waves3_scaley': (0.01, 0.2),
     'waves3_freqx': (2.0, 15.0), 'waves3_freqy': (2.0, 15.0),
     'waves3_sx_freq': (0.0, 4.0), 'waves3_sy_freq': (0.0, 4.0),
+    'boarders_c': (0.3, 0.7), 'boarders_cl': (0.1, 0.4), 'boarders_cr': (0.5, 0.9),
+    'hypertile_re': (-0.8, 0.8), 'hypertile_im': (-0.8, 0.8),
+    'cell_size': (0.5, 2.5),
+    'whorl_inside': (-1.0, 1.0), 'whorl_outside': (-1.0, 1.0),
+    'disc2_twist': (0.5, 3.0), 'disc2_cosadd': (-0.5, 0.5), 'disc2_sinadd': (-0.5, 0.5),
 }
 
 # Integer params that should be rounded after jitter

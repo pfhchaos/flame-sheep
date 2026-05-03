@@ -440,6 +440,54 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         elem = elements[idx]
         a, b, c, d, e, f = elem
         return w*(a*x + b*y + c), w*(d*x + e*y + f)
+    elif var_idx == 54: # boarders
+        c = _current_var_params.get('boarders_c', 0.5)
+        cl = _current_var_params.get('boarders_cl', 0.25)
+        cr = _current_var_params.get('boarders_cr', 0.75)
+        rx, ry = round(x), round(y)
+        ox, oy = x - rx, y - ry
+        if _rand() >= cr:
+            return w*(ox*c + rx), w*(oy*c + ry)
+        if abs(ox) >= abs(oy):
+            s = 1.0 if ox >= 0 else -1.0
+            return w*(ox*c + rx + s*cl), w*(oy*c + ry + s*cl*oy/(ox+1e-10))
+        s = 1.0 if oy >= 0 else -1.0
+        return w*(ox*c + rx + s*cl*ox/(oy+1e-10)), w*(oy*c + ry + s*cl)
+    elif var_idx == 55: # hypertile
+        re = _current_var_params.get('hypertile_re', 0.3)
+        im = _current_var_params.get('hypertile_im', 0.0)
+        a = x + re; b = y - im
+        c = re*x - im*y + 1.0; d = re*y + im*x
+        vr = 1.0 / max(c*c + d*d, 1e-6)
+        return w*vr*(a*c + b*d), w*vr*(b*c - a*d)
+    elif var_idx == 56: # cell
+        sz = _current_var_params.get('cell_size', 1.0)
+        inv = 1.0 / max(abs(sz), 1e-6)
+        ix, iy = int(np.floor(x*inv)), int(np.floor(y*inv))
+        dx, dy = x - ix*sz, y - iy*sz
+        if iy >= 0:
+            if ix >= 0: iy *= 2; ix *= 2
+            else: iy *= 2; ix = -(2*ix + 1)
+        else:
+            if ix >= 0: iy = -(2*iy + 1); ix *= 2
+            else: iy = -(2*iy + 1); ix = -(2*ix + 1)
+        return w*(dx + ix*sz), w*(-dy - iy*sz)
+    elif var_idx == 57: # whorl
+        ins = _current_var_params.get('whorl_inside', 0.5)
+        out = _current_var_params.get('whorl_outside', 0.5)
+        rr = np.sqrt(x*x + y*y) + 1e-10
+        if rr < 1.0:
+            a = np.arctan2(y, x) + ins / max(1.0 - rr, 1e-6)
+        else:
+            a = np.arctan2(y, x) + out / max(1.0 - rr, 1e-6)
+        return w*rr*np.cos(a), w*rr*np.sin(a)
+    elif var_idx == 58: # disc2
+        twist = _current_var_params.get('disc2_twist', 1.0)
+        ca = _current_var_params.get('disc2_cosadd', 0.0)
+        sa = _current_var_params.get('disc2_sinadd', 0.0)
+        t = twist * (x + y)
+        rv = np.arctan2(y, x) / np.pi
+        return w*(np.sin(t) + ca)*rv, w*(np.cos(t) + sa)*rv
     else:
         # treat unknown/safe variations as linear for viability purposes
         return w*x, w*y
