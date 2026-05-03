@@ -287,9 +287,10 @@ class TestBeatDetectorConformance:
 # Spectrum transform conformance
 # ===================================================================
 
-from flame_sheep_audio.hpss import SpectrumTransform, HarmonicTransform, PercussiveTransform
+from flame_sheep_audio.hpss import SpectrumTransform, LogMagnitudeTransform, HarmonicTransform, PercussiveTransform
 
 TRANSFORM_CLASSES = [
+    ("log_magnitude", lambda: LogMagnitudeTransform()),
     ("harmonic", lambda: HarmonicTransform(_StabilityEMA(alpha=0.95))),
     ("percussive", lambda: PercussiveTransform(_StabilityEMA(alpha=0.95))),
     ("harmonic_shape", lambda: HarmonicTransform(_StabilityShape(alpha=0.95, kernel=3))),
@@ -350,9 +351,11 @@ class TestSpectrumTransformConformance:
         out2 = t(out1)  # feed output back in
         assert out2.magnitude.shape == (108,)
 
-    @pytest.mark.parametrize("name,factory", TRANSFORM_CLASSES)
+    MASKING_TRANSFORMS = [t for t in TRANSFORM_CLASSES if t[0] != "log_magnitude"]
+
+    @pytest.mark.parametrize("name,factory", MASKING_TRANSFORMS)
     def test_output_bounded(self, name, factory):
-        """Output magnitude must not exceed input magnitude."""
+        """Masking transforms: output magnitude must not exceed input."""
         t = factory()
         frame = SpectrumFrame(
             magnitude=np.abs(np.random.randn(108).astype(np.float32)),
