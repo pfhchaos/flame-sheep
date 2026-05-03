@@ -16,7 +16,7 @@ from flame_sheep_audio.stability import (
     MagnitudeStability, _StabilityEMA, _StabilityMedian, _StabilityShape,
 )
 from flame_sheep_audio.energy import EnergyAnalyzer
-from flame_sheep_audio.beat_detector import BeatDetectorBase, FluxBeatDetector
+from flame_sheep_audio.beat_detector import BeatDetectorBase, FluxBeatDetector, PercentileBeatDetector
 from flame_sheep_audio._octave_bank import OctaveBankEngine
 
 # Try importing optional engines
@@ -201,6 +201,7 @@ class TestEnergyConformance:
 # All concrete BeatDetectorBase subclasses with factories.
 DETECTOR_CLASSES = [
     ("flux", lambda freqs: FluxBeatDetector(freqs=freqs)),
+    ("percentile", lambda freqs: PercentileBeatDetector(freqs=freqs)),
 ]
 
 
