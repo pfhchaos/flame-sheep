@@ -114,7 +114,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     existing = {r[1] for r in conn.execute('PRAGMA table_info(genomes)').fetchall()}
     for col in ('symmetry_max', 'rotational', 'reflective', 'radial', 'periodic',
                  'fractal_dim', 'self_similarity', 'detail_sensitivity',
-                 'centroid_x', 'centroid_y'):
+                 'centroid_x', 'centroid_y',
+                 'edge_sharpness', 'contour_coherence'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} REAL')
     if 'score_version' not in existing:
@@ -873,30 +874,51 @@ class Library:
         and propagated vote signal from loop ratings.
         """
         row = self.conn.execute(
-            'SELECT coverage, entropy, color_entropy, balance, complexity '
-            'FROM genomes WHERE id = ?',
+            '''SELECT coverage, entropy, color_entropy, balance, complexity,
+                      edge_sharpness, contour_coherence,
+                      symmetry_max, fractal_dim
+               FROM genomes WHERE id = ?''',
             (genome_id,),
         ).fetchone()
         if row is None:
             return 0.0
-        # Aesthetic score: sum of normalized metrics
-        aesthetic = sum(v or 0 for v in row)
 
-        # Symmetry bonus (from symmetry_scores column if it exists)
-        try:
-            sym_row = self.conn.execute(
-                'SELECT symmetry_max, fractal_dim FROM genomes WHERE id = ?',
-                (genome_id,),
-            ).fetchone()
-            if sym_row and sym_row[0] is not None:
-                # Symmetry: 0..1, fractal dim sweet spot ~1.5-1.8
-                sym_bonus = (sym_row[0] or 0) * 0.5
-                fd = sym_row[1] or 1.0
-                # Bonus peaks at D=1.65, falls off toward 1.0 and 2.0
-                fd_bonus = max(0, 1.0 - abs(fd - 1.65) / 0.65) * 0.3
-                aesthetic += sym_bonus + fd_bonus
-        except Exception:
-            pass  # columns don't exist yet — pre-migration
+        coverage = row[0] or 0
+        entropy = row[1] or 0
+        color_entropy = row[2] or 0
+        balance = row[3] or 0
+        complexity = row[4] or 0
+        edge_sharpness = row[5] or 0
+        contour_coherence = row[6] or 0
+        symmetry_max = row[7] or 0
+        fractal_dim = row[8] or 1.0
+
+        # Coverage sweet spot: 0.15-0.40 is ideal
+        # Too sparse = boring, too dense = blob
+        if coverage < 0.05:
+            coverage_score = coverage * 4  # penalize near-empty
+        elif coverage < 0.15:
+            coverage_score = 0.2 + (coverage - 0.05) * 4
+        elif coverage <= 0.40:
+            coverage_score = 0.6 + (coverage - 0.15) * 1.6  # sweet spot
+        else:
+            coverage_score = max(0, 1.0 - (coverage - 0.40) * 2)  # penalize blobs
+
+        # Fractal dimension sweet spot: 1.5-1.8
+        fd_score = max(0, 1.0 - abs(fractal_dim - 1.65) / 0.65)
+
+        # Weighted fitness
+        aesthetic = (
+            coverage_score * 1.0
+            + entropy * 0.5
+            + color_entropy * 0.3
+            + balance * 0.5
+            + complexity * 0.8
+            + edge_sharpness * 1.0      # crisp filaments
+            + contour_coherence * 1.2    # structured edges
+            + symmetry_max * 0.8
+            + fd_score * 0.5
+        )
 
         # User signal: net votes propagated from loop ratings
         votes = self.net_rating('genome', genome_id)
