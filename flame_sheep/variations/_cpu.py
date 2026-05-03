@@ -530,6 +530,56 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         dy = y + wt * (scale * s * 0.5 + abs(y) * s)
         dx = x + wt * (scale * t * 0.5 + abs(x) * t)
         return w*(x + sym*(dx - x)), w*dy
+    elif var_idx == 64: # flipcircle
+        if x*x + y*y > 1.0: return w*x, w*y
+        return w*x, -w*y
+    elif var_idx == 65: # eclipse
+        shift = _current_var_params.get('eclipse_shift', 0.0)
+        if abs(y) <= 1.0:
+            c2 = np.sqrt(max(0, 1.0 - y*y))
+            if abs(x) <= c2:
+                nx = x + shift
+                if abs(nx) >= c2: return -w*x, w*y
+                return w*nx, w*y
+        return w*x, w*y
+    elif var_idx == 66: # layered_spiral
+        radius = _current_var_params.get('layered_spiral_radius', 1.0)
+        a = x * radius
+        t = x*x + y*y + 1e-10
+        return w*a*np.cos(t), w*a*np.sin(t)
+    elif var_idx == 67: # stripes
+        space = _current_var_params.get('stripes_space', 0.5)
+        warp = _current_var_params.get('stripes_warp', 0.5)
+        rx = np.floor(x + 0.5)
+        ox = x - rx
+        return w*(ox*(1.0-space) + rx), w*(y + ox*ox*warp)
+    elif var_idx == 68: # lissajous
+        tmin = _current_var_params.get('liss_tmin', -np.pi)
+        tmax = _current_var_params.get('liss_tmax', np.pi)
+        la = _current_var_params.get('liss_a', 3.0)
+        lb = _current_var_params.get('liss_b', 2.0)
+        lc = _current_var_params.get('liss_c', 0.0)
+        ld = _current_var_params.get('liss_d', 0.0)
+        le = _current_var_params.get('liss_e', 0.0)
+        t = (tmax - tmin) * _rand() + tmin
+        yy = _rand() - 0.5
+        return w*(np.sin(la*t + ld) + lc*t + le*yy), w*(np.sin(lb*t) + lc*t + le*yy)
+    elif var_idx == 69: # ripple
+        freq = _current_var_params.get('ripple_freq', 5.0)
+        vel = _current_var_params.get('ripple_vel', 0.0)
+        amp = _current_var_params.get('ripple_amp', 0.1)
+        cx = _current_var_params.get('ripple_cx', 0.0)
+        cy = _current_var_params.get('ripple_cy', 0.0)
+        phase = _current_var_params.get('ripple_phase', 0.0)
+        scale = _current_var_params.get('ripple_scale', 1.0)
+        fixd = _current_var_params.get('ripple_fixd', 1.0)
+        xx = x*scale - cx; yy = y*scale + cy
+        d = np.sqrt(xx*xx + yy*yy) if fixd > 0.5 else np.sqrt(xx*xx * yy*yy)
+        d = max(d, 1e-10)
+        nx, ny = xx/d, yy/d
+        wave = np.cos(freq*d - vel + phase)
+        os = amp * wave
+        return w*(x + nx*os), w*(y + ny*os)
     else:
         # treat unknown/safe variations as linear for viability purposes
         return w*x, w*y
