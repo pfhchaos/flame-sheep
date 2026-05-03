@@ -60,6 +60,7 @@ def _scorer_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                     '''UPDATE genomes
                        SET coverage=?, entropy=?, color_entropy=?,
                            balance=?, complexity=?,
+                           edge_sharpness=?, contour_coherence=?,
                            symmetry_max=?, rotational=?, reflective=?,
                            radial=?, periodic=?, fractal_dim=?,
                            self_similarity=?, detail_sensitivity=?,
@@ -69,6 +70,8 @@ def _scorer_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                     (scores['coverage'], scores['entropy'],
                      scores['color_entropy'], scores['balance'],
                      scores['complexity'],
+                     scores.get('edge_sharpness', 0.0),
+                     scores.get('contour_coherence', 0.0),
                      scores['symmetry_max'], scores['rotational'],
                      scores['reflective'], scores['radial'],
                      scores['periodic'], scores['fractal_dim'],
@@ -175,7 +178,7 @@ class BackgroundScorer:
     """Load-aware background process that scores unscored genomes."""
 
     # Bump this when the scoring algorithm changes to re-score all genomes
-    SCORE_VERSION = 2  # v2: added centroid_offset_x/y
+    SCORE_VERSION = 3  # v3: added edge_sharpness, contour_coherence
 
     LOAD_THRESHOLD = 6.0
     LOAD_CHECK_INTERVAL = 10.0

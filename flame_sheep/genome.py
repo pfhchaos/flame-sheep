@@ -519,12 +519,52 @@ def _score_from_histogram(hit_grid: np.ndarray, color_grid: np.ndarray) -> dict[
     centroid_offset_x = float((cx - center_x) / center_x) if center_x > 0 else 0.0
     centroid_offset_y = float((cy - center_y) / center_y) if center_y > 0 else 0.0
 
+    # -- edge_sharpness: how crisp the filament structures are
+    #    Gradient magnitude of log-density, averaged over hit pixels.
+    #    Sharp filaments = high gradient, blobs = low gradient.
+    if log_hits.shape[0] >= 3 and log_hits.shape[1] >= 3:
+        # Sobel-like gradient via finite differences
+        gy = log_hits[2:, 1:-1] - log_hits[:-2, 1:-1]
+        gx = log_hits[1:-1, 2:] - log_hits[1:-1, :-2]
+        grad_mag = np.sqrt(gx**2 + gy**2)
+        # Average over non-zero gradient pixels
+        grad_nonzero = grad_mag[grad_mag > 0]
+        if len(grad_nonzero) > 0:
+            edge_sharpness = float(grad_nonzero.mean())
+            # Normalize — empirically, mean gradient ~1.5 is sharp
+            edge_sharpness = min(edge_sharpness / 1.5, 1.0)
+        else:
+            edge_sharpness = 0.0
+    else:
+        edge_sharpness = 0.0
+
+    # -- contour_coherence: do edges form continuous structures or noise?
+    #    Threshold the gradient to find edge pixels, then count connected
+    #    components. Few large components = structured, many small = noisy.
+    if log_hits.shape[0] >= 3 and log_hits.shape[1] >= 3 and edge_sharpness > 0:
+        from scipy.ndimage import label
+        edge_mask = grad_mag > (grad_nonzero.mean() * 0.5 if len(grad_nonzero) > 0 else 0)
+        labels, n_components = label(edge_mask)
+        if n_components > 0:
+            component_sizes = np.bincount(labels.ravel())[1:]  # skip background
+            # Ratio of largest component to total edge pixels
+            largest = component_sizes.max()
+            total_edge = component_sizes.sum()
+            # More coherent = largest component is bigger fraction
+            contour_coherence = float(largest / total_edge)
+        else:
+            contour_coherence = 0.0
+    else:
+        contour_coherence = 0.0
+
     return dict(
         coverage=coverage,
         entropy=entropy,
         color_entropy=color_entropy,
         balance=balance,
         complexity=complexity,
+        edge_sharpness=edge_sharpness,
+        contour_coherence=contour_coherence,
         centroid_offset_x=centroid_offset_x,
         centroid_offset_y=centroid_offset_y,
     )
