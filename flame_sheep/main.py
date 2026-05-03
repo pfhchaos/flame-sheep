@@ -797,6 +797,13 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     orch.on_command('seek', _handle_seek)
     orch.on_command('config', _handle_config)
 
+    def _handle_evolve(event):
+        """Force an evolution cycle regardless of vote count."""
+        nonlocal _vote_count
+        _vote_count = _votes_per_evolve  # pretend we have enough votes
+        _maybe_evolve()
+    orch.on_command('evolve', _handle_evolve)
+
     orch.start()
 
     # Feature logger (optional)
