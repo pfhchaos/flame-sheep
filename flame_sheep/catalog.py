@@ -29,6 +29,7 @@ def render_genome_to_image(genome, size: int = 512,
 
     Returns uint8 array of shape (size, size, 4).
     """
+    import warnings
     from .variations import apply_variations_cpu
 
     bound = 4.0
@@ -45,25 +46,28 @@ def render_genome_to_image(genome, size: int = 512,
     x, y, c = 0.0, 0.0, 0.5
     fuse = 20
 
-    for i in range(fuse + n_iterations):
-        r = rng.random()
-        tidx = min(int(np.searchsorted(cumw, r)), len(genome.transforms) - 1)
-        tr = genome.transforms[tidx]
-        a, b, cc, d, e, f = tr.affine
-        nx = a * x + b * y + cc
-        ny = d * x + e * y + f
-        nx, ny = apply_variations_cpu(tr.variations, nx, ny)
-        x, y = nx, ny
-        c = (c + tr.color) * 0.5
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        for i in range(fuse + n_iterations):
+            r = rng.random()
+            tidx = min(int(np.searchsorted(cumw, r)), len(genome.transforms) - 1)
+            tr = genome.transforms[tidx]
+            a, b, cc, d, e, f = tr.affine
+            nx = a * x + b * y + cc
+            ny = d * x + e * y + f
+            nx, ny = apply_variations_cpu(tr.variations, nx, ny)
+            x, y = nx, ny
+            c = (c + tr.color) * 0.5
 
-        if not (np.isfinite(x) and np.isfinite(y)):
-            break
+            if not (np.isfinite(x) and np.isfinite(y)):
+                x, y, c = 0.0, 0.0, 0.5  # reset walker instead of breaking
+                continue
 
-        if i >= fuse and abs(x) < bound and abs(y) < bound:
-            gx = max(0, min(size - 1, int((x + bound) / (2 * bound) * size)))
-            gy = max(0, min(size - 1, int((y + bound) / (2 * bound) * size)))
-            hit_grid[gy, gx] += 1.0
-            color_grid[gy, gx] += c
+            if i >= fuse and abs(x) < bound and abs(y) < bound:
+                gx = max(0, min(size - 1, int((x + bound) / (2 * bound) * size)))
+                gy = max(0, min(size - 1, int((y + bound) / (2 * bound) * size)))
+                hit_grid[gy, gx] += 1.0
+                color_grid[gy, gx] += c
 
     # Tone map: log density display
     if hit_grid.max() == 0:
