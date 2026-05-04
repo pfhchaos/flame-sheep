@@ -95,7 +95,7 @@ def render_genome_to_image(genome, size: int = 512,
     return img
 
 
-def render_genome_gpu(genome, ctx, size: int = 1024, n_frames: int = 30,
+def render_genome_gpu(genome, ctx, size: int = 2048, n_frames: int = 60,
                       brightness: float = 6.0,
                       _renderer_cache: dict = {}) -> np.ndarray | None:
     """Render a genome using the GPU pipeline. Returns RGBA uint8 array or None.
@@ -167,7 +167,7 @@ def generate_catalog(
     output_dir: str | Path,
     n_genomes: int = 50,
     n_evolve: int = 3,
-    image_size: int = 512,
+    image_size: int = 2048,
     n_iterations: int = 200_000,
 ) -> None:
     """Generate a catalog of rendered genomes for evaluation.
