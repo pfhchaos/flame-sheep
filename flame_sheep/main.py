@@ -1150,6 +1150,14 @@ def main() -> None:
                         help='path for feature log (default: ~/.local/share/flame-sheep/features.jsonl)')
     parser.add_argument('--benchmark-variations', action='store_true',
                         help='benchmark each variation solo (GPU timing) and exit')
+    parser.add_argument('--render-catalog', type=str, metavar='DIR', default=None,
+                        help='generate genome catalog for evaluation (renders PNGs)')
+    parser.add_argument('--catalog-count', type=int, default=50,
+                        help='number of genomes to generate (default: 50)')
+    parser.add_argument('--catalog-evolve', type=int, default=3,
+                        help='evolution generations before rendering (default: 3)')
+    parser.add_argument('--import-catalog', type=str, metavar='DIR', default=None,
+                        help='import votes from sorted catalog (good/bad folders)')
     parser.add_argument('--spectrum-engine', choices=['octave_bank', 'cqt'],
                         default='cqt',
                         help='spectrum analysis engine (default: cqt)')
@@ -1205,6 +1213,17 @@ def main() -> None:
 
     if args.benchmark_variations:
         _run_variation_benchmark()
+        return
+
+    if args.render_catalog:
+        from .catalog import generate_catalog
+        generate_catalog(args.render_catalog, n_genomes=args.catalog_count,
+                         n_evolve=args.catalog_evolve)
+        return
+
+    if args.import_catalog:
+        from .catalog import import_catalog
+        import_catalog(args.import_catalog)
         return
 
     if args.generate_genomes or args.generate_palettes is not None or args.compose_loops is not None or args.evolve or args.stats:
