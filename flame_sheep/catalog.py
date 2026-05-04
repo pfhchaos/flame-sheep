@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 
 def render_genome_to_image(genome, size: int = 512,
-                           n_iterations: int = 200_000) -> np.ndarray:
+                           n_iterations: int = 2_000_000) -> np.ndarray:
     """Render a genome via CPU chaos game to an RGBA image.
 
     Returns uint8 array of shape (size, size, 4).
