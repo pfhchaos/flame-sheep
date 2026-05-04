@@ -95,6 +95,74 @@ def render_genome_to_image(genome, size: int = 512,
     return img
 
 
+def render_genome_gpu(genome, ctx, size: int = 1024, n_frames: int = 30,
+                      brightness: float = 6.0,
+                      _renderer_cache: dict = {}) -> np.ndarray | None:
+    """Render a genome using the GPU pipeline. Returns RGBA uint8 array or None.
+
+    Uses a headless moderngl context and the full FlameRenderer pipeline:
+    chaos game → histogram → tonemap → readback.
+
+    Caches the renderer to avoid recompiling shaders per genome.
+    """
+    from .renderer import FlameRenderer, Viewport, N_ITERS
+    import moderngl
+
+    cache_key = (id(ctx), size)
+    if cache_key not in _renderer_cache:
+        _renderer_cache[cache_key] = FlameRenderer(ctx, size, size)
+    renderer = _renderer_cache[cache_key]
+    renderer.upload_genome(genome)
+    renderer.reset_walkers()
+    renderer.blur_radius = 0  # no blur for catalog images
+
+    # Upload a flat audio texture (no audio reactivity for stills)
+    from flame_sheep_audio import N_BINS
+    renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
+
+    # Run multiple frames to accumulate density
+    for _ in range(n_frames):
+        renderer.clear_histogram()
+        renderer.dispatch_chaos_game(iterations=N_ITERS)
+        ctx.memory_barrier()
+
+    # Tonemap to FBO
+    fbo_tex = ctx.texture((size, size), components=4, dtype='f1')
+    fbo = ctx.framebuffer(color_attachments=[fbo_tex])
+    fbo.use()
+    ctx.viewport = (0, 0, size, size)
+
+    viewport = Viewport(0, 0, size, size)
+    renderer.palette_tex.use(location=0)
+    renderer.audio_tex.use(location=1)
+
+    p = renderer.tonemap_program
+    p['u_palette'] = 0
+    p['u_audio'] = 1
+    p['u_width'] = size
+    p['u_height'] = size
+    p['u_viewport_x'] = 0
+    p['u_viewport_y'] = 0
+    p['u_viewport_w'] = size
+    p['u_viewport_h'] = size
+    p['u_surface_w'] = size
+    p['u_surface_h'] = size
+    p['u_brightness'] = brightness
+
+    renderer.quad_vao.render(moderngl.TRIANGLES)
+
+    # Read back pixels
+    data = fbo.read(components=4)
+    img = np.frombuffer(data, dtype=np.uint8).reshape(size, size, 4)
+    # Flip vertically (OpenGL origin is bottom-left)
+    img = img[::-1].copy()
+
+    fbo.release()
+    fbo_tex.release()
+
+    return img
+
+
 def generate_catalog(
     output_dir: str | Path,
     n_genomes: int = 50,
@@ -156,28 +224,43 @@ def generate_catalog(
         genomes = [(gid, g) for _, gid, g in survivors] + children
         log.info(f'Evolution gen {gen + 1}: {len(genomes)} genomes')
 
+    # Create GPU context if available
+    gpu_ctx = None
+    try:
+        import moderngl
+        gpu_ctx = moderngl.create_standalone_context(require=430)
+        log.info('GPU rendering enabled')
+    except Exception as e:
+        log.info(f'GPU not available ({e}), using CPU renderer')
+
     # Render all survivors
     rendered = 0
     for gid, g in genomes:
         fitness = lib.genome_fitness(gid)
-        img = render_genome_to_image(g, size=image_size, n_iterations=n_iterations)
 
-        # Skip blank images
-        if img[:, :, 3].max() == 0:
+        if gpu_ctx is not None:
+            img = render_genome_gpu(g, gpu_ctx, size=image_size)
+        else:
+            img = render_genome_to_image(g, size=image_size, n_iterations=n_iterations)
+
+        if img is None or img[:, :, :3].max() == 0:
             continue
 
         filename = f'genome_{gid:04d}_f{fitness:.3f}.png'
         filepath = output / 'unsorted' / filename
 
-        # Save as PNG
         try:
             from PIL import Image
             Image.fromarray(img).save(filepath)
         except ImportError:
-            # Fallback: raw numpy save
             np.save(filepath.with_suffix('.npy'), img)
 
         rendered += 1
+        if rendered % 5 == 0:
+            log.info(f'Rendered {rendered}/{len(genomes)}...')
+
+    if gpu_ctx is not None:
+        gpu_ctx.release()
 
     log.info(f'Rendered {rendered} genomes to {output / "unsorted"}')
     log.info(f'Sort into good/ and bad/, then run --import-catalog')
