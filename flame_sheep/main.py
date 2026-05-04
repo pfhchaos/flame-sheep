@@ -705,9 +705,9 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             _votes_per_evolve = 3
         _evolving = True
         log.info(f'[evolve] starting evolution cycle {_evolve_count} in subprocess...')
-        import subprocess
+        import subprocess, sys as _sys
         proc = subprocess.Popen(
-            [sys.executable, '-m', 'flame_sheep', '--evolve', '--loop-length', str(6)],
+            [_sys.executable, '-m', 'flame_sheep', '--evolve', '--loop-length', str(6)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         )
         def _wait_evolve():
