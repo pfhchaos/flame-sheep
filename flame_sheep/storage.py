@@ -123,7 +123,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                  'edge_sharpness', 'contour_coherence',
                  'img_coverage', 'img_structural_edges', 'img_euclidean_edges',
                  'img_color_edges', 'img_color_regions',
-                 'img_color_coherence', 'img_color_variety'):
+                 'img_color_coherence', 'img_color_variety',
+                 'cl_coverage', 'cl_edge_sharpness', 'cl_symmetry_best',
+                 'cl_cluster_count', 'cl_dominance', 'cl_balance',
+                 'cluster_detail'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} REAL')
     if 'score_version' not in existing:
@@ -919,17 +922,21 @@ class Library:
         # Fractal dimension sweet spot: 1.5-1.8
         fd_score = max(0, 1.0 - abs(fractal_dim - 1.65) / 0.65)
 
-        # Image-based fitness when available (from GPU render).
-        # Euclidean color edge × coverage: color-agnostic structure metric.
-        # Palette preference belongs in palette fitness, not genome fitness.
-        img_fitness_row = self.conn.execute(
-            'SELECT img_euclidean_edges FROM genomes WHERE id = ?',
+        # Cluster-based fitness when available (from background scorer).
+        # Per-cluster symmetry × coverage × edges: +0.192 correlation.
+        cl_row = self.conn.execute(
+            'SELECT cl_coverage, cl_edge_sharpness, cl_symmetry_best, cl_dominance'
+            ' FROM genomes WHERE id = ?',
             (genome_id,),
         ).fetchone()
-        img_edges = img_fitness_row[0] if img_fitness_row and img_fitness_row[0] is not None else None
 
-        if img_edges is not None:
-            aesthetic = coverage_score * img_edges
+        if cl_row and cl_row[0] is not None:
+            cl_cov = cl_row[0] or 0
+            cl_edges = cl_row[1] or 0
+            cl_sym = cl_row[2] or 0
+            cl_dom = cl_row[3] or 0
+            eps = 0.01
+            aesthetic = cl_cov * (cl_edges + eps) * (cl_sym + eps)
         else:
             # Fallback to histogram-based (weak signal)
             eps = 0.01
