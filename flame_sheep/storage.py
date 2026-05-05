@@ -911,17 +911,17 @@ class Library:
         # Fractal dimension sweet spot: 1.5-1.8
         fd_score = max(0, 1.0 - abs(fractal_dim - 1.65) / 0.65)
 
-        # Weighted fitness
+        # Product fitness — non-compensatory, all metrics must be decent.
+        # Exponents act as weights: >1 = more important, <1 = less.
+        # edge_sharpness, contour_coherence, balance excluded:
+        # negatively correlated with user preference (272 ratings).
+        eps = 0.01
         aesthetic = (
-            coverage_score * 1.0
-            + entropy * 0.5
-            + color_entropy * 0.3
-            + balance * 0.5
-            + complexity * 0.8
-            + edge_sharpness * 1.0      # crisp filaments
-            + contour_coherence * 1.2    # structured edges
-            + symmetry_max * 0.8
-            + fd_score * 0.5
+            max(coverage_score, eps) ** 1.0
+            * max(color_entropy, eps) ** 0.8
+            * max(complexity, eps) ** 0.5
+            * max(symmetry_max, eps) ** 0.5
+            * max(fd_score, eps) ** 0.3
         )
 
         # User signal: net votes propagated from loop ratings
