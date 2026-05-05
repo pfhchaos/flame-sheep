@@ -266,6 +266,80 @@ def generate_catalog(
     log.info(f'Sort into good/ and bad/, then run --import-catalog')
 
 
+def render_unrated(
+    output_dir: str | Path,
+    image_size: int = 2048,
+    max_genomes: int = 100,
+) -> None:
+    """Render existing unrated genomes from the library for evaluation."""
+    from .storage import Library
+
+    output = Path(output_dir)
+    for subdir in ['unsorted', 'good', 'meh', 'bad']:
+        (output / subdir).mkdir(parents=True, exist_ok=True)
+
+    lib = Library()
+
+    # Find genomes with no catalog votes
+    rows = lib.conn.execute('''
+        SELECT g.id FROM genomes g
+        WHERE g.coverage IS NOT NULL
+          AND g.id NOT IN (
+              SELECT target_id FROM ratings
+              WHERE target_type = 'genome' AND source = 'catalog'
+          )
+        ORDER BY RANDOM()
+        LIMIT ?
+    ''', (max_genomes,)).fetchall()
+
+    genome_ids = [r[0] for r in rows]
+    log.info(f'Found {len(genome_ids)} unrated genomes')
+
+    if not genome_ids:
+        log.info('All genomes have been rated!')
+        return
+
+    # GPU context
+    gpu_ctx = None
+    try:
+        import moderngl
+        gpu_ctx = moderngl.create_standalone_context(require=430)
+        log.info('GPU rendering enabled')
+    except Exception:
+        log.info('GPU not available, using CPU renderer')
+
+    rendered = 0
+    for gid in genome_ids:
+        genome = lib.load_genome(gid)
+        fitness = lib.genome_fitness(gid)
+
+        if gpu_ctx is not None:
+            img = render_genome_gpu(genome, gpu_ctx, size=image_size)
+        else:
+            img = render_genome_to_image(genome, size=image_size)
+
+        if img is None or img[:, :, :3].max() == 0:
+            continue
+
+        filename = f'genome_{gid:04d}_f{fitness:.3f}.png'
+        filepath = output / 'unsorted' / filename
+
+        try:
+            from PIL import Image
+            Image.fromarray(img).save(filepath)
+        except ImportError:
+            np.save(filepath.with_suffix('.npy'), img)
+
+        rendered += 1
+        if rendered % 10 == 0:
+            log.info(f'Rendered {rendered}/{len(genome_ids)}...')
+
+    if gpu_ctx is not None:
+        gpu_ctx.release()
+
+    log.info(f'Rendered {rendered} unrated genomes to {output / "unsorted"}')
+
+
 def import_catalog(catalog_dir: str | Path) -> None:
     """Import votes from sorted catalog folders.
 
