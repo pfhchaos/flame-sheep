@@ -277,7 +277,7 @@ def import_catalog(catalog_dir: str | Path) -> None:
     catalog = Path(catalog_dir)
     lib = Library()
 
-    for folder, rating in [('good', 1), ('bad', -1)]:
+    for folder, rating in [('good', 1), ('meh', 0), ('bad', -1)]:
         folder_path = catalog / folder
         if not folder_path.exists():
             continue
