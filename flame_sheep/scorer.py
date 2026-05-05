@@ -65,6 +65,10 @@ def _scorer_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                            radial=?, periodic=?, fractal_dim=?,
                            self_similarity=?, detail_sensitivity=?,
                            centroid_x=?, centroid_y=?,
+                           cl_coverage=?, cl_edge_sharpness=?,
+                           cl_symmetry_best=?, cl_cluster_count=?,
+                           cl_dominance=?, cl_balance=?,
+                           cluster_detail=?,
                            score_version=?
                        WHERE id=?''',
                     (scores['coverage'], scores['entropy'],
@@ -78,6 +82,13 @@ def _scorer_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                      scores['self_similarity'], scores['detail_sensitivity'],
                      scores.get('centroid_offset_x'),
                      scores.get('centroid_offset_y'),
+                     scores.get('cl_coverage'),
+                     scores.get('cl_edge_sharpness'),
+                     scores.get('cl_symmetry_best'),
+                     scores.get('cl_cluster_count'),
+                     scores.get('cl_dominance'),
+                     scores.get('cl_balance'),
+                     scores.get('cluster_detail'),
                      BackgroundScorer.SCORE_VERSION,
                      gid),
                 )
@@ -156,6 +167,13 @@ def _score_genome(params_json: str) -> dict[str, float]:
     scores = _score_from_histogram(hit_grid, color_grid)
     scores.update(_score_symmetry(hit_grid))
 
+    # Cluster-based scoring on color index
+    from flame_sheep.cluster_scorer import score_from_clusters
+    from flame_sheep.config import cfg
+    store_detail = getattr(getattr(cfg, 'scoring', None), 'store_cluster_detail', False)
+    cl_scores = score_from_clusters(hit_grid, color_grid, store_detail=store_detail)
+    scores.update(cl_scores)
+
     # Density sensitivity: how much does the image change with more iterations?
     if hit_grid_half is not None and hit_grid.sum() > 0 and hit_grid_half.sum() > 0:
         # Normalize both to distributions
@@ -178,7 +196,7 @@ class BackgroundScorer:
     """Load-aware background process that scores unscored genomes."""
 
     # Bump this when the scoring algorithm changes to re-score all genomes
-    SCORE_VERSION = 3  # v3: added edge_sharpness, contour_coherence
+    SCORE_VERSION = 4  # v4: added cluster-based scoring (cl_*)
 
     LOAD_THRESHOLD = 6.0
     LOAD_CHECK_INTERVAL = 10.0
