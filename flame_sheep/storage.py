@@ -120,7 +120,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     for col in ('symmetry_max', 'rotational', 'reflective', 'radial', 'periodic',
                  'fractal_dim', 'self_similarity', 'detail_sensitivity',
                  'centroid_x', 'centroid_y',
-                 'edge_sharpness', 'contour_coherence'):
+                 'edge_sharpness', 'contour_coherence',
+                 'img_coverage', 'img_structural_edges', 'img_euclidean_edges',
+                 'img_color_edges', 'img_color_regions',
+                 'img_color_coherence', 'img_color_variety'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} REAL')
     if 'score_version' not in existing:
@@ -916,21 +919,24 @@ class Library:
         # Fractal dimension sweet spot: 1.5-1.8
         fd_score = max(0, 1.0 - abs(fractal_dim - 1.65) / 0.65)
 
-        # Product fitness — non-compensatory, all metrics must be decent.
-        # Exponents act as weights: >1 = more important, <1 = less.
-        # Only metrics with positive correlation on clean catalog votes:
-        #   coverage_sweetspot: +0.139
-        #   color_entropy: +0.093
-        # Excluded (negative correlation on 226 catalog ratings):
-        #   symmetry (-0.131) — metric is flawed, measures histogram
-        #     symmetry not perceived structural order
-        #   fd_score (-0.167) — sweet spot assumption may be wrong
-        #   edge_sharpness, contour_coherence, balance, complexity
-        eps = 0.01
-        aesthetic = (
-            max(coverage_score, eps) ** 1.0
-            * max(color_entropy, eps) ** 1.0
-        )
+        # Image-based fitness when available (from GPU render).
+        # Euclidean color edge × coverage: color-agnostic structure metric.
+        # Palette preference belongs in palette fitness, not genome fitness.
+        img_fitness_row = self.conn.execute(
+            'SELECT img_euclidean_edges FROM genomes WHERE id = ?',
+            (genome_id,),
+        ).fetchone()
+        img_edges = img_fitness_row[0] if img_fitness_row and img_fitness_row[0] is not None else None
+
+        if img_edges is not None:
+            aesthetic = coverage_score * img_edges
+        else:
+            # Fallback to histogram-based (weak signal)
+            eps = 0.01
+            aesthetic = (
+                max(coverage_score, eps) ** 1.0
+                * max(color_entropy, eps) ** 1.0
+            )
 
         # User signal: net votes propagated from loop ratings
         votes = self.net_rating('genome', genome_id)
