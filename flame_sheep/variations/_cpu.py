@@ -67,7 +67,10 @@ def apply_variations_cpu(variations: np.ndarray, x: float, y: float) -> tuple[fl
         w = float(variations[var_idx])
         if w < 1e-6:
             continue
-        vx, vy = apply_variation_cpu(var_idx, x, y, w)
+        try:
+            vx, vy = apply_variation_cpu(var_idx, x, y, w)
+        except (OverflowError, ValueError):
+            vx, vy = w * x, w * y  # fallback to linear
         rx += vx
         ry += vy
     return rx, ry
@@ -151,9 +154,9 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
     elif var_idx == 26: # rings2
         val = _current_var_params.get('rings2_val', 0.01)
         _dx = val * val + 1e-6
-        if r < 1e-10:
+        if r < 1e-10 or not np.isfinite(r):
             return w*x, w*y
-        k = int((r / _dx + 1) / 2)
+        k = int(min(1e6, (r / _dx + 1) / 2))
         rr = 2.0 - _dx * (k * 2.0 / r + 1.0)
         return w*rr*x, w*rr*y
     elif var_idx == 46: # rings3
