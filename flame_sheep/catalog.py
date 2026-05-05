@@ -290,8 +290,8 @@ def import_catalog(catalog_dir: str | Path) -> None:
                 try:
                     gid = int(parts[1])
                     lib.conn.execute(
-                        'INSERT INTO ratings (target_type, target_id, rating) VALUES (?, ?, ?)',
-                        ('genome', gid, rating),
+                        'INSERT INTO ratings (target_type, target_id, rating, source) VALUES (?, ?, ?, ?)',
+                        ('genome', gid, rating, 'catalog'),
                     )
                     log.info(f'Voted {rating:+d} on genome #{gid}')
                 except (ValueError, Exception) as e:

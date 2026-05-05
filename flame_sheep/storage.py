@@ -110,6 +110,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_ratings_target ON ratings(target_type, target_id);
     ''')
 
+    # Add source column to ratings if it doesn't exist
+    rating_cols = {r[1] for r in conn.execute('PRAGMA table_info(ratings)').fetchall()}
+    if 'source' not in rating_cols:
+        conn.execute("ALTER TABLE ratings ADD COLUMN source TEXT DEFAULT 'loop'")
+
     # Add symmetry columns if they don't exist (no migration system yet)
     existing = {r[1] for r in conn.execute('PRAGMA table_info(genomes)').fetchall()}
     for col in ('symmetry_max', 'rotational', 'reflective', 'radial', 'periodic',
@@ -850,16 +855,16 @@ class Library:
                 (target_type, target_id),
             )
         self.conn.execute(
-            'INSERT INTO ratings (target_type, target_id, rating) VALUES (?, ?, ?)',
-            (target_type, target_id, rating),
+            'INSERT INTO ratings (target_type, target_id, rating, source) VALUES (?, ?, ?, ?)',
+            (target_type, target_id, rating, 'direct'),
         )
         # Propagate loop votes to constituent genomes
         if target_type == 'loop':
             genome_ids = self.loop_genome_ids(target_id)
             for gid in genome_ids:
                 self.conn.execute(
-                    'INSERT INTO ratings (target_type, target_id, rating) VALUES (?, ?, ?)',
-                    ('genome', gid, rating),
+                    'INSERT INTO ratings (target_type, target_id, rating, source) VALUES (?, ?, ?, ?)',
+                    ('genome', gid, rating, 'loop'),
                 )
         self.conn.commit()
 
