@@ -1156,6 +1156,8 @@ def main() -> None:
                         help='number of genomes to generate (default: 50)')
     parser.add_argument('--catalog-evolve', type=int, default=3,
                         help='evolution generations before rendering (default: 3)')
+    parser.add_argument('--render-unrated', type=str, metavar='DIR', default=None,
+                        help='render existing unrated genomes for evaluation')
     parser.add_argument('--import-catalog', type=str, metavar='DIR', default=None,
                         help='import votes from sorted catalog (good/bad folders)')
     parser.add_argument('--spectrum-engine', choices=['octave_bank', 'cqt'],
@@ -1219,6 +1221,11 @@ def main() -> None:
         from .catalog import generate_catalog
         generate_catalog(args.render_catalog, n_genomes=args.catalog_count,
                          n_evolve=args.catalog_evolve)
+        return
+
+    if args.render_unrated:
+        from .catalog import render_unrated
+        render_unrated(args.render_unrated)
         return
 
     if args.import_catalog:
