@@ -161,9 +161,9 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         n = _current_var_params.get('rings3_n', 0.0)
         _dx = val * val + 1e-6
         c = 2.0 * (_dx - _dx * _dx)
-        if r < 1e-10:
+        if r < 1e-10 or not np.isfinite(r):
             return w*x, w*y
-        k = int((r / _dx + 1) / 2)
+        k = int(min(1e6, (r / _dx + 1) / 2))
         rr = 2.0 - _dx * (k * 2.0 / r + 1.0) - n * (k * c - 1.0) / r
         return w*rr*x, w*rr*y
     elif var_idx == 47: # mobius — (az+b)/(cz+d), can blow up at poles
