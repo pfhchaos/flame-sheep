@@ -209,6 +209,9 @@ class SpectrumPanel(Panel):
         self._x_widths: np.ndarray | None = None
 
     def update(self, snap: AudioSnapshot, timeline: TimelineBuffer, dt: float) -> None:
+        if len(snap.spectrum) != len(self._spectrum):
+            self._x_positions = None  # invalidate cache on size change
+            self._x_widths = None
         self._spectrum = snap.spectrum
         self._stability = snap.stability
 
@@ -223,17 +226,32 @@ class SpectrumPanel(Panel):
         return plot_x + t * plot_w
 
     def _ensure_x_cache(self, plot_x: float, plot_w: float) -> None:
-        """Precompute log-frequency x positions and widths for FFT bins."""
+        """Precompute x positions and widths for spectrum bins.
+
+        Adapts to bin count: 108 CQT bins get evenly spaced (already log),
+        1025 FFT bins get log-frequency mapping.
+        """
         if self._x_positions is not None:
             return
-        min_log = math.log2(20.0)
-        max_log = math.log2(24000.0)
-        log_range = max_log - min_log
-        freqs = np.maximum(FREQS[1:], 20.0)
-        log_f = np.log2(freqs)
-        t = (log_f - min_log) / log_range
+        n_bins = len(self._spectrum)
+        if n_bins < 2:
+            self._x_positions = np.array([plot_x], dtype=np.float32)
+            self._x_widths = np.array([plot_w], dtype=np.float32)
+            return
+
+        if n_bins <= 200:
+            # CQT/octave bank: bins are already log-spaced, just evenly distribute
+            t = np.linspace(0, 1, n_bins - 1)
+        else:
+            # FFT: map linear bins to log-frequency positions
+            min_log = math.log2(20.0)
+            max_log = math.log2(24000.0)
+            log_range = max_log - min_log
+            freqs = np.maximum(FREQS[1:n_bins], 20.0)
+            log_f = np.log2(freqs)
+            t = (log_f - min_log) / log_range
+
         self._x_positions = (plot_x + t * plot_w).astype(np.float32)
-        # Widths: distance to next bin's x position
         widths = np.diff(self._x_positions, append=self._x_positions[-1] + 1.0)
         self._x_widths = np.maximum(widths, 1.0).astype(np.float32)
 
