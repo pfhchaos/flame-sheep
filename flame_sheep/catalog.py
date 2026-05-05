@@ -246,6 +246,16 @@ def generate_catalog(
         if img is None or img[:, :, :3].max() == 0:
             continue
 
+        # Score the rendered image and store in DB
+        from .image_scorer import score_from_image
+        img_scores = score_from_image(img)
+        score_cols = ', '.join(f'{k}=?' for k in img_scores)
+        lib.conn.execute(
+            f'UPDATE genomes SET {score_cols} WHERE id=?',
+            (*img_scores.values(), gid),
+        )
+        lib.conn.commit()
+
         filename = f'genome_{gid:04d}_f{fitness:.3f}.png'
         filepath = output / 'unsorted' / filename
 
