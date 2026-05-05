@@ -918,15 +918,18 @@ class Library:
 
         # Product fitness — non-compensatory, all metrics must be decent.
         # Exponents act as weights: >1 = more important, <1 = less.
-        # edge_sharpness, contour_coherence, balance excluded:
-        # negatively correlated with user preference (272 ratings).
+        # Only metrics with positive correlation on clean catalog votes:
+        #   coverage_sweetspot: +0.139
+        #   color_entropy: +0.093
+        # Excluded (negative correlation on 226 catalog ratings):
+        #   symmetry (-0.131) — metric is flawed, measures histogram
+        #     symmetry not perceived structural order
+        #   fd_score (-0.167) — sweet spot assumption may be wrong
+        #   edge_sharpness, contour_coherence, balance, complexity
         eps = 0.01
         aesthetic = (
             max(coverage_score, eps) ** 1.0
-            * max(color_entropy, eps) ** 0.8
-            * max(complexity, eps) ** 0.5
-            * max(symmetry_max, eps) ** 0.5
-            * max(fd_score, eps) ** 0.3
+            * max(color_entropy, eps) ** 1.0
         )
 
         # User signal: net votes propagated from loop ratings
