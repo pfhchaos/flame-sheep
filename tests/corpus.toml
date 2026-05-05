@@ -154,6 +154,109 @@ name = "toby fox - MEGALOVANIA"
 tags = ["electronic", "game_ost"]
 expected_bpm = 120
 
+# --- Little brother's challenge tracks ---
+[[sources.osu.beatmaps]]
+id = 417408
+name = "M2U & NICODE - Lune"
+tags = ["electronic", "melodic"]
+expected_bpm = 174
+
+[[sources.osu.beatmaps]]
+id = 559466
+name = "lapix - Morning Glow (feat. kradness)"
+tags = ["edm", "vocal", "future_bass"]
+expected_bpm = 170
+
+[[sources.osu.beatmaps]]
+id = 564406
+name = "gmtn. (witch's slave) - Illegal Paradise (Grimoire rmx)"
+tags = ["electronic", "fast", "complex"]
+expected_bpm = 200
+
+[[sources.osu.beatmaps]]
+id = 714024
+name = "LeaF - MEPHISTO"
+tags = ["electronic", "complex", "tempo_changes"]
+expected_bpm = 200
+
+[[sources.osu.beatmaps]]
+id = 908811
+name = "M2U - Mare Maris"
+tags = ["electronic", "melodic"]
+expected_bpm = 160
+
+[[sources.osu.beatmaps]]
+id = 1085630
+name = "S.F.A - Dienos Advento"
+tags = ["electronic", "fast"]
+expected_bpm = 190
+
+[[sources.osu.beatmaps]]
+id = 1396650
+name = "Origami Angel - 666 Flags"
+tags = ["rock", "punk", "energetic"]
+expected_bpm = 180
+
+[[sources.osu.beatmaps]]
+id = 1579161
+name = "senya - Iro wa Jou e to Izanau"
+tags = ["vocal", "jpop", "touhou"]
+expected_bpm = 140
+
+[[sources.osu.beatmaps]]
+id = 1752046
+name = "MisomyL - Ring ! Run ! Nyan!!"
+tags = ["electronic", "fast", "chaotic"]
+expected_bpm = 200
+
+[[sources.osu.beatmaps]]
+id = 1770671
+name = "Tokyomane - Mall"
+tags = ["electronic", "chill"]
+expected_bpm = 130
+
+[[sources.osu.beatmaps]]
+id = 1777892
+name = "Polyphia - Playing God"
+tags = ["prog", "math_rock", "guitar", "complex"]
+expected_bpm = 145
+
+[[sources.osu.beatmaps]]
+id = 2127556
+name = "cygnus - Book of Dark Magic"
+tags = ["electronic", "complex"]
+expected_bpm = 180
+
+[[sources.osu.beatmaps]]
+id = 2296556
+name = "DM DOKURO - Universal Collapse (Cut Ver.)"
+tags = ["electronic", "extreme", "tempo_changes", "wall_of_sound"]
+expected_bpm = 240
+
+[[sources.osu.beatmaps]]
+id = 2393002
+name = "Pratanallis feat. KOKOMI - Marguerite"
+tags = ["vocal", "jpop"]
+expected_bpm = 140
+
+[[sources.osu.beatmaps]]
+id = 2412252
+name = "WangleLine - Super Kitten Travel Hex"
+tags = ["electronic", "chaotic"]
+expected_bpm = 180
+
+[[sources.osu.beatmaps]]
+id = 2429129
+name = "AAAA - pastel planet"
+tags = ["electronic", "ambient"]
+expected_bpm = 150
+
+[[sources.osu.beatmaps]]
+id = 61590
+name = "M2U - Gypsy Tronic"
+tags = ["electronic", "melodic"]
+expected_bpm = 150
+
 # --- YouTube clips (edge cases, speech, problem samples) ---
 [sources.youtube]
 cache_dir = "~/.cache/flame-sheep/corpus/youtube"
