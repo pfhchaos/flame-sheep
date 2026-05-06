@@ -2,7 +2,7 @@
 
 Decouples visualization axes from specific band names. Axes consume
 abstract roles (downbeat, backbeat, subdivision, energy) rather than
-hardcoded band names like 'kick' or 'snare'.
+hardcoded band names like 'low' or 'mid'.
 
 Currently uses static config-based mapping. Designed to be replaced
 with automatic role detection (based on tempo + onset density) when
@@ -37,9 +37,9 @@ ALL_ROLES = (DOWNBEAT, BACKBEAT, SUBDIVISION, ENERGY)
 
 # Default mapping (matches the default BandConfig)
 DEFAULT_MAPPING = {
-    DOWNBEAT: 'kick',
-    BACKBEAT: 'snare',
-    SUBDIVISION: 'hihat',
+    DOWNBEAT: 'low',
+    BACKBEAT: 'mid',
+    SUBDIVISION: 'high',
     ENERGY: 'subbass',
 }
 

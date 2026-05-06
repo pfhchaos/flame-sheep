@@ -32,9 +32,6 @@ layout(std430, binding = 0) readonly buffer Histogram {
 // Palette texture: 256x1 RGB — maps color index (0..1) to RGB
 uniform sampler2D u_palette;
 
-// Audio spectrum texture: N_BINS x 1 R — for reactive effects
-uniform sampler2D u_audio;
-
 uniform int u_width;          // full virtual canvas render width
 uniform int u_height;         // full virtual canvas render height
 uniform int u_viewport_x;     // this window's left edge in canvas pixels
@@ -124,22 +121,6 @@ void main() {
     // This controls how "neon" vs "soft" the flame looks.
     // --------------------------------------------------------
     vec3 final_color = mix(vec3(alpha), palette_color * alpha, u_vibrancy);
-
-    // --------------------------------------------------------
-    // Optional: audio reactivity
-    //
-    // Sample spectrum at a frequency corresponding to this
-    // pixel's distance from center — makes the flame "pulse"
-    // with the music without changing the geometry.
-    // --------------------------------------------------------
-    vec2 centered_uv = v_uv - 0.5;
-    float dist_from_center = length(centered_uv) * 2.0;  // 0..1
-    float audio_energy = texture(u_audio, vec2(dist_from_center * 0.5, 0.5)).r;
-
-    // Subtle brightness pulse — scale by 1.0 + small audio fraction
-    // Keeps the effect tasteful rather than strobing
-    float audio_boost = 1.0 + audio_energy * 0.15;
-    final_color *= audio_boost;
 
     frag_color = vec4(clamp(final_color, 0.0, 1.0), 1.0);
 }

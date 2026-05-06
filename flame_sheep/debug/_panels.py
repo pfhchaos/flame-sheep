@@ -69,20 +69,20 @@ class Panel:
 
 
 class HeaderPanel(Panel):
-    """Mode, BPM, confidence, percussiveness."""
+    """Mode, BPM, confidence, novelty."""
 
     def __init__(self) -> None:
         super().__init__(height=28)
         self._mode = 'idle'
         self._bpm = 0.0
         self._confidence = 0.0
-        self._percussiveness = 0.0
+        self._novelty = 0.0
 
     def update(self, snap: AudioSnapshot, timeline: TimelineBuffer, dt: float) -> None:
         self._mode = snap.mode
         self._bpm = snap.effective_bpm
         self._confidence = snap.tempo_confidence
-        self._percussiveness = snap.percussiveness
+        self._novelty = snap.spectral_novelty
 
     def render(self, draw: SolidRenderer, text: TextRenderer,
                x: int, y: int, w: int, h: int) -> None:
@@ -107,12 +107,21 @@ class HeaderPanel(Panel):
         draw.rect(conf_x, y + 9, bar_w * self._confidence, 10, _BLUE)
         text.draw(f'{self._confidence:.2f}', conf_x + bar_w + 4, y + 9, _FG)
 
-        # Percussiveness bar
-        perc_x = conf_x + bar_w + 40
-        text.draw('perc', perc_x, y + 9, _DIM)
-        perc_x += 30
-        draw.rect(perc_x, y + 9, bar_w, 10, _DIM)
-        draw.rect(perc_x, y + 9, bar_w * self._percussiveness, 10, _ORANGE)
+        # Spectral novelty bar (speech/music discriminator)
+        nov_x = conf_x + bar_w + 40
+        text.draw('nov', nov_x, y + 9, _DIM)
+        nov_x += 25
+        draw.rect(nov_x, y + 9, bar_w, 10, _DIM)
+        # Color: green below music threshold, yellow in between, red above speech threshold
+        nov_clamped = min(1.0, self._novelty / 0.4)
+        if self._novelty < 0.14:
+            nov_color = _GREEN
+        elif self._novelty < 0.18:
+            nov_color = _YELLOW
+        else:
+            nov_color = _RED
+        draw.rect(nov_x, y + 9, bar_w * nov_clamped, 10, nov_color)
+        text.draw(f'{self._novelty:.3f}', nov_x + bar_w + 4, y + 9, _FG)
 
 
 class TimelinePanel(Panel):

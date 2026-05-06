@@ -53,9 +53,9 @@ class Orchestrator:
         self.audio: AudioProcessor | SyntheticAudioProcessor
         if test_audio:
             self.audio = SyntheticAudioProcessor(
-                kick_interval=0.5,
-                snare_interval=1.0,
-                hihat_interval=0.25,
+                low_interval=0.5,
+                mid_interval=1.0,
+                high_interval=0.25,
                 clock=clock,
             )
         else:

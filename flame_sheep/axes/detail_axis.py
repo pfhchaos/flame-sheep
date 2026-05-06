@@ -19,7 +19,7 @@ class DetailAxis:
     """Energy -> iterations. Quiet=sparse, loud=dense and detailed."""
 
     def __init__(self, role: RoleMapper, min_iters: int = 100, max_iters: int = 500,
-                 rms_scale: float = 0.01) -> None:
+                 rms_scale: float = 0.07) -> None:
         self.enabled = True
         self._role = role
         self.min_iters = min_iters
@@ -28,8 +28,7 @@ class DetailAxis:
         self.iterations = min_iters
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
-        energy = max(self._role.band_state(audio, ENERGY).slow_harmonic_rms,
-                     audio.centroid_harmonic_rms)
+        energy = audio.centroid_harmonic_rms
         t = min(energy / self.rms_scale, 1.0) ** 0.5
         self.iterations = int(self.min_iters + t * (self.max_iters - self.min_iters))
 

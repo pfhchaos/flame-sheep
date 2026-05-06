@@ -23,30 +23,30 @@ class TestSpectrum:
         assert proc.spectrum.max() < 1.0
 
     def test_sine_peaks_at_correct_bin(self):
-        """A 100Hz sine should produce a peak in the kick band."""
+        """A 100Hz sine should produce a peak in the low band."""
         proc = make_processor()
         feed_audio(proc, make_sine(100, FFT_SIZE * 4))
         proc.process()
         freqs   = np.fft.rfftfreq(FFT_SIZE, 1.0 / SAMPLE_RATE)
-        kick_mask = (freqs >= 20) & (freqs < 150)
-        snare_mask = (freqs >= 150) & (freqs < 800)
-        kick_energy  = proc.spectrum[kick_mask].max()
-        snare_energy = proc.spectrum[snare_mask].max()
-        assert kick_energy > snare_energy * 5, \
-            f"100Hz sine should dominate kick band: kick={kick_energy:.1f} snare={snare_energy:.1f}"
+        low_mask = (freqs >= 20) & (freqs < 150)
+        mid_mask = (freqs >= 150) & (freqs < 800)
+        low_energy  = proc.spectrum[low_mask].max()
+        mid_energy = proc.spectrum[mid_mask].max()
+        assert low_energy > mid_energy * 5, \
+            f"100Hz sine should dominate low band: low={low_energy:.1f} mid={mid_energy:.1f}"
 
-    def test_high_freq_sine_peaks_in_hihat(self):
-        """A 10kHz sine should produce a peak in the hihat band."""
+    def test_high_freq_sine_peaks_in_high(self):
+        """A 10kHz sine should produce a peak in the high band."""
         proc = make_processor()
         feed_audio(proc, make_sine(10000, FFT_SIZE * 4))
         proc.process()
         freqs      = np.fft.rfftfreq(FFT_SIZE, 1.0 / SAMPLE_RATE)
-        hihat_mask = freqs >= 8000
-        kick_mask  = (freqs >= 20) & (freqs < 150)
-        hihat_energy = proc.spectrum[hihat_mask].max()
-        kick_energy  = proc.spectrum[kick_mask].max()
-        assert hihat_energy > kick_energy * 5, \
-            f"10kHz sine should dominate hihat band"
+        high_mask = freqs >= 8000
+        low_mask  = (freqs >= 20) & (freqs < 150)
+        high_energy = proc.spectrum[high_mask].max()
+        low_energy  = proc.spectrum[low_mask].max()
+        assert high_energy > low_energy * 5, \
+            f"10kHz sine should dominate high band"
 
     def test_spectrum_length(self):
         proc = make_processor()
@@ -89,7 +89,7 @@ class TestBeatDetection:
             f"sustained tone should not re-trigger after cooldown, got {subsequent_hits} hits"
 
     def test_kick_frequency_triggers_kick_band(self):
-        """Strong 80Hz onset should trigger kick, not snare or hihat."""
+        """Strong 80Hz onset should trigger low, not mid or high."""
         proc      = make_processor()
         silence   = make_silence(FFT_SIZE)
         kick_tone = make_sine(80, FFT_SIZE, amplitude=0.9)
@@ -97,8 +97,8 @@ class TestBeatDetection:
         feed_audio(proc, kick_tone)
         events = proc.process()
         kinds  = [e.kind for e in events]
-        assert 'kick' in kinds, f"80Hz onset should trigger kick, got {kinds}"
-        assert 'hihat' not in kinds, f"80Hz should not trigger hihat, got {kinds}"
+        assert 'low' in kinds, f"80Hz onset should trigger low, got {kinds}"
+        assert 'high' not in kinds, f"80Hz should not trigger high, got {kinds}"
 
     def test_beat_energy_normalized(self):
         """Beat energy should be in 0..1 range."""

@@ -140,8 +140,8 @@ class TestConfigUserOverride:
             # Overridden value
             assert c.genome.drift_morph_speed == 99.0
             # Non-overridden value preserved
-            assert c.genome.kick_morph_pulse == \
-                DEFAULTS['genome']['kick_morph_pulse']
+            assert c.genome.low_morph_pulse == \
+                DEFAULTS['genome']['low_morph_pulse']
             # Other section untouched
             assert c.zoom.boost_max == DEFAULTS['zoom']['boost_max']
         finally:

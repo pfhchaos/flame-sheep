@@ -4,7 +4,7 @@ Regression tests for FlameSheepCore — beat handling, genome swaps, morph state
 Uses SyntheticAudioProcessor with a fake clock — all tests run instantly,
 no real-time sleeps needed.
 
-Default pattern: kick=0.5s, snare=1.0s, hihat=0.25s (120 BPM, 4/4).
+Default pattern: low=0.5s, mid=1.0s, high=0.25s (120 BPM, 4/4).
 """
 
 import numpy as np
@@ -79,8 +79,8 @@ class TestGenomeSwapRate:
         assert swaps >= 1, \
             f"Expected at least 1 genome swap in 10s, got {swaps}"
 
-    def test_not_every_kick_swaps(self, core, clock):
-        """Genome should NOT swap on every single kick."""
+    def test_not_every_low_swaps(self, core, clock):
+        """Genome should NOT swap on every single low-band onset."""
         dt = 1.0 / 60
         swaps = 0
         prev_target = id(core.target_genome)
@@ -93,7 +93,7 @@ class TestGenomeSwapRate:
                 prev_target = id(core.target_genome)
 
         assert swaps < 6, \
-            f"Too many swaps ({swaps}) — looks like every kick is swapping"
+            f"Too many swaps ({swaps}) — looks like every low-band onset is swapping"
 
 
 # ----------------------------------------------------------------
@@ -188,7 +188,7 @@ class TestMorphInvariants:
 
 
 # ----------------------------------------------------------------
-# Zoom pulse (hihat axis)
+# Zoom pulse (high-band axis)
 # ----------------------------------------------------------------
 
 class TestZoomPulse:
@@ -202,11 +202,11 @@ class TestZoomPulse:
             assert core.zoom_boost <= core._zoom_axis.ZOOM_BOOST_MAX + 1e-6, \
                 f"zoom_boost {core.zoom_boost} exceeds max {core._zoom_axis.ZOOM_BOOST_MAX}"
 
-    def test_zoom_decays_without_hihats(self, core, clock):
-        """zoom_boost should decay toward 0 between hihat events."""
+    def test_zoom_decays_without_highs(self, core, clock):
+        """zoom_boost should decay toward 0 between high-band events."""
         dt = 1.0 / 60
 
-        # Tick until we get a zoom boost (hihat every 0.25s)
+        # Tick until we get a zoom boost (high-band every 0.25s)
         boosted = False
         for _ in range(int(2.0 * 60)):
             clock.advance(dt)
@@ -216,24 +216,24 @@ class TestZoomPulse:
                 break
 
         if not boosted:
-            pytest.skip("No hihat fired in warmup period")
+            pytest.skip("No high-band event fired in warmup period")
 
         # Tick a few frames without advancing clock much — zoom should decay
         peak = core.zoom_boost
         for _ in range(10):
-            _tick(core, dt)  # don't advance clock — no new hihats
+            _tick(core, dt)  # don't advance clock — no new high-band events
         assert core.zoom_boost < peak, \
             f"zoom_boost should decay: was {peak}, now {core.zoom_boost}"
 
 
 # ----------------------------------------------------------------
-# Palette axis (snare)
+# Palette axis (mid-band)
 # ----------------------------------------------------------------
 
 class TestPaletteAxis:
 
-    def test_palette_changes_on_snare_interval(self, core, clock):
-        """Palette target should change ~every 1.0s (snare interval)."""
+    def test_palette_changes_on_mid_interval(self, core, clock):
+        """Palette target should change ~every 1.0s (mid-band interval)."""
         dt = 1.0 / 60
         palette_changes = 0
         prev_palette = core.palette_target.copy()

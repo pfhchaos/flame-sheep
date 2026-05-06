@@ -134,11 +134,9 @@ def render_genome_gpu(genome, ctx, size: int = 2048, n_frames: int = 60,
 
     viewport = Viewport(0, 0, size, size)
     renderer.palette_tex.use(location=0)
-    renderer.audio_tex.use(location=1)
 
     p = renderer.tonemap_program
     p['u_palette'] = 0
-    p['u_audio'] = 1
     p['u_width'] = size
     p['u_height'] = size
     p['u_viewport_x'] = 0

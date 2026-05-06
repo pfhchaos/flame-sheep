@@ -1,6 +1,6 @@
-"""Tests for PaletteAxis — snare-driven palette morphing.
+"""Tests for PaletteAxis — mid-band-driven palette morphing.
 
-Covers morph progression, snare event handling, density scaling,
+Covers morph progression, mid-band event handling, density scaling,
 and palette selection behavior.
 """
 
@@ -19,9 +19,9 @@ def _make_palette(seed=0):
     return _random_palette(np.random.default_rng(seed))
 
 
-def _audio(events=None, snare_density=0.0, **kw):
+def _audio(events=None, mid_density=0.0, **kw):
     bands = _default_bands()
-    bands['snare'] = BandState(onset_density=snare_density)
+    bands['mid'] = BandState(onset_density=mid_density)
     return AudioState(events=events or [], bands=bands, **kw)
 
 
@@ -69,26 +69,26 @@ class TestPaletteMorph:
         assert not np.array_equal(frame.palette, p2)
 
 
-class TestSnareEvents:
-    """Verify snare events trigger palette changes."""
+class TestMidEvents:
+    """Verify mid-band events trigger palette changes."""
 
-    def test_snare_resets_morph(self):
+    def test_mid_resets_morph(self):
         axis = PaletteAxis(_make_palette(), role=_default_role)
         # Advance morph a bit
         axis.palette_t = 0.5
         axis.palette_speed = 0.001
 
-        snare = BeatEvent(kind='snare', energy=0.7)
-        audio = _audio(events=[snare])
+        mid = BeatEvent(kind='mid', energy=0.7)
+        audio = _audio(events=[mid])
         axis.tick(audio, dt=1/60, clock=0.0)
 
-        # Snare should reset t to 0 and boost speed
+        # Mid-band event should reset t to 0 and boost speed
         assert axis.palette_t == 0.0
         assert axis.palette_speed > 0.001
 
-    def test_snare_speed_scales_with_energy(self):
-        low_energy = BeatEvent(kind='snare', energy=0.2)
-        high_energy = BeatEvent(kind='snare', energy=0.9)
+    def test_mid_speed_scales_with_energy(self):
+        low_energy = BeatEvent(kind='mid', energy=0.2)
+        high_energy = BeatEvent(kind='mid', energy=0.9)
 
         axis_low = PaletteAxis(_make_palette(), role=_default_role)
         axis_low.tick(_audio(events=[low_energy]), dt=1/60, clock=0.0)
@@ -98,21 +98,21 @@ class TestSnareEvents:
 
         assert axis_high.palette_speed > axis_low.palette_speed
 
-    def test_non_snare_events_ignored(self):
+    def test_non_mid_events_ignored(self):
         axis = PaletteAxis(_make_palette(), role=_default_role)
         axis.palette_t = 0.3
         original_t = axis.palette_t
 
-        kick = BeatEvent(kind='kick', energy=0.9)
-        audio = _audio(events=[kick])
+        low = BeatEvent(kind='low', energy=0.9)
+        audio = _audio(events=[low])
         axis.tick(audio, dt=1/60, clock=0.0)
 
-        # Kick should not reset palette — only snare does
+        # Low should not reset palette — only mid does
         assert axis.palette_t > 0  # advanced slightly, but not reset
 
     def test_speed_decays_toward_drift(self):
         axis = PaletteAxis(_make_palette(), role=_default_role)
-        axis.palette_speed = 0.1  # boosted from a snare
+        axis.palette_speed = 0.1  # boosted from a mid-band event
         audio = _audio()
         speeds = []
         for _ in range(50):
@@ -123,20 +123,20 @@ class TestSnareEvents:
 
 
 class TestDensityScaling:
-    """Verify onset density dampens snare response."""
+    """Verify onset density dampens mid-band response."""
 
     def test_high_density_reduces_speed(self):
-        snare = BeatEvent(kind='snare', energy=0.7)
+        mid = BeatEvent(kind='mid', energy=0.7)
 
         axis_low_density = PaletteAxis(_make_palette(), role=_default_role)
         axis_low_density.tick(
-            _audio(events=[snare], snare_density=0.0),
+            _audio(events=[mid], mid_density=0.0),
             dt=1/60, clock=0.0)
         speed_low = axis_low_density.palette_speed
 
         axis_high_density = PaletteAxis(_make_palette(), role=_default_role)
         axis_high_density.tick(
-            _audio(events=[snare], snare_density=10.0),
+            _audio(events=[mid], mid_density=10.0),
             dt=1/60, clock=0.0)
         speed_high = axis_high_density.palette_speed
 

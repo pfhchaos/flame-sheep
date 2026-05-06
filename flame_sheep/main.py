@@ -117,8 +117,8 @@ class FlameSheepCore:
     @dataclass
     class FrameState:
         """Per-frame output from tick() — three orthogonal axes + audio."""
-        genome: 'Genome'          # kick axis: transforms, zoom, rotation, center (includes zoom pulse)
-        palette: np.ndarray       # snare axis: 256x3 float32 color palette
+        genome: 'Genome'          # low axis: transforms, zoom, rotation, center (includes zoom pulse)
+        palette: np.ndarray       # mid axis: 256x3 float32 color palette
         spectrum: np.ndarray      # raw FFT spectrum for audio-reactive tonemap
         brightness: float         # RMS-driven brightness for tonemap
         iterations: int           # chaos game iterations — scales with bass energy
@@ -145,6 +145,7 @@ class FlameSheepCore:
             centroid_delta=snap.centroid_delta,
             centroid_rms=snap.centroid_rms,
             centroid_harmonic_rms=snap.centroid_harmonic_rms,
+            slow_centroid_harmonic_rms=snap.slow_centroid_harmonic_rms,
             percussiveness=snap.percussiveness,
             spectral_novelty=snap.spectral_novelty,
             section_change=snap.section_change,
@@ -153,6 +154,7 @@ class FlameSheepCore:
             tempo_confidence=snap.tempo_confidence,
             tempo_saturated=snap.tempo_saturated,
             break_intensity=snap.break_intensity,
+            mode=snap.mode,
         )
 
         # --- Mode transitions (detected by audio engine) ---

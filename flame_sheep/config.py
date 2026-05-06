@@ -28,12 +28,12 @@ DEFAULTS = {
     'genome': {
         'drift_morph_speed': 0.001,
         'density_morph_scale': 0.003,
-        'kick_morph_pulse': 0.008,
+        'low_morph_pulse': 0.008,
         'strong_beat_threshold': 2.0,
         'break_decay': 0.97,
         'density_damping': 0.3,
         'centroid_swap_threshold': 500.0,
-        'centroid_swap_perc_gate': 0.15,
+        'centroid_swap_density_gate': 0.5,   # low-band density below this enables centroid swap
     },
     'zoom': {
         'boost_max': 0.3,
@@ -44,6 +44,7 @@ DEFAULTS = {
     'palette': {
         'drift_morph_speed': 0.001,
         'density_damping': 0.2,
+        'centroid_swap_density_gate': 0.5,  # backbeat density below this enables centroid swap
     },
     'drift': {
         'rms_threshold': 0.0001,
@@ -53,9 +54,9 @@ DEFAULTS = {
         'cycles_per_loop': 3,
     },
     'roles': {
-        'downbeat': 'kick',
-        'backbeat': 'snare',
-        'subdivision': 'hihat',
+        'downbeat': 'low',
+        'backbeat': 'mid',
+        'subdivision': 'high',
         'energy': 'subbass',
     },
     'debug': {
@@ -128,7 +129,7 @@ class Config:
             cb()
 
     def __getattr__(self, name: str) -> Any:
-        # Delegate to namespace for dot access: cfg.detection.kick_threshold
+        # Delegate to namespace for dot access: cfg.detection.low_threshold
         return getattr(self._ns, name)
 
 

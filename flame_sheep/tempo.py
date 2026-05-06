@@ -2,7 +2,7 @@
 Tempo detection via onset IOI histogram.
 
 Algorithm:
-  1. Collect kick onset timestamps in a rolling window
+  1. Collect low-band onset timestamps in a rolling window
   2. Compute inter-onset intervals (IOIs)
   3. Histogram IOIs to find dominant periodicity → BPM estimate
   4. Track confidence via grid alignment testing
@@ -60,13 +60,13 @@ class TempoState:
 class TempoTracker:
     """IOI-based tempo tracker.
 
-    Collects kick onset timestamps, estimates BPM from inter-onset
+    Collects low-band onset timestamps, estimates BPM from inter-onset
     interval histograms, and tracks confidence via grid alignment.
     Does NOT gate events — all onsets pass through.
     """
 
     def __init__(self):
-        self._kick_times: deque[float] = deque(maxlen=IOI_WINDOW)
+        self._low_times: deque[float] = deque(maxlen=IOI_WINDOW)
         self._onset_count = 0
 
         self._bpm = 0.0
@@ -81,7 +81,7 @@ class TempoTracker:
 
     def reset(self):
         """Clear all state — call on song change."""
-        self._kick_times.clear()
+        self._low_times.clear()
         self._onset_count = 0
         self._bpm = 0.0
         self._beat_period = 0.0
@@ -105,21 +105,21 @@ class TempoTracker:
     def process_onset(self, kind: str, timestamp: float):
         """Process an onset event for tempo estimation.
 
-        Only kick onsets contribute to BPM estimation.
+        Only low-band onsets contribute to BPM estimation.
         All onsets are tested against the grid for confidence tracking.
 
-        NOTE: hardcodes 'kick' by name — requires a detection band named
-        'kick' to exist in BandConfig for tempo tracking to work.
+        NOTE: hardcodes 'low' by name — requires a detection band named
+        'low' to exist in BandConfig for tempo tracking to work.
         """
-        if kind == 'kick':
-            self._kick_times.append(timestamp)
+        if kind == 'low':
+            self._low_times.append(timestamp)
             self._onset_count += 1
 
             # Check for tempo saturation: many kicks but intervals too short
-            if len(self._kick_times) >= 4:
-                recent = sorted(self._kick_times)[-4:]
+            if len(self._low_times) >= 4:
+                recent = sorted(self._low_times)[-4:]
                 median_ioi = sorted(recent[i+1] - recent[i] for i in range(3))[1]
-                self._saturated = median_ioi < IOI_MIN and len(self._kick_times) >= MIN_ONSETS_FOR_ESTIMATE
+                self._saturated = median_ioi < IOI_MIN and len(self._low_times) >= MIN_ONSETS_FOR_ESTIMATE
 
             # Periodically estimate BPM from IOIs
             if (self._onset_count >= MIN_ONSETS_FOR_ESTIMATE
@@ -171,7 +171,7 @@ class TempoTracker:
         self._confidence = confidence
         self._has_hypothesis = True
 
-        recent = sorted(self._kick_times)[-16:]
+        recent = sorted(self._low_times)[-16:]
         if len(recent) < 2:
             self._last_beat_time = recent[-1] if recent else 0.0
             return
@@ -199,7 +199,7 @@ class TempoTracker:
 
     def _estimate_bpm_from_ioi(self) -> float:
         """Estimate BPM from inter-onset intervals of recent kicks."""
-        times = sorted(self._kick_times)
+        times = sorted(self._low_times)
         if len(times) < MIN_ONSETS_FOR_ESTIMATE:
             return 0.0
 

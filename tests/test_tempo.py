@@ -12,17 +12,17 @@ from flame_sheep.tempo import (
 
 def simulate_beats(tracker: TempoTracker, bpm: float, count: int,
                    start: float = 0.0):
-    """Simulate regular kick onsets at given BPM."""
+    """Simulate regular low-band onsets at given BPM."""
     interval = 60.0 / bpm
     for i in range(count):
         t = start + i * interval
-        tracker.process_onset('kick', t)
+        tracker.process_onset('low', t)
 
 
 def simulate_random_onsets(tracker: TempoTracker, count: int,
                            min_gap: float = 0.2, max_gap: float = 0.8,
                            seed: int = 42, start: float = 0.0):
-    """Simulate random-interval kick onsets."""
+    """Simulate random-interval low-band onsets."""
     import random
     random.seed(seed)
 
@@ -30,7 +30,7 @@ def simulate_random_onsets(tracker: TempoTracker, count: int,
     for _ in range(count):
         gap = random.uniform(min_gap, max_gap)
         t += gap
-        tracker.process_onset('kick', t)
+        tracker.process_onset('low', t)
 
 
 class TestTempoDetection:
@@ -114,28 +114,28 @@ class TestHighTempo:
         simulate_beats(tracker, 200, 40)
         assert _bpm_close(tracker.bpm, 200), f"Expected ~200 BPM, got {tracker.bpm}"
 
-    def test_eighth_note_kicks_no_double_time(self):
-        """Eighth-note kick pattern should still detect quarter-note tempo."""
+    def test_eighth_note_lows_no_double_time(self):
+        """Eighth-note low-band pattern should still detect quarter-note tempo."""
         tracker = TempoTracker()
         # 174 BPM eighth notes = onsets every 172ms
         eighth_interval = 60.0 / 174 / 2
         for i in range(60):
-            tracker.process_onset('kick', i * eighth_interval)
+            tracker.process_onset('low', i * eighth_interval)
         assert _bpm_close(tracker.bpm, 174), \
             f"Expected ~174 BPM, got {tracker.bpm} (octave error?)"
 
-    def test_dnb_kick_ghost_pattern(self):
-        """DnB kick + ghost kick pattern should detect correct BPM."""
+    def test_dnb_low_ghost_pattern(self):
+        """DnB low + ghost low pattern should detect correct BPM."""
         tracker = TempoTracker()
         beat_interval = 60.0 / 160
         for bar in range(10):
             base = bar * 4 * beat_interval
             # Kick on beat 1, ghost on 'and' of 1
-            tracker.process_onset('kick', base)
-            tracker.process_onset('kick', base + beat_interval * 0.5)
+            tracker.process_onset('low', base)
+            tracker.process_onset('low', base + beat_interval * 0.5)
             # Kick on beat 3, ghost on 'and' of 3
-            tracker.process_onset('kick', base + 2 * beat_interval)
-            tracker.process_onset('kick', base + 2.5 * beat_interval)
+            tracker.process_onset('low', base + 2 * beat_interval)
+            tracker.process_onset('low', base + 2.5 * beat_interval)
         assert tracker.bpm > 0, "Should estimate BPM from DnB pattern"
         assert _bpm_close(tracker.bpm, 160, tolerance=15), \
             f"Expected ~160 BPM, got {tracker.bpm}"
@@ -146,12 +146,12 @@ class TestHighTempo:
         time = 0.0
         bpm = 140.0
         for _ in range(200):
-            tracker.process_onset('kick', time)
+            tracker.process_onset('low', time)
             time += 60.0 / bpm
             bpm = min(200, 140 + (time / 20.0) * 60)
         # After ramp stabilizes at 200, should eventually lock
         for i in range(40):
-            tracker.process_onset('kick', time)
+            tracker.process_onset('low', time)
             time += 60.0 / 200
         assert _bpm_close(tracker.bpm, 200, tolerance=15), \
             f"Expected ~200 BPM after ramp, got {tracker.bpm}"
@@ -167,7 +167,7 @@ class TestEdgeCases:
 
     def test_single_onset(self):
         tracker = TempoTracker()
-        tracker.process_onset('kick', 0.0)
+        tracker.process_onset('low', 0.0)
         assert tracker.confidence == 0.0
 
     def test_reset_clears_all(self):

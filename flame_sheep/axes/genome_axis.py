@@ -49,8 +49,8 @@ class GenomeAxis:
         return cfg.genome.drift_morph_speed
 
     @property
-    def KICK_MORPH_PULSE(self) -> float:
-        return cfg.genome.kick_morph_pulse
+    def LOW_MORPH_PULSE(self) -> float:
+        return cfg.genome.low_morph_pulse
 
     @property
     def BREAK_DECAY(self) -> float:
@@ -152,22 +152,34 @@ class GenomeAxis:
             elif event.kind == "song_start":
                 self._handle_song_start()
 
-        # In low-percussiveness mode, a large centroid shift triggers a swap
-        if (
-            audio.percussiveness < cfg.genome.centroid_swap_perc_gate
-            and audio.centroid_delta > self.CENTROID_SWAP_THRESHOLD
-            and self.morph_t > 0.3
-        ):
-            self.current_genome = self.current_genome.lerp(
-                self.target_genome, self.morph_t
-            )
-            self._swap_next_genome()
-            self.morph_t = 0.0
-            self.morph_speed = 0.02
-            log.debug(
-                f"[centroid swap] delta={audio.centroid_delta:.0f}Hz "
-                f"perc={audio.percussiveness:.2f}"
-            )
+        # Energy mode: centroid derivative drives morph speed continuously
+        # (no discrete swaps — just smooth drift tracking tonal movement)
+        if audio.mode == 'energy':
+            # Gate centroid by energy — ignore delta when centroid RMS is low
+            # (noise floor wandering, consonant bursts)
+            if audio.centroid_harmonic_rms > 0.01:
+                centroid_drive = min(1.0, abs(audio.centroid_delta) / 1000.0)
+                self.morph_speed = self.DRIFT_MORPH_SPEED + centroid_drive * 0.003
+            else:
+                self.morph_speed = self.DRIFT_MORPH_SPEED
+        else:
+            # Beat mode fallback: low-band density swap on large centroid shift
+            low_density = self._role.band_state(audio, DOWNBEAT).onset_density
+            if (
+                low_density < cfg.genome.centroid_swap_density_gate
+                and audio.centroid_delta > self.CENTROID_SWAP_THRESHOLD
+                and self.morph_t > 0.3
+            ):
+                self.current_genome = self.current_genome.lerp(
+                    self.target_genome, self.morph_t
+                )
+                self._swap_next_genome()
+                self.morph_t = 0.0
+                self.morph_speed = 0.02
+                log.debug(
+                    f"[centroid swap] delta={audio.centroid_delta:.0f}Hz "
+                    f"low_density={low_density:.2f}"
+                )
 
         # Break damping: exponential slowdown during breaks, symmetric recovery
         if audio.break_intensity > 0:
@@ -175,12 +187,9 @@ class GenomeAxis:
         else:
             self._break_damping = min(1.0, self._break_damping / self.BREAK_DECAY)
 
-        # Scale morph speed by percussiveness and break damping
-        perc_scale = 0.2 + 0.8 * min(1.0, audio.percussiveness / 0.5)
-
-        # Advance morph
+        # Advance morph — speed set by low-band events, damped by breaks
         self.morph_t = min(
-            1.0, self.morph_t + self.morph_speed * perc_scale * self._break_damping
+            1.0, self.morph_t + self.morph_speed * self._break_damping
         )
 
         if self.morph_t >= 1.0:
@@ -218,7 +227,7 @@ class GenomeAxis:
         downbeat_density = self._role.band_state(audio, DOWNBEAT).onset_density if audio else 0.0
         density_scale = 1.0 / (1.0 + downbeat_density * self.DENSITY_DAMPING)
 
-        # Section change pending → consume on any kick (don't wait for strong beat)
+        # Section change pending → consume on any low-band onset (don't wait for strong beat)
         if self._section_change_pending and self._lib is not None:
             self._section_change_pending = False
             self._section_cooldown = 0  # start cooldown
@@ -247,7 +256,7 @@ class GenomeAxis:
             # Normal downbeat — pulse morph speed (scaled by density)
             self.morph_speed = min(
                 0.15,
-                self.morph_speed + event.energy * self.KICK_MORPH_PULSE * density_scale,
+                self.morph_speed + event.energy * self.LOW_MORPH_PULSE * density_scale,
             )
             log.debug(f"[downbeat]  +{since:.3f}s  energy={event.energy:.2f}")
 
@@ -266,14 +275,15 @@ class GenomeAxis:
     def accept_handoff(self, genome: Genome, loop_id: int | None = None) -> None:
         """Receive genome from drift mode on transition back to active."""
         self.current_genome = genome
-        self.target_genome = genome
         self.morph_t = 0.0
         self.morph_speed = self.DRIFT_MORPH_SPEED
         self._recent_downbeat_energy = 0.5
         self._break_damping = 1.0
         if loop_id is not None and loop_id != self.active_loop_id:
             self.load_loop(loop_id)
-        self._prefetch_genome()
+        # Prefetch a target so morphing can begin immediately
+        # (don't set target = current, that freezes until first beat)
+        self._swap_next_genome()
 
     def force_swap(self) -> None:
         """Immediately swap to a new genome."""

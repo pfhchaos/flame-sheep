@@ -38,6 +38,13 @@ layout(std430, binding = 0) buffer Histogram {
     uint histogram[];  // length = width * height * 2
 };
 
+// Per-pixel per-transform hit counts for cluster scoring.
+// Layout: [pixel_0_t0, pixel_0_t1, ..., pixel_0_t5, pixel_1_t0, ...]
+// Length = width * height * MAX_TRANSFORMS
+layout(std430, binding = 7) buffer TransformHits {
+    uint transform_hits[];
+};
+
 // ------------------------------------------------------------
 // Walker state SSBO — each walker has its own (x, y, color)
 // Persists between dispatches so walkers stay on the attractor
@@ -182,6 +189,7 @@ void main() {
         uint n_pixels = uint(u_width * u_height);
         atomicAdd(histogram[idx],            1u);                          // hit_count
         atomicAdd(histogram[n_pixels + idx], uint(pc * float(COLOR_SCALE))); // color_acc
+        atomicAdd(transform_hits[idx * uint(MAX_TRANSFORMS) + uint(tidx)], 1u);
     }
 
     // Save walker state for next dispatch

@@ -40,24 +40,50 @@ from tests.corpus.metrics import onset_precision_recall
 
 
 # Available components
+try:
+    from flame_sheep_audio._cqt_engine import CqtEngine as _CqtEngine
+except ImportError:
+    _CqtEngine = None
+
 ENGINES = {
     'fft': SpectrumEngine,
     'octave_bank': OctaveBankEngine,
 }
+if _CqtEngine is not None:
+    ENGINES['cqt'] = _CqtEngine
 
 STABILITY_METHODS = ['ema', 'median', 'shape']
 
-ONSET_WEIGHTS = ['raw', 'percussive']
+ONSET_WEIGHTS = ['raw', 'percussive', 'complex_diff', 'csd_percussive',
+                 'hpss_raw', 'hpss_csd']
 
-# osu! tracks for beat detection eval
-BEAT_TRACKS = [
-    (387700, 'Megalovania'),
-    (163112, 'My Love'),
-    (522857, 'Shelter'),
-    (399358, 'Silhouette'),
-    (158023, 'Everything Will Freeze'),
-    (68893, 'River Flows In You'),
-]
+def _load_beat_tracks() -> list[tuple[int, str]]:
+    """Load osu! beatmap tracks from corpus.toml."""
+    corpus_path = Path(__file__).resolve().parent / 'corpus.toml'
+    if corpus_path.exists():
+        import tomllib
+        with open(corpus_path, 'rb') as f:
+            corpus = tomllib.load(f)
+        tracks = []
+        for bm in corpus.get('sources', {}).get('osu', {}).get('beatmaps', []):
+            tid = bm.get('id')
+            name = bm.get('name', f'track-{tid}')
+            if isinstance(tid, int):
+                tracks.append((tid, name))
+        if tracks:
+            return tracks
+    # Fallback to hardcoded list
+    return [
+        (387700, 'Megalovania'),
+        (163112, 'My Love'),
+        (522857, 'Shelter'),
+        (399358, 'Silhouette'),
+        (158023, 'Everything Will Freeze'),
+        (68893, 'River Flows In You'),
+    ]
+
+
+BEAT_TRACKS = _load_beat_tracks()
 
 
 @dataclass
@@ -90,6 +116,18 @@ def _run_pipeline(audio: np.ndarray, engine_cls, stability_method: str,
 
     a_w = A_WEIGHTS if freqs is None else a_weight_curve(freqs)
 
+    # Complex spectral difference transform (replaces flux with phase-aware flux)
+    csd = None
+    if onset_weight in ('complex_diff', 'csd_percussive', 'hpss_csd'):
+        from flame_sheep_audio.hpss import ComplexSpectralDiffTransform
+        csd = ComplexSpectralDiffTransform()
+
+    # HPSS percussive transform for hpss_* modes
+    use_hpss = onset_weight in ('hpss_raw', 'hpss_csd')
+    if use_hpss:
+        from flame_sheep_audio.hpss import PercussiveTransform
+        perc_transform = PercussiveTransform()
+
     est_onsets = []
     now = 0.0
     for i in range(len(audio) // HOP_SIZE):
@@ -97,12 +135,25 @@ def _run_pipeline(audio: np.ndarray, engine_cls, stability_method: str,
         if len(chunk) < HOP_SIZE:
             break
         frame = engine.push_hop(chunk)
+
+        # Apply complex spectral diff before anything else
+        if csd is not None:
+            frame = csd(frame)
+
         stab.update(frame.magnitude)
         energy.update(frame.magnitude, frame.flux, stability=stab)
-        events = det.detect(frame)
 
-        # Onset strength: raw or percussive-weighted
-        if onset_weight == 'percussive':
+        # Apply HPSS percussive filtering before beat detection
+        if use_hpss:
+            mask = stab.stability_per_bin()
+            det_frame = perc_transform.apply(frame, mask)
+        else:
+            det_frame = frame
+
+        events = det.detect(det_frame)
+
+        # Onset strength: raw, percussive-weighted, complex_diff, or both
+        if onset_weight in ('percussive', 'csd_percussive'):
             perc_w = np.sqrt(1.0 - stab.stability_per_bin())
             onset_str = float(np.dot(frame.flux * perc_w, a_w))
         else:
