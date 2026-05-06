@@ -127,6 +127,11 @@ class FlameRenderer:
         self.histogram_buf = self.ctx.buffer(histogram_data.tobytes())
         self.histogram_buf.bind_to_storage_buffer(0)
 
+        # Per-transform hit counts SSBO (binding=7)
+        xform_hits_data = np.zeros(n_pixels * MAX_TRANSFORMS, dtype=np.uint32)
+        self.transform_hits_buf = self.ctx.buffer(xform_hits_data.tobytes())
+        self.transform_hits_buf.bind_to_storage_buffer(7)
+
         # Downsampled histogram for symmetry scoring (binding=6)
         self._ds_w = min(256, w)
         self._ds_h = min(256, h)
@@ -232,6 +237,12 @@ class FlameRenderer:
         self.clear_shader.run(group_x=groups)
         self.ctx.memory_barrier()
 
+    def clear_transform_hits(self) -> None:
+        """Zero the per-transform hit counts buffer."""
+        n = self.canvas_w * self.canvas_h * MAX_TRANSFORMS
+        self.transform_hits_buf.write(np.zeros(n, dtype=np.uint32).tobytes())
+        self.ctx.memory_barrier()
+
     def dispatch_chaos_game(self, iterations: int = N_ITERS) -> None:
         self.compute_shader['u_iterations'] = iterations
         groups = N_WALKERS // 64
@@ -274,11 +285,9 @@ class FlameRenderer:
             self.ctx.viewport = (0, 0, surface_w, surface_h)
 
             self.palette_tex.use(location=0)
-            self.audio_tex.use(location=1)
 
             p = self.tonemap_program
             p['u_palette']    = 0
-            p['u_audio']      = 1
             p['u_width']      = self.canvas_w
             p['u_height']     = self.canvas_h
             p['u_viewport_x'] = viewport.x
@@ -299,11 +308,9 @@ class FlameRenderer:
         self.ctx.viewport = (0, 0, surface_w, surface_h)
 
         self.palette_tex.use(location=0)
-        self.audio_tex.use(location=1)
 
         p = self.tonemap_program
         p['u_palette']    = 0
-        p['u_audio']      = 1
         p['u_width']      = self.canvas_w
         p['u_height']     = self.canvas_h
         p['u_viewport_x'] = viewport.x
@@ -348,6 +355,14 @@ class FlameRenderer:
         hit_counts = raw[:n_pixels].reshape(self.canvas_h, self.canvas_w)
         color_accs = raw[n_pixels:].reshape(self.canvas_h, self.canvas_w)
         return hit_counts, color_accs
+
+    def transform_hits_data(self) -> np.ndarray:
+        """Read back per-transform hit counts.
+
+        Returns shape (canvas_h, canvas_w, MAX_TRANSFORMS) uint32.
+        """
+        raw = np.frombuffer(self.transform_hits_buf.read(), dtype=np.uint32)
+        return raw.reshape(self.canvas_h, self.canvas_w, MAX_TRANSFORMS)
 
     def histogram_data_coarse(self) -> np.ndarray:
         """Downsample hit_counts on the GPU, read back ~256KB instead of ~38MB.

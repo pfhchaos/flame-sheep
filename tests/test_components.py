@@ -27,7 +27,7 @@ from flame_sheep_audio.mode import ModeDetector, Mode
 
 from .conftest import trivial_genome
 
-_default_role = RoleMapper()  # uses default mapping: kick→downbeat, snare→backbeat, etc.
+_default_role = RoleMapper()  # uses default mapping: low→downbeat, mid→backbeat, etc.
 
 
 def _audio(events=None, rms=0.0, harmonic_rms=0.0, breaking=False,
@@ -124,12 +124,12 @@ class TestFluxBeatDetector:
         """Create a SpectrumFrame with strong flux in a specific band."""
         flux = np.zeros(N_BINS, dtype=np.float32)
         freqs = np.fft.rfftfreq(FFT_SIZE, 1.0 / SAMPLE_RATE)
-        if band == 'kick':
+        if band == 'low':
             flux[(freqs >= 50) & (freqs < 100)] = 1.0
-        elif band == 'snare':
+        elif band == 'mid':
             flux[(freqs >= 300) & (freqs < 1000)] = 0.5
-            flux[(freqs >= 1000) & (freqs < 3000)] = 0.5  # snare confirm
-        elif band == 'hihat':
+            flux[(freqs >= 1000) & (freqs < 3000)] = 0.5  # mid-band confirm
+        elif band == 'high':
             flux[freqs >= 8000] = 0.3
         return SpectrumFrame(
             magnitude=flux,  # magnitude doesn't matter for detection
@@ -150,28 +150,28 @@ class TestFluxBeatDetector:
 
     def test_no_events_without_warmup(self):
         det = FluxBeatDetector()
-        events = det.detect(self._make_onset_frame('kick'))
+        events = det.detect(self._make_onset_frame('low'))
         assert len(events) == 0  # needs 10 frames of history
 
     def test_kick_detected_after_warmup(self):
         det = FluxBeatDetector()
         self._warmup(det)
-        events = det.detect(self._make_onset_frame('kick'))
+        events = det.detect(self._make_onset_frame('low'))
         kinds = [e.kind for e in events]
-        assert 'kick' in kinds
+        assert 'low' in kinds
 
     def test_cooldown_prevents_refire(self):
         det = FluxBeatDetector()
         self._warmup(det)
-        det.detect(self._make_onset_frame('kick'))  # fires
-        events = det.detect(self._make_onset_frame('kick'))  # should be cooled down
-        kicks = [e for e in events if e.kind == 'kick']
+        det.detect(self._make_onset_frame('low'))  # fires
+        events = det.detect(self._make_onset_frame('low'))  # should be cooled down
+        kicks = [e for e in events if e.kind == 'low']
         assert len(kicks) == 0
 
     def test_reset_bands(self):
         det = FluxBeatDetector(adaptive=True)
         self._warmup(det)
-        det.detect(self._make_onset_frame('kick'))
+        det.detect(self._make_onset_frame('low'))
         det.reset_bands()
         assert det.adaptive_bands is not None
         for ab in det.adaptive_bands.values():
@@ -181,7 +181,7 @@ class TestFluxBeatDetector:
     def test_energy_in_range(self):
         det = FluxBeatDetector()
         self._warmup(det)
-        events = det.detect(self._make_onset_frame('kick'))
+        events = det.detect(self._make_onset_frame('low'))
         for e in events:
             assert 0.0 <= e.energy <= 1.0
 
@@ -233,14 +233,14 @@ class TestRoleMapper:
 
     def test_default_mapping(self):
         rm = RoleMapper()
-        assert rm.band_for_role('downbeat') == 'kick'
-        assert rm.band_for_role('backbeat') == 'snare'
-        assert rm.band_for_role('subdivision') == 'hihat'
+        assert rm.band_for_role('downbeat') == 'low'
+        assert rm.band_for_role('backbeat') == 'mid'
+        assert rm.band_for_role('subdivision') == 'high'
         assert rm.band_for_role('energy') == 'subbass'
 
     def test_role_for_event(self):
         rm = RoleMapper()
-        event = BeatEvent(kind='kick', energy=1.0)
+        event = BeatEvent(kind='low', energy=1.0)
         assert rm.role_for_event(event) == 'downbeat'
 
     def test_custom_mapping(self):
@@ -261,17 +261,17 @@ class TestZoomAxisUnit:
 
     def test_hihat_adds_boost(self):
         axis = ZoomAxis(role=_default_role)
-        axis.tick(_audio(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
+        axis.tick(_audio(events=[BeatEvent('high', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost > 0
 
     def test_non_hihat_ignored(self):
         axis = ZoomAxis(role=_default_role)
-        axis.tick(_audio(events=[BeatEvent('kick', 1.0)], rms=0.0), 1/60, 0.0)
+        axis.tick(_audio(events=[BeatEvent('low', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost == 0.0
 
     def test_boost_decays(self):
         axis = ZoomAxis(role=_default_role)
-        axis.tick(_audio(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
+        axis.tick(_audio(events=[BeatEvent('high', 1.0)], rms=0.0), 1/60, 0.0)
         peak = axis.zoom_boost
         axis.tick(_audio(rms=0.0), 1/60, 0.0)  # no events, just decay
         assert axis.zoom_boost < peak
@@ -279,7 +279,7 @@ class TestZoomAxisUnit:
     def test_boost_bounded(self):
         axis = ZoomAxis(role=_default_role)
         for _ in range(100):
-            axis.tick(_audio(events=[BeatEvent('hihat', 1.0)], rms=0.0), 1/60, 0.0)
+            axis.tick(_audio(events=[BeatEvent('high', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost <= axis.ZOOM_BOOST_MAX
 
 
@@ -348,10 +348,10 @@ class TestGenomeAxisUnit:
         axis = self._make_axis()
         # Build up low energy average with quiet kicks
         for i in range(10):
-            axis.tick(_audio(events=[BeatEvent('kick', 0.2)]), 1/60, float(i))
+            axis.tick(_audio(events=[BeatEvent('low', 0.2)]), 1/60, float(i))
         initial_target = id(axis.target_genome)
-        # One loud kick should trigger a swap
-        axis.tick(_audio(events=[BeatEvent('kick', 1.0)]), 1/60, 20.0)
+        # One loud low-band onset should trigger a swap
+        axis.tick(_audio(events=[BeatEvent('low', 1.0)]), 1/60, 20.0)
         assert id(axis.target_genome) != initial_target
 
     def test_even_kicks_no_swap(self):
@@ -360,17 +360,17 @@ class TestGenomeAxisUnit:
         initial_target = id(axis.target_genome)
         # 10 kicks all at same energy
         for i in range(10):
-            axis.tick(_audio(events=[BeatEvent('kick', 0.5)]), 1/60, float(i))
+            axis.tick(_audio(events=[BeatEvent('low', 0.5)]), 1/60, float(i))
         # No swap — energy never exceeds threshold
         assert id(axis.target_genome) == initial_target
 
     def test_density_drives_morph_speed(self):
         axis = self._make_axis()
         # Low density → slow baseline
-        axis.tick(_audio(onset_density={'kick': 1.0, 'snare': 0, 'hihat': 0}), 1/60, 0.0)
+        axis.tick(_audio(onset_density={'low': 1.0, 'mid': 0, 'high': 0}), 1/60, 0.0)
         slow_speed = axis.morph_speed
         # High density → faster baseline
-        axis.tick(_audio(onset_density={'kick': 5.0, 'snare': 0, 'hihat': 0}), 1/60, 1.0)
+        axis.tick(_audio(onset_density={'low': 5.0, 'mid': 0, 'high': 0}), 1/60, 1.0)
         fast_speed = axis.morph_speed
         assert fast_speed > slow_speed
 
@@ -759,9 +759,9 @@ class TestOnsetDensityTracker:
         for i in range(100):
             t = i * 0.01
             if i % 10 == 0:
-                dt.process_onset('kick', t)
+                dt.process_onset('low', t)
             dt.update(t)
-        assert dt.densities['kick'] > 5.0
+        assert dt.densities['low'] > 5.0
 
     def test_density_decays_without_kicks(self):
         dt = OnsetDensityTracker()
@@ -769,36 +769,36 @@ class TestOnsetDensityTracker:
         for i in range(100):
             t = i * 0.01
             if i % 10 == 0:
-                dt.process_onset('kick', t)
+                dt.process_onset('low', t)
             dt.update(t)
-        high = dt.densities['kick']
+        high = dt.densities['low']
         # No more kicks, keep updating
         for i in range(200):
             dt.update(1.0 + i * 0.01)
-        assert dt.densities['kick'] < high * 0.5
+        assert dt.densities['low'] < high * 0.5
 
     def test_per_band_independence(self):
         dt = OnsetDensityTracker()
         for i in range(10):
-            dt.process_onset('kick', i * 0.1)
+            dt.process_onset('low', i * 0.1)
         for i in range(5):
-            dt.process_onset('hihat', i * 0.05)
+            dt.process_onset('high', i * 0.05)
         dt.update(1.0)
-        assert dt.densities['kick'] > 0
-        assert dt.densities['hihat'] > 0
-        assert dt.densities['snare'] == 0.0
+        assert dt.densities['low'] > 0
+        assert dt.densities['high'] > 0
+        assert dt.densities['mid'] == 0.0
 
     def test_delta_positive_during_accelerando(self):
         dt = OnsetDensityTracker()
         # Slow kicks for 2 seconds
         for i in range(4):
-            dt.process_onset('kick', i * 0.5)
+            dt.process_onset('low', i * 0.5)
         dt.update(2.0)
         # Fast kicks for next second
         for i in range(10):
-            dt.process_onset('kick', 2.0 + i * 0.1)
+            dt.process_onset('low', 2.0 + i * 0.1)
         dt.update(3.0)
-        assert dt.density_deltas['kick'] > 0
+        assert dt.density_deltas['low'] > 0
 
     def test_delta_near_zero_at_steady_rate(self):
         dt = OnsetDensityTracker()
@@ -806,19 +806,19 @@ class TestOnsetDensityTracker:
         for i in range(500):
             t = i * 0.01
             if i % 25 == 0:  # every 250ms = 4/s
-                dt.process_onset('kick', t)
+                dt.process_onset('low', t)
             dt.update(t)
-        assert abs(dt.density_deltas['kick']) < 1.0
+        assert abs(dt.density_deltas['low']) < 1.0
 
     def test_reset_clears_state(self):
         dt = OnsetDensityTracker()
         for i in range(10):
-            dt.process_onset('kick', i * 0.1)
+            dt.process_onset('low', i * 0.1)
         dt.update(1.0)
-        assert dt.densities['kick'] > 0
+        assert dt.densities['low'] > 0
         dt.reset()
-        assert dt.densities['kick'] == 0.0
-        assert dt.density_deltas['kick'] == 0.0
+        assert dt.densities['low'] == 0.0
+        assert dt.density_deltas['low'] == 0.0
 
 
 # -------------------------------------------------------------------
@@ -831,7 +831,7 @@ class TestMagnitudeStability:
         ms = MagnitudeStability()
         # Feed constant magnitude for many frames → high stability
         mag = np.zeros(N_BINS, dtype=np.float32)
-        mag[2:5] = 0.5  # constant energy in kick band
+        mag[2:5] = 0.5  # constant energy in low band
         for _ in range(100):
             ms.update(mag)
         mask = np.zeros(N_BINS, dtype=bool)
@@ -891,13 +891,13 @@ class TestDropDetector:
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert not dd.breaking
 
-    def test_no_break_on_first_kicks(self):
+    def test_no_break_on_first_lows(self):
         dd = DropDetector()
         dd._warmup_frames = 999
-        kick = [BeatEvent('kick', 1.0)]
-        # Only a few kicks — below MIN_KICKS_BEFORE_DROP
+        low = [BeatEvent('low', 1.0)]
+        # Only a few low-band onsets — below MIN_LOWS_BEFORE_DROP
         for _ in range(5):
-            dd.detect(kick, 1.0, 120.0, False, 1/60)
+            dd.detect(low, 1.0, 120.0, False, 1/60)
         for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert not dd.breaking
@@ -905,41 +905,41 @@ class TestDropDetector:
     def test_break_activates_after_quiet(self):
         dd = DropDetector()
         dd._warmup_frames = 999
-        kick = [BeatEvent('kick', 1.0)]
+        low = [BeatEvent('low', 1.0)]
         for _ in range(20):
-            dd.detect(kick, 1.0, 120.0, False, 1/60)
+            dd.detect(low, 1.0, 120.0, False, 1/60)
         for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert dd.breaking
 
-    def test_break_ends_on_kick(self):
+    def test_break_ends_on_low(self):
         dd = DropDetector()
         dd._warmup_frames = 999
-        kick = [BeatEvent('kick', 1.0)]
+        low = [BeatEvent('low', 1.0)]
         for _ in range(20):
-            dd.detect(kick, 1.0, 120.0, False, 1/60)
+            dd.detect(low, 1.0, 120.0, False, 1/60)
         for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert dd.breaking
-        dd.detect(kick, 0.5, 120.0, False, 1/60)
+        dd.detect(low, 0.5, 120.0, False, 1/60)
         assert not dd.breaking
 
     def test_break_cooldown(self):
         dd = DropDetector()
         dd._warmup_frames = 999
-        kick = [BeatEvent('kick', 1.0)]
+        low = [BeatEvent('low', 1.0)]
         # First break
         for _ in range(20):
-            dd.detect(kick, 1.0, 120.0, False, 1/60)
+            dd.detect(low, 1.0, 120.0, False, 1/60)
         for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert dd.breaking
         # End it
-        dd.detect(kick, 0.5, 120.0, False, 1/60)
+        dd.detect(low, 0.5, 120.0, False, 1/60)
         assert not dd.breaking
         # Second attempt — should be blocked by cooldown
         for _ in range(10):
-            dd.detect(kick, 1.0, 120.0, False, 1/60)
+            dd.detect(low, 1.0, 120.0, False, 1/60)
         for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert not dd.breaking  # cooldown active
@@ -947,9 +947,9 @@ class TestDropDetector:
     def test_no_break_during_drift(self):
         dd = DropDetector()
         dd._warmup_frames = 999
-        kick = [BeatEvent('kick', 1.0)]
+        low = [BeatEvent('low', 1.0)]
         for _ in range(20):
-            dd.detect(kick, 1.0, 120.0, False, 1/60)
+            dd.detect(low, 1.0, 120.0, False, 1/60)
         for _ in range(150):
             dd.detect([], 0.0, 120.0, True, 1/60)
         assert not dd.breaking
@@ -957,11 +957,11 @@ class TestDropDetector:
     def test_reset_clears_state(self):
         dd = DropDetector()
         dd._warmup_frames = 999
-        dd._total_kicks = 100
+        dd._total_lows = 100
         dd._quiet_frames = 200
         dd.breaking = True
         dd.reset()
-        assert dd._total_kicks == 0
+        assert dd._total_lows == 0
         assert dd._quiet_frames == 0
         assert dd._cooldown == 0.0
         assert not dd.breaking
@@ -977,9 +977,9 @@ class TestBassDropDetector:
         """Sub-bass dropout should activate breaking."""
         dd = BassDropDetector()
         dd._warmup_frames = 999
-        kick = [BeatEvent('kick', 1.0)]
+        low = [BeatEvent('low', 1.0)]
         for _ in range(20):
-            dd.detect(kick, 0.5, 120.0, False, 1/60)
+            dd.detect(low, 0.5, 120.0, False, 1/60)
         for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert dd.breaking
@@ -988,31 +988,31 @@ class TestBassDropDetector:
         """If sub-bass stays loud, no break."""
         dd = BassDropDetector()
         dd._warmup_frames = 999
-        kick = [BeatEvent('kick', 1.0)]
+        low = [BeatEvent('low', 1.0)]
         for _ in range(20):
-            dd.detect(kick, 0.5, 120.0, False, 1/60)
+            dd.detect(low, 0.5, 120.0, False, 1/60)
         for _ in range(150):
             dd.detect([], 0.3, 120.0, False, 1/60)
         assert not dd.breaking
 
-    def test_bass_break_ends_on_kick(self):
+    def test_bass_break_ends_on_low(self):
         dd = BassDropDetector()
         dd._warmup_frames = 999
-        kick = [BeatEvent('kick', 1.0)]
+        low = [BeatEvent('low', 1.0)]
         for _ in range(20):
-            dd.detect(kick, 0.5, 120.0, False, 1/60)
+            dd.detect(low, 0.5, 120.0, False, 1/60)
         for _ in range(150):
             dd.detect([], 0.0, 120.0, False, 1/60)
         assert dd.breaking
-        dd.detect(kick, 0.5, 120.0, False, 1/60)
+        dd.detect(low, 0.5, 120.0, False, 1/60)
         assert not dd.breaking
 
     def test_no_bass_break_during_drift(self):
         dd = BassDropDetector()
         dd._warmup_frames = 999
-        kick = [BeatEvent('kick', 1.0)]
+        low = [BeatEvent('low', 1.0)]
         for _ in range(20):
-            dd.detect(kick, 0.5, 120.0, False, 1/60)
+            dd.detect(low, 0.5, 120.0, False, 1/60)
         for _ in range(150):
             dd.detect([], 0.0, 120.0, True, 1/60)
         assert not dd.breaking
@@ -1020,11 +1020,11 @@ class TestBassDropDetector:
     def test_reset_clears_state(self):
         dd = BassDropDetector()
         dd._warmup_frames = 999
-        dd._total_kicks = 100
+        dd._total_lows = 100
         dd._quiet_frames = 200
         dd.breaking = True
         dd.reset()
-        assert dd._total_kicks == 0
+        assert dd._total_lows == 0
         assert dd._quiet_frames == 0
         assert dd._cooldown == 0.0
         assert not dd.breaking
@@ -1108,7 +1108,7 @@ class TestGenomeAxisEvents:
         axis = self._make_axis()
         # Build some state
         for i in range(10):
-            axis.tick(_audio(events=[BeatEvent('kick', 0.5)]), 1/60, float(i))
+            axis.tick(_audio(events=[BeatEvent('low', 0.5)]), 1/60, float(i))
         # Song start should reset energy tracking
         axis.tick(_audio(events=[BeatEvent('song_start', 0.0)]), 1/60, 20.0)
         assert axis._recent_downbeat_energy == 0.5

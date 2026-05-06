@@ -123,8 +123,11 @@ def _score_genome(params_json: str) -> dict[str, float]:
     bound = 4.0
     rng = np.random.default_rng()
 
+    n_transforms = len(genome.transforms)
     hit_grid = np.zeros((grid_size, grid_size), dtype=np.float64)
     color_grid = np.zeros((grid_size, grid_size), dtype=np.float64)
+    transform_hits = np.zeros((grid_size, grid_size, n_transforms),
+                              dtype=np.uint32)
 
     weights = np.array([tr.weight for tr in genome.transforms],
                        dtype=np.float64)
@@ -159,6 +162,7 @@ def _score_genome(params_json: str) -> dict[str, float]:
             gy = max(0, min(grid_size - 1, gy))
             hit_grid[gy, gx] += 1.0
             color_grid[gy, gx] += c
+            transform_hits[gy, gx, tidx] += 1
 
         # Snapshot at half iterations for density sensitivity
         if i == fuse + half_iter:
@@ -173,6 +177,11 @@ def _score_genome(params_json: str) -> dict[str, float]:
     store_detail = getattr(getattr(cfg, 'scoring', None), 'store_cluster_detail', False)
     cl_scores = score_from_clusters(hit_grid, color_grid, store_detail=store_detail)
     scores.update(cl_scores)
+
+    # Transform-based clustering
+    from flame_sheep.cluster_scorer import score_from_transform_hits
+    tf_scores = score_from_transform_hits(hit_grid, transform_hits)
+    scores.update(tf_scores)
 
     # Density sensitivity: how much does the image change with more iterations?
     if hit_grid_half is not None and hit_grid.sum() > 0 and hit_grid_half.sum() > 0:

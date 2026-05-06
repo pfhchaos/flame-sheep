@@ -99,7 +99,7 @@ def synth_808_kick(amplitude: float = 0.9, freq: float = 35.0,
 
 
 def synth_clap(amplitude: float = 0.6, duration_ms: float = 40.0) -> np.ndarray:
-    """Electronic clap: layered noise bursts in the snare band (200-2000Hz)."""
+    """Electronic clap: layered noise bursts in the mid band (200-2000Hz)."""
     n = int(SAMPLE_RATE * duration_ms / 1000)
     rng = np.random.default_rng(55)
     sig = np.zeros(n, dtype=np.float32)
@@ -365,22 +365,22 @@ class DrumPattern:
 
     Usage:
         p = DrumPattern(bpm=120, duration=4.0)
-        p.add('kick', beats=[1, 3])
-        p.add('snare', beats=[2, 4])
-        p.add('hihat', beats=[1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5])
+        p.add('low', beats=[1, 3])
+        p.add('mid', beats=[2, 4])
+        p.add('high', beats=[1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5])
         pcm = p.render()
     """
 
     KIT_ACOUSTIC = {
-        'kick':  synth_kick,
-        'snare': synth_snare,
-        'hihat': synth_hihat,
+        'low':  synth_kick,
+        'mid': synth_snare,
+        'high': synth_hihat,
     }
 
     KIT_ELECTRONIC = {
-        'kick':  synth_808_kick,
-        'snare': synth_clap,
-        'hihat': synth_low_hihat,
+        'low':  synth_808_kick,
+        'mid': synth_clap,
+        'high': synth_low_hihat,
     }
 
     SYNTHS = KIT_ACOUSTIC
@@ -411,14 +411,14 @@ class DrumPattern:
 
     def add(self, kind: str, beats: list[float], amplitude: float | None = None):
         """Add hits at given beat positions (1-indexed, fractional ok)."""
-        amp = amplitude or {'kick': 0.8, 'snare': 0.6, 'hihat': 0.3}[kind]
+        amp = amplitude or {'low': 0.8, 'mid': 0.6, 'high': 0.3}[kind]
         for b in beats:
             t = (b - 1) * self.beat_duration
             self._hits.append((kind, t, amp))
 
     def add_at_times(self, kind: str, times: list[float], amplitude: float | None = None):
         """Add hits at absolute times in seconds."""
-        amp = amplitude or {'kick': 0.8, 'snare': 0.6, 'hihat': 0.3}[kind]
+        amp = amplitude or {'low': 0.8, 'mid': 0.6, 'high': 0.3}[kind]
         for t in times:
             self._hits.append((kind, t, amp))
 
@@ -499,13 +499,13 @@ class PatternSpec:
         for bar in range(self.bars):
             offset = bar * self.bar_length
             if self.kick_beats:
-                p.add('kick',  [offset + b for b in self.kick_beats],
+                p.add('low',  [offset + b for b in self.kick_beats],
                       amplitude=self.kick_amp)
             if self.snare_beats:
-                p.add('snare', [offset + b for b in self.snare_beats],
+                p.add('mid', [offset + b for b in self.snare_beats],
                       amplitude=self.snare_amp)
             if self.hihat_beats:
-                p.add('hihat', [offset + b for b in self.hihat_beats],
+                p.add('high', [offset + b for b in self.hihat_beats],
                       amplitude=self.hihat_amp)
         return p
 

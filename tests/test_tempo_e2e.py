@@ -110,7 +110,7 @@ class TestSyntheticClicks:
         interval = 60.0 / bpm
         n_beats = max(40, int(bpm / 2))  # at least 20 seconds of beats
         for i in range(n_beats):
-            tracker.process_onset('kick', i * interval)
+            tracker.process_onset('low', i * interval)
         assert tracker.bpm > 0, f"No BPM estimated at {bpm}"
         assert _bpm_octave_close(tracker.bpm, bpm), \
             f"Expected ~{bpm} BPM, got {tracker.bpm}"
@@ -120,7 +120,7 @@ class TestSyntheticClicks:
         tracker = TempoTracker()
         interval = 60.0 / bpm
         for i in range(60):
-            tracker.process_onset('kick', i * interval)
+            tracker.process_onset('low', i * interval)
         assert tracker.locked, f"Should lock at {bpm} BPM"
 
     @pytest.mark.xfail(reason="200 BPM octave confusion prevents lock — known weakness")
@@ -128,7 +128,7 @@ class TestSyntheticClicks:
         tracker = TempoTracker()
         interval = 60.0 / 200
         for i in range(60):
-            tracker.process_onset('kick', i * interval)
+            tracker.process_onset('low', i * interval)
         assert tracker.locked, "Should lock at 200 BPM"
 
     def test_half_time_snare_pattern(self):
@@ -138,7 +138,7 @@ class TestSyntheticClicks:
         beat_interval = 60.0 / 140
         for bar in range(20):
             base = bar * 4 * beat_interval
-            tracker.process_onset('kick', base)  # beat 1
+            tracker.process_onset('low', base)  # beat 1
         assert tracker.bpm > 0
         assert _bpm_octave_close(tracker.bpm, 140), \
             f"Expected ~140 or ~70 BPM, got {tracker.bpm}"
@@ -151,9 +151,9 @@ class TestSyntheticClicks:
         swing_ratio = 0.67  # 2:1 swing
         t = 0.0
         for _ in range(40):
-            tracker.process_onset('kick', t)
+            tracker.process_onset('low', t)
             t += beat_interval * swing_ratio
-            tracker.process_onset('kick', t)
+            tracker.process_onset('low', t)
             t += beat_interval * (1.0 - swing_ratio)
         assert _bpm_octave_close(tracker.bpm, 120), \
             f"Expected ~120 BPM with swing, got {tracker.bpm}"
@@ -165,11 +165,11 @@ class TestSyntheticClicks:
         t = 0.0
         # 10 seconds at 120
         for _ in range(20):
-            tracker.process_onset('kick', t)
+            tracker.process_onset('low', t)
             t += 60.0 / 120
         # 10 seconds at 160
         for _ in range(40):
-            tracker.process_onset('kick', t)
+            tracker.process_onset('low', t)
             t += 60.0 / 160
         assert _bpm_octave_close(tracker.bpm, 160, tolerance_pct=8), \
             f"Expected ~160 BPM after change, got {tracker.bpm}"
@@ -184,7 +184,7 @@ class TestE2ETempo:
 
     @pytest.mark.parametrize('bpm', [80, 100, 120, 140, 160])
     def test_four_on_floor(self, bpm):
-        """Four-on-the-floor kick pattern at various tempos."""
+        """Four-on-the-floor low-band pattern at various tempos."""
         spec = PatternSpec(
             name=f'4otf-{bpm}', bpm=bpm, bars=8, bar_length=4,
             kick_beats=[1, 2, 3, 4], snare_beats=[2, 4],
@@ -200,8 +200,8 @@ class TestE2ETempo:
     def test_pattern_library(self, spec):
         """Each pattern in the library should produce a reasonable BPM estimate.
         Currently a baseline — many patterns return default 120 because the
-        tracker only uses kick onsets and many patterns don't produce enough
-        detected kicks through the full pipeline."""
+        tracker only uses low-band onsets and many patterns don't produce enough
+        detected low-band events through the full pipeline."""
         pattern = spec.build()
         estimated = _run_tempo_e2e(pattern)
         # Soft assertion: just record the result. The baseline report test
@@ -211,8 +211,8 @@ class TestE2ETempo:
                 f"{spec.name}: expected ~{spec.bpm} BPM, got {estimated:.1f}"
 
     def test_breakbeat_170(self):
-        """Breakbeat: kick on 1 and 'and' of 2, snare on 2 and 4.
-        Known hard case — sparse kicks + syncopation."""
+        """Breakbeat: low on 1 and 'and' of 2, mid on 2 and 4.
+        Known hard case — sparse low-band onsets + syncopation."""
         spec = PatternSpec(
             name='breakbeat-170', bpm=170, bars=8, bar_length=4,
             kick_beats=[1, 2.5], snare_beats=[2, 4],
@@ -223,8 +223,8 @@ class TestE2ETempo:
         # Baseline: currently returns 120 (default). Track improvement.
         assert estimated > 0, f"Should produce some estimate, got {estimated}"
 
-    def test_sparse_kick_90(self):
-        """Sparse kick (beat 1 only) at 90 BPM — hard case for kick-only tracking."""
+    def test_sparse_low_90(self):
+        """Sparse low (beat 1 only) at 90 BPM — hard case for low-only tracking."""
         spec = PatternSpec(
             name='sparse-90', bpm=90, bars=12, bar_length=4,
             kick_beats=[1], snare_beats=[3],

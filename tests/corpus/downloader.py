@@ -25,18 +25,25 @@ def download_osz(beatmapset_id: int, cache_dir: Path = DEFAULT_CACHE) -> Path:
     """Download an osu! beatmap set (.osz) and extract to cache.
 
     Returns the directory containing .osu files and audio.
-    Skips download if already cached.
+    Skips download if already cached. Marks failed downloads to avoid
+    hammering mirrors on repeated runs.
     """
     import requests
+    import time
 
     dest = cache_dir / 'osu' / str(beatmapset_id)
     if dest.exists() and any(dest.glob('*.osu')):
         log.debug(f'osu! {beatmapset_id}: already cached at {dest}')
         return dest
 
+    # Negative cache: skip if we already failed this one
+    fail_marker = cache_dir / 'osu' / f'.failed_{beatmapset_id}'
+    if fail_marker.exists():
+        raise RuntimeError(f'osu! {beatmapset_id}: previously failed (delete {fail_marker} to retry)')
+
     dest.mkdir(parents=True, exist_ok=True)
 
-    # Try mirrors in order
+    # Try mirrors in order, with polite delay
     urls = [
         f'https://catboy.best/d/{beatmapset_id}n',
         f'https://api.chimu.moe/v1/download/{beatmapset_id}',
@@ -45,6 +52,7 @@ def download_osz(beatmapset_id: int, cache_dir: Path = DEFAULT_CACHE) -> Path:
     for url in urls:
         try:
             log.info(f'osu! {beatmapset_id}: downloading from {url}')
+            time.sleep(1)  # polite delay
             resp = requests.get(url, timeout=30, stream=True)
             if resp.status_code == 200:
                 data = resp.content
@@ -57,6 +65,9 @@ def download_osz(beatmapset_id: int, cache_dir: Path = DEFAULT_CACHE) -> Path:
         except Exception as e:
             log.debug(f'  {url}: {e}')
 
+    # Mark as failed so we don't retry
+    dest.rmdir()  # clean up empty dir
+    fail_marker.touch()
     raise RuntimeError(f'Failed to download osu! beatmapset {beatmapset_id}')
 
 

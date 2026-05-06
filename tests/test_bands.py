@@ -164,16 +164,16 @@ class TestSpringBand:
     """Test spring-model adaptive band."""
 
     def test_initial_center(self):
-        sb = SpringBand('kick', default_range=(30, 200), allowed_range=(25, 150))
+        sb = SpringBand('low', default_range=(30, 200), allowed_range=(25, 150))
         assert sb.center == pytest.approx((30 + 200) / 2.0)
 
     def test_initial_mask_matches_default(self):
-        sb = SpringBand('kick', default_range=(30, 200), allowed_range=(25, 150))
+        sb = SpringBand('low', default_range=(30, 200), allowed_range=(25, 150))
         expected = make_mask(30, 200)
         np.testing.assert_array_equal(sb.mask, expected)
 
     def test_anchor_pulls_toward_default(self):
-        sb = SpringBand('snare', default_range=(200, 1000),
+        sb = SpringBand('mid', default_range=(200, 1000),
                         allowed_range=(150, 2000))
         sb.center = sb.default_center + 200
         original = sb.center
@@ -182,7 +182,7 @@ class TestSpringBand:
         assert abs(sb.center - sb.default_center) < abs(original - sb.default_center)
 
     def test_center_stays_in_allowed_range(self):
-        sb = SpringBand('snare', default_range=(200, 1000),
+        sb = SpringBand('mid', default_range=(200, 1000),
                         allowed_range=(150, 2000))
         sb.center = 999999
         sb.apply_forces(anchor_k=0.01, flux_k=0.0,
@@ -192,19 +192,19 @@ class TestSpringBand:
         assert sb.center <= sb.hi_allowed - half
 
     def test_repulsion_pushes_bands_apart(self):
-        kick = SpringBand('kick', default_range=(30, 200),
-                          allowed_range=(25, 150))
-        snare = SpringBand('snare', default_range=(200, 1000),
-                           allowed_range=(150, 2000))
-        snare.center = kick.center + 10
-        original_dist = abs(kick.center - snare.center)
-        kick.apply_forces(anchor_k=0.0, flux_k=0.0,
-                          neighbors=[snare], repulsion_k=100.0)
-        new_dist = abs(kick.center - snare.center)
+        low = SpringBand('low', default_range=(30, 200),
+                         allowed_range=(25, 150))
+        mid = SpringBand('mid', default_range=(200, 1000),
+                         allowed_range=(150, 2000))
+        mid.center = low.center + 10
+        original_dist = abs(low.center - mid.center)
+        low.apply_forces(anchor_k=0.0, flux_k=0.0,
+                         neighbors=[mid], repulsion_k=100.0)
+        new_dist = abs(low.center - mid.center)
         assert new_dist > original_dist
 
     def test_reset_restores_defaults(self):
-        sb = SpringBand('kick', default_range=(30, 200),
+        sb = SpringBand('low', default_range=(30, 200),
                         allowed_range=(25, 150))
         sb.center = 999
         sb.width = 1
@@ -218,12 +218,12 @@ class TestSpringBand:
         assert sb.flux_centroid() == sb.default_center
 
     def test_flux_centroid_default_when_empty(self):
-        sb = SpringBand('kick', default_range=(30, 200),
+        sb = SpringBand('low', default_range=(30, 200),
                         allowed_range=(25, 150))
         assert sb.flux_centroid() == sb.default_center
 
     def test_flux_ema_accumulates(self):
-        sb = SpringBand('kick', default_range=(30, 200),
+        sb = SpringBand('low', default_range=(30, 200),
                         allowed_range=(25, 150))
         flux = np.zeros(N_BINS, dtype=np.float32)
         target_idx = np.argmin(np.abs(FREQS - 100))

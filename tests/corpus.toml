@@ -34,10 +34,9 @@ tags = ["dnb", "drum_and_bass"]
 expected_bpm = 175
 
 [[sources.osu.beatmaps]]
-id = 864013
-name = "Various Artists - Drum and Bass Compilation"
-tags = ["dnb", "compilation", "fast"]
-expected_bpm = 174
+# 864013 unavailable (DMCA)
+# id = 864013
+# name = "Various Artists - Drum and Bass Compilation"
 
 # --- Rock / Pop ---
 [[sources.osu.beatmaps]]
@@ -91,10 +90,9 @@ tags = ["jazz", "fusion"]
 expected_bpm = 155
 
 [[sources.osu.beatmaps]]
-id = 687801
-name = "BOSSA NOVA - Moe Jazz Dreamer"
-tags = ["jazz", "bossa_nova", "slow"]
-expected_bpm = 120
+# 687801 unavailable (DMCA)
+# id = 687801
+# name = "BOSSA NOVA - Moe Jazz Dreamer"
 
 # --- Classical ---
 [[sources.osu.beatmaps]]
@@ -104,8 +102,8 @@ tags = ["classical", "piano", "rubato", "no_percussion"]
 expected_bpm = 140
 
 [[sources.osu.beatmaps]]
-id = 1117990
-name = "Frederic Chopin - Etude Op. 10 No. 1"
+id = 869054
+name = "Frederic Chopin - Etude Op. 10, No. 5"
 tags = ["classical", "piano", "fast", "no_percussion"]
 expected_bpm = 168
 

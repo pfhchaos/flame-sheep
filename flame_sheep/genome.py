@@ -11,9 +11,9 @@ A genome defines a complete flame fractal:
   - global params: zoom, rotation, center
 
 Mutation is driven by beat detection from audio.py:
-  - kick  -> crossbreed with a new random genome (large mutation)
-  - snare -> shift color palette
-  - hihat -> perturb affine coefficients slightly
+  - low  -> crossbreed with a new random genome (large mutation)
+  - mid  -> shift color palette
+  - high -> perturb affine coefficients slightly
 """
 
 from __future__ import annotations

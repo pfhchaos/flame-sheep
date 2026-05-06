@@ -69,6 +69,25 @@ class PaletteAxis:
                 self.palette_speed = 0.03 + event.energy * 0.1 * density_scale
                 log.debug(f'[backbeat] energy={event.energy:.2f}')
 
+        # In low backbeat density, centroid shifts trigger palette swaps
+        # (fallback for ambient/orchestral music with no drums)
+        if (
+            backbeat_density < cfg.palette.centroid_swap_density_gate
+            and audio.centroid_delta > 500.0
+            and self.palette_t > 0.3
+        ):
+            self.palette_current = _lerp_arr(
+                self.palette_current, self.palette_target, self.palette_t)
+            next_palette = self._pick_next_palette(0.5)
+            if next_palette is not None:
+                self.palette_target = next_palette
+            self.palette_t = 0.0
+            self.palette_speed = 0.02
+            log.debug(
+                f"[centroid palette swap] delta={audio.centroid_delta:.0f}Hz "
+                f"backbeat_density={backbeat_density:.2f}"
+            )
+
         # Decay speed toward drift
         self.palette_speed = max(self.DRIFT_MORPH_SPEED, self.palette_speed * 0.98)
 

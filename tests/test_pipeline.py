@@ -88,23 +88,23 @@ def _place_hits(duration_s, interval_s, synth_fn, **kwargs):
     return signal
 
 
-class TestPipelineKickDetection:
-    """Verify kick detection through the full pipeline."""
+class TestPipelineLowDetection:
+    """Verify low-band detection through the full pipeline."""
 
-    def test_kicks_at_120bpm_detected(self):
-        """Regular kicks at 120 BPM should produce kick events."""
+    def test_lows_at_120bpm_detected(self):
+        """Regular kick drums at 120 BPM should produce low-band events."""
         signal = _place_hits(4.0, 0.5, synth_kick)
         events, _ = _run_pipeline(signal)
-        kicks = _count_events(events, 'kick')
-        # 4 seconds at 2 kicks/s = ~8 kicks, minus warmup
-        assert kicks >= 3, f"Expected at least 3 kicks at 120 BPM, got {kicks}"
+        lows = _count_events(events, 'low')
+        # 4 seconds at 2 hits/s = ~8 onsets, minus warmup
+        assert lows >= 3, f"Expected at least 3 low-band onsets at 120 BPM, got {lows}"
 
-    def test_silence_no_kicks(self):
-        """Silence should produce no kick events."""
+    def test_silence_no_lows(self):
+        """Silence should produce no low-band events."""
         signal = make_silence(int(SAMPLE_RATE * 2))
         events, _ = _run_pipeline(signal)
-        kicks = _count_events(events, 'kick')
-        assert kicks == 0, f"Expected 0 kicks in silence, got {kicks}"
+        lows = _count_events(events, 'low')
+        assert lows == 0, f"Expected 0 low-band events in silence, got {lows}"
 
     def test_silence_low_rms(self):
         """Silence should have near-zero subbass RMS."""
@@ -116,51 +116,51 @@ class TestPipelineKickDetection:
 
 
 class TestPipelineVocalSuppression:
-    """Verify that sustained vocals don't produce false kicks."""
+    """Verify that sustained vocals don't produce false low-band onsets."""
 
-    def test_male_vocal_low_kick_count(self):
-        """Sustained 80Hz male vocal should produce very few kick events.
+    def test_male_vocal_low_onset_count(self):
+        """Sustained 80Hz male vocal should produce very few low-band events.
 
         This is the Jolene problem: male chest resonance at 50-100Hz
-        triggers false kicks without stability scaling.
+        triggers false low-band onsets without stability scaling.
         """
         signal = synth_vocal(4.0, pitch=80, amplitude=0.5)
         events, _ = _run_pipeline(signal)
-        kicks = _count_events(events, 'kick')
-        assert kicks < 5, \
-            f"Male vocal at 80Hz produced {kicks} false kicks (expected < 5)"
+        lows = _count_events(events, 'low')
+        assert lows < 5, \
+            f"Male vocal at 80Hz produced {lows} false low-band onsets (expected < 5)"
 
-    def test_kick_over_vocal_still_detected(self):
-        """Kicks mixed with sustained vocal should still be detected.
+    def test_low_over_vocal_still_detected(self):
+        """Kick drums mixed with sustained vocal should still be detected.
 
         Stability scaling should raise the threshold but not suppress
-        real kicks — the kick transient exceeds the vocal's variance.
+        real low-band onsets — the transient exceeds the vocal's variance.
         """
         vocal = synth_vocal(4.0, pitch=80, amplitude=0.3)
-        kicks_signal = _place_hits(4.0, 0.5, synth_kick, amplitude=0.8)
-        signal = vocal + kicks_signal
+        low_signal = _place_hits(4.0, 0.5, synth_kick, amplitude=0.8)
+        signal = vocal + low_signal
         events, _ = _run_pipeline(signal)
-        kicks = _count_events(events, 'kick')
-        assert kicks >= 2, \
-            f"Kicks over vocal produced only {kicks} events (expected >= 2)"
+        lows = _count_events(events, 'low')
+        assert lows >= 2, \
+            f"Low-band over vocal produced only {lows} events (expected >= 2)"
 
 
 class TestPipelineBreakDetection:
     """Verify break detection through the full pipeline."""
 
-    def test_break_after_kicks(self):
-        """Sustained kicks followed by silence should trigger breaking state."""
-        # 3s of kicks (warmup + establish baseline), then 2s silence
-        kicks = _place_hits(3.0, 0.5, synth_kick)
+    def test_break_after_lows(self):
+        """Sustained low-band hits followed by silence should trigger breaking state."""
+        # 3s of low-band hits (warmup + establish baseline), then 2s silence
+        low_hits = _place_hits(3.0, 0.5, synth_kick)
         silence = make_silence(int(SAMPLE_RATE * 2))
-        signal = np.concatenate([kicks, silence])
+        signal = np.concatenate([low_hits, silence])
         _, snapshots = _run_pipeline(signal)
 
         # Check that at least one snapshot during the silent section has
         # the break detector's conditions met (we check the raw detector
         # state indirectly via the centroid_rms dropping)
-        kick_frames = int(3.0 * SAMPLE_RATE / HOP_SIZE)
-        silent_rms = [s.bands['subbass'].rms for s in snapshots[kick_frames:]]
+        low_frames = int(3.0 * SAMPLE_RATE / HOP_SIZE)
+        silent_rms = [s.bands['subbass'].rms for s in snapshots[low_frames:]]
         # RMS should be very low during silence
         if silent_rms:
             assert min(silent_rms) < 0.01, \
@@ -170,29 +170,29 @@ class TestPipelineBreakDetection:
 class TestPipelineBandSeparation:
     """Verify that events land in the correct bands."""
 
-    def test_low_sine_triggers_kick_not_hihat(self):
-        """80Hz tone onset should trigger kick, not hihat."""
+    def test_low_sine_triggers_low_not_high(self):
+        """80Hz tone onset should trigger low, not high."""
         silence = make_silence(FFT_SIZE)
         tone = make_sine(80, FFT_SIZE * 4, amplitude=0.9)
         signal = np.concatenate([silence] * 5 + [tone])
         events, _ = _run_pipeline(signal)
-        kicks = _count_events(events, 'kick')
-        hihats = _count_events(events, 'hihat')
-        assert kicks > 0, "80Hz onset should trigger kick"
-        assert hihats == 0 or kicks > hihats, \
-            f"80Hz should primarily trigger kick ({kicks}), not hihat ({hihats})"
+        lows = _count_events(events, 'low')
+        highs = _count_events(events, 'high')
+        assert lows > 0, "80Hz onset should trigger low"
+        assert highs == 0 or lows > highs, \
+            f"80Hz should primarily trigger low ({lows}), not high ({highs})"
 
-    def test_high_sine_triggers_hihat_not_kick(self):
-        """10kHz tone onset should trigger hihat, not kick."""
+    def test_high_sine_triggers_high_not_low(self):
+        """10kHz tone onset should trigger high, not low."""
         silence = make_silence(FFT_SIZE)
         tone = make_sine(10000, FFT_SIZE * 4, amplitude=0.5)
         signal = np.concatenate([silence] * 5 + [tone])
         events, _ = _run_pipeline(signal)
-        kicks = _count_events(events, 'kick')
-        hihats = _count_events(events, 'hihat')
-        # Hihat should dominate or at least be present
-        assert hihats > 0 or kicks == 0, \
-            f"10kHz should trigger hihat ({hihats}), not kick ({kicks})"
+        lows = _count_events(events, 'low')
+        highs = _count_events(events, 'high')
+        # High should dominate or at least be present
+        assert highs > 0 or lows == 0, \
+            f"10kHz should trigger high ({highs}), not low ({lows})"
 
 
 class TestPipelineHarmonicEnergy:
@@ -208,95 +208,95 @@ class TestPipelineHarmonicEnergy:
             max_hrms = max(s.bands['subbass'].harmonic_rms for s in late)
             assert max_hrms > 0, "Sustained tone should have harmonic RMS"
 
-    def test_kick_transient_low_harmonic_rms(self):
-        """A single kick should have low harmonic RMS (it's transient)."""
+    def test_low_transient_low_harmonic_rms(self):
+        """A single low-band hit should have low harmonic RMS (it's transient)."""
         silence = make_silence(int(SAMPLE_RATE * 2))
-        kick = synth_kick(amplitude=0.9)
-        # Kick at 1.5s after stability has settled on silence
+        hit = synth_kick(amplitude=0.9)
+        # Hit at 1.5s after stability has settled on silence
         signal = silence.copy()
         pos = int(1.5 * SAMPLE_RATE)
-        signal[pos:pos + len(kick)] += kick
+        signal[pos:pos + len(hit)] += hit
         signal = np.append(signal, make_silence(int(SAMPLE_RATE * 0.5)))
         _, snapshots = _run_pipeline(signal)
-        # Harmonic RMS should stay low since the kick is transient
+        # Harmonic RMS should stay low since the hit is transient
         max_hrms = max(s.bands['subbass'].harmonic_rms for s in snapshots)
         total_rms = max(s.bands['subbass'].rms for s in snapshots)
         if total_rms > 0.001:
             assert max_hrms < total_rms, \
-                "Kick transient should have harmonic_rms < total rms"
+                "Low-band transient should have harmonic_rms < total rms"
 
 
 class TestPipelineWallOfBass:
-    """Galaxy Collapse scenario: kicks over sustained bass."""
+    """Galaxy Collapse scenario: low-band onsets over sustained bass."""
 
-    def test_kicks_over_sustained_bass_detected(self):
-        """Kicks on top of sustained bass should still fire events.
+    def test_lows_over_sustained_bass_detected(self):
+        """Low-band hits on top of sustained bass should still fire events.
 
-        The Galaxy Collapse problem: sustained bass keeps the kick band
+        The Galaxy Collapse problem: sustained bass keeps the low band
         magnitude high, making flux spikes relatively small. Stability
-        + headroom scaling should allow real kicks through.
+        + headroom scaling should allow real low-band onsets through.
         """
         bass = _sustained_bass(4.0, freq=60, amplitude=0.6)
-        kicks = _place_hits(4.0, 0.5, synth_kick, amplitude=0.9)
-        signal = bass + kicks
+        low_hits = _place_hits(4.0, 0.5, synth_kick, amplitude=0.9)
+        signal = bass + low_hits
         events, _ = _run_pipeline(signal)
-        kick_count = _count_events(events, 'kick')
-        assert kick_count >= 2, \
-            f"Kicks over sustained bass produced only {kick_count} events"
+        low_count = _count_events(events, 'low')
+        assert low_count >= 2, \
+            f"Low-band hits over sustained bass produced only {low_count} events"
 
-    def test_sustained_bass_alone_low_kicks(self):
-        """Sustained bass with no kicks should produce few or no kick events."""
+    def test_sustained_bass_alone_few_lows(self):
+        """Sustained bass with no hits should produce few or no low-band events."""
         signal = _sustained_bass(4.0, freq=60, amplitude=0.6)
         events, _ = _run_pipeline(signal)
-        kick_count = _count_events(events, 'kick')
-        assert kick_count < 5, \
-            f"Sustained bass produced {kick_count} false kicks"
+        low_count = _count_events(events, 'low')
+        assert low_count < 5, \
+            f"Sustained bass produced {low_count} false low-band onsets"
 
-    def test_808_bass_with_hihat(self):
-        """808 sub-bass + hihats — bands shouldn't interfere."""
+    def test_808_bass_with_high(self):
+        """808 sub-bass + high-band hits — bands shouldn't interfere."""
         bass = _sustained_bass(4.0, freq=40, amplitude=0.7)
-        hihats = _place_hits(4.0, 0.25, synth_hihat, amplitude=0.4)
-        signal = bass + hihats
+        high_hits = _place_hits(4.0, 0.25, synth_hihat, amplitude=0.4)
+        signal = bass + high_hits
         events, _ = _run_pipeline(signal)
-        hihat_count = _count_events(events, 'hihat')
-        kick_count = _count_events(events, 'kick')
-        # Hihats should dominate, bass shouldn't trigger kicks
-        assert hihat_count > kick_count, \
-            f"Expected hihats ({hihat_count}) > kicks ({kick_count})"
+        high_count = _count_events(events, 'high')
+        low_count = _count_events(events, 'low')
+        # High should dominate, bass shouldn't trigger low
+        assert high_count > low_count, \
+            f"Expected high ({high_count}) > low ({low_count})"
 
 
 class TestPipelineDensityTracking:
     """Verify onset density responds to different patterns."""
 
-    def test_fast_kicks_many_events(self):
-        """Rapid kicks should produce many kick events."""
+    def test_fast_lows_many_events(self):
+        """Rapid low-band hits should produce many low-band events."""
         signal = _place_hits(4.0, 0.15, synth_kick, amplitude=0.8)
         events, _ = _run_pipeline(signal)
-        kicks = _count_events(events, 'kick')
-        # 4s at ~6.7 kicks/s = ~27 kicks, minus warmup/cooldown
-        assert kicks >= 5, \
-            f"Fast kicks should produce many events, got {kicks}"
+        lows = _count_events(events, 'low')
+        # 4s at ~6.7 hits/s = ~27 onsets, minus warmup/cooldown
+        assert lows >= 5, \
+            f"Fast low-band hits should produce many events, got {lows}"
 
-    def test_slow_kicks_fewer_events(self):
-        """Slow kicks should produce fewer events than fast kicks."""
+    def test_slow_lows_fewer_events(self):
+        """Slow low-band hits should produce fewer events than fast ones."""
         fast = _place_hits(4.0, 0.15, synth_kick, amplitude=0.8)
         slow = _place_hits(4.0, 1.0, synth_kick, amplitude=0.8)
         fast_events, _ = _run_pipeline(fast)
         slow_events, _ = _run_pipeline(slow)
-        fast_kicks = _count_events(fast_events, 'kick')
-        slow_kicks = _count_events(slow_events, 'kick')
-        assert fast_kicks > slow_kicks, \
-            f"Fast ({fast_kicks}) should have more kicks than slow ({slow_kicks})"
+        fast_lows = _count_events(fast_events, 'low')
+        slow_lows = _count_events(slow_events, 'low')
+        assert fast_lows > slow_lows, \
+            f"Fast ({fast_lows}) should have more low-band events than slow ({slow_lows})"
 
 
 class TestPipelineWaltz:
     """Non-4/4 time signature — density-driven should handle it."""
 
-    def test_waltz_kicks_detected(self):
-        """3/4 time: kicks on beat 1 of each bar should be detected."""
-        # 120 BPM waltz: kick every 1.5s (3 beats × 0.5s)
+    def test_waltz_lows_detected(self):
+        """3/4 time: low-band hits on beat 1 of each bar should be detected."""
+        # 120 BPM waltz: hit every 1.5s (3 beats × 0.5s)
         signal = _place_hits(6.0, 1.5, synth_kick, amplitude=0.8)
         events, _ = _run_pipeline(signal)
-        kicks = _count_events(events, 'kick')
-        assert kicks >= 2, \
-            f"Waltz pattern produced only {kicks} kicks (expected >= 2)"
+        lows = _count_events(events, 'low')
+        assert lows >= 2, \
+            f"Waltz pattern produced only {lows} low-band events (expected >= 2)"

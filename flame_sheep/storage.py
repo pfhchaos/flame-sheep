@@ -126,7 +126,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                  'img_color_coherence', 'img_color_variety',
                  'cl_coverage', 'cl_edge_sharpness', 'cl_symmetry_best',
                  'cl_cluster_count', 'cl_dominance', 'cl_balance',
-                 'cluster_detail'):
+                 'cluster_detail',
+                 'tf_coverage', 'tf_n_clusters', 'tf_avg_purity',
+                 'tf_symmetry_best', 'tf_balance', 'tf_separation'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} REAL')
     if 'score_version' not in existing:
