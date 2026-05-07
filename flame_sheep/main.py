@@ -140,6 +140,7 @@ class FlameSheepCore:
         # Build AudioState for axes
         audio = AudioState(
             events=events,
+            spectrum=snap.spectrum,
             bands=snap.bands,
             centroid=snap.centroid,
             centroid_delta=snap.centroid_delta,

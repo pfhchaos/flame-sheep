@@ -48,6 +48,7 @@ def _audio(events=None, rms=0.0, harmonic_rms=0.0, breaking=False,
         bands=bands,
         percussiveness=percussiveness,
         centroid_delta=centroid_delta,
+        centroid_rms=harmonic_rms,  # axes now read centroid_rms directly
         centroid_harmonic_rms=harmonic_rms,
         break_intensity=1.0 if breaking else 0.0,
         **kwargs,
@@ -1130,9 +1131,15 @@ class TestGenomeAxisEvents:
         axis = self._make_axis()
         axis.morph_t = 0.5  # must be > 0.3
         initial_target = id(axis.target_genome)
-        audio = _audio(
-            percussiveness=0.1,
-            centroid_delta=600.0,  # big shift
-        )
-        axis.tick(audio, 1/60, 0.0)
+        # First tick: initialize mel centroid with energy at 200 Hz
+        from flame_sheep_audio import N_BINS
+        spec_low = np.zeros(N_BINS, dtype=np.float32)
+        spec_low[5:10] = 1.0  # energy around 200 Hz
+        axis.tick(_audio(percussiveness=0.1, spectrum=spec_low), 1/60, 0.0)
+        axis.morph_t = 0.5  # reset after first tick consumed it
+        # Second tick: shift energy to 5 kHz — big mel delta
+        spec_high = np.zeros(N_BINS, dtype=np.float32)
+        spec_high[200:220] = 1.0  # energy around 5 kHz
+        audio = _audio(percussiveness=0.1, spectrum=spec_high)
+        axis.tick(audio, 1/60, 0.1)
         assert id(axis.target_genome) != initial_target

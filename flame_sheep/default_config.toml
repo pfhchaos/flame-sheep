@@ -48,7 +48,7 @@ low_morph_pulse = 0.008        # per-low-onset morph speed boost
 strong_beat_threshold = 2.0    # energy/avg ratio to trigger swap
 break_decay = 0.97             # exponential damping per frame during breaks
 density_damping = 0.3          # low-band pulse scales as 1/(1+density×this)
-centroid_swap_threshold = 500.0  # Hz delta to trigger centroid swap
+centroid_swap_threshold = 50.0   # mel delta to trigger centroid swap (was 500 Hz)
 centroid_swap_perc_gate = 0.15 # percussiveness must be below this
 
 [zoom]
