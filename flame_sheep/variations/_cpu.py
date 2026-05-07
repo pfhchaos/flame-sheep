@@ -447,7 +447,7 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         c = _current_var_params.get('boarders_c', 0.5)
         cl = _current_var_params.get('boarders_cl', 0.25)
         cr = _current_var_params.get('boarders_cr', 0.75)
-        rx, ry = round(x), round(y)
+        rx, ry = np.floor(x + 0.5), np.floor(y + 0.5)
         ox, oy = x - rx, y - ry
         if _rand() >= cr:
             return w*(ox*c + rx), w*(oy*c + ry)
@@ -482,7 +482,7 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float) -> tuple[flo
         if rr < 1.0:
             a = np.arctan2(y, x) + ins / max(1.0 - rr, 1e-6)
         else:
-            a = np.arctan2(y, x) + out / max(1.0 - rr, 1e-6)
+            a = np.arctan2(y, x) + out / max(rr - 1.0, 1e-6)
         return w*rr*np.cos(a), w*rr*np.sin(a)
     elif var_idx == 58: # disc2
         twist = _current_var_params.get('disc2_twist', 1.0)

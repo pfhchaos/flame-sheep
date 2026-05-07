@@ -524,17 +524,17 @@ vec2 var_boarders(vec2 p, int slot) {
     if (abs(offX) >= abs(offY)) {
         if (offX >= 0.0) {
             return vec2(offX * c + roundX + cl,
-                        offY * c + roundY + cl * offY / offX);
+                        offY * c + roundY + cl * offY / (offX + 1e-10));
         } else {
             return vec2(offX * c + roundX - cl,
-                        offY * c + roundY - cl * offY / offX);
+                        offY * c + roundY - cl * offY / (offX - 1e-10));
         }
     } else {
         if (offY >= 0.0) {
-            return vec2(offX * c + roundX + cl * offX / offY,
+            return vec2(offX * c + roundX + cl * offX / (offY + 1e-10),
                         offY * c + roundY + cl);
         } else {
-            return vec2(offX * c + roundX - cl * offX / offY,
+            return vec2(offX * c + roundX - cl * offX / (offY - 1e-10),
                         offY * c + roundY - cl);
         }
     }
@@ -580,7 +580,7 @@ vec2 var_whorl(vec2 p, int slot) {
     if (rr < 1.0) {
         a = atan(p.y, p.x) + inside / max(1.0 - rr, 1e-6);
     } else {
-        a = atan(p.y, p.x) + outside / max(1.0 - rr, 1e-6);
+        a = atan(p.y, p.x) + outside / max(rr - 1.0, 1e-6);
     }
     return rr * vec2(cos(a), sin(a));
 }
