@@ -104,7 +104,11 @@ class SweepResult:
 
 def _run_pipeline(audio: np.ndarray, engine_cls, stability_method: str,
                   onset_weight: str):
-    """Run the full pipeline on audio. Returns (onset_times, effective_bpm)."""
+    """Run the full pipeline on audio. Returns (onset_times, effective_bpm).
+
+    Matches production: CSD for onset detection, BTrack for tempo
+    (falls back to ACF if BTrack unavailable).
+    """
     engine = engine_cls()
     freqs = getattr(engine, 'bin_centers', None)
     stab = MagnitudeStability(method=stability_method)
@@ -112,9 +116,17 @@ def _run_pipeline(audio: np.ndarray, engine_cls, stability_method: str,
     energy = EnergyAnalyzer(freqs=freqs)
     density = OnsetDensityTracker()
     hop_dur = HOP_SIZE / SAMPLE_RATE
-    tempo = AutocorrelationTempoTracker(hop_duration=hop_dur)
 
     a_w = A_WEIGHTS if freqs is None else a_weight_curve(freqs)
+
+    # Tempo tracker: prefer BTrack (matches production)
+    try:
+        from flame_sheep_audio.tempo_btrack import BTrackTempoTracker
+        tempo = BTrackTempoTracker(hop_size=HOP_SIZE, sample_rate=SAMPLE_RATE)
+        tempo_has_audio = True
+    except ImportError:
+        tempo = AutocorrelationTempoTracker(hop_duration=hop_dur)
+        tempo_has_audio = False
 
     # Complex spectral difference transform (replaces flux with phase-aware flux)
     csd = None
@@ -152,12 +164,13 @@ def _run_pipeline(audio: np.ndarray, engine_cls, stability_method: str,
 
         events = det.detect(det_frame)
 
-        # Onset strength: raw, percussive-weighted, complex_diff, or both
-        if onset_weight in ('percussive', 'csd_percussive'):
-            perc_w = np.sqrt(1.0 - stab.stability_per_bin())
-            onset_str = float(np.dot(frame.flux * perc_w, a_w))
+        # Feed tempo tracker
+        if tempo_has_audio:
+            tempo.feed_audio(chunk)
         else:
             onset_str = float(np.dot(frame.flux, a_w))
+            total_density = sum(density.densities_slow.values())
+            tempo.feed(onset_str, onset_density=total_density)
 
         now += hop_dur
         for e in events:
@@ -165,9 +178,6 @@ def _run_pipeline(audio: np.ndarray, engine_cls, stability_method: str,
                 density.process_onset(e.kind, now)
             est_onsets.append(now)
         density.update(now)
-
-        total_density = sum(density.densities_slow.values())
-        tempo.feed(onset_str, onset_density=total_density)
 
     return est_onsets, tempo.effective_bpm
 
