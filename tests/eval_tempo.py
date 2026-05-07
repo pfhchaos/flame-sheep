@@ -61,10 +61,8 @@ def reference_bpm(drums_audio: np.ndarray, sr: int) -> float:
 def estimate_bpm_pipeline(mix_audio: np.ndarray, orig_sr: int) -> float:
     """Run our full pipeline on mix audio and return estimated BPM.
 
-    Uses HOP_SIZE cadence with push_hop to match the threaded production
-    path. Constructs the full pipeline (spectrum → stability → detector →
-    density → ACF tempo) so all signals (including onset density for
-    octave disambiguation) are present.
+    Uses BTrack (production path) with raw audio feed. Falls back to
+    ACF if BTrack is unavailable.
     """
     mix_48k = resample_to_48k(mix_audio, orig_sr)
     if mix_48k.ndim > 1:
@@ -72,6 +70,17 @@ def estimate_bpm_pipeline(mix_audio: np.ndarray, orig_sr: int) -> float:
     else:
         mono = mix_48k.astype(np.float32)
 
+    # Prefer BTrack (matches production)
+    try:
+        from flame_sheep_audio.tempo_btrack import BTrackTempoTracker
+        tracker = BTrackTempoTracker(hop_size=HOP_SIZE, sample_rate=SAMPLE_RATE)
+        for pos in range(0, len(mono) - HOP_SIZE, HOP_SIZE):
+            tracker.feed_audio(mono[pos:pos + HOP_SIZE])
+        return tracker.effective_bpm
+    except ImportError:
+        pass
+
+    # ACF fallback
     engine = SpectrumEngine()
     stability = MagnitudeStability()
     detector = FluxBeatDetector(sharpness=True, stability=stability)
@@ -79,36 +88,24 @@ def estimate_bpm_pipeline(mix_audio: np.ndarray, orig_sr: int) -> float:
     hop_dur = HOP_SIZE / SAMPLE_RATE
     tracker = AutocorrelationTempoTracker(hop_duration=hop_dur)
 
-    # Prime
-    silence = np.zeros(HOP_SIZE, dtype=np.float32)
-    for _ in range(40):
-        frame = engine.push_hop(silence)
-        stability.update(frame.magnitude)
-        detector.detect(frame)
-        tracker.feed(0.0)
+    from flame_sheep_audio.hpss import ComplexSpectralDiffTransform
+    from flame_sheep_audio._bands import A_WEIGHTS, a_weight_curve
+    csd = ComplexSpectralDiffTransform()
 
-    # Process at HOP_SIZE cadence (matches threaded path)
     now = 0.0
-    pos = 0
-    while pos < len(mono):
+    for pos in range(0, len(mono) - HOP_SIZE, HOP_SIZE):
         chunk = mono[pos:pos + HOP_SIZE]
-        if len(chunk) < HOP_SIZE:
-            chunk = np.pad(chunk, (0, HOP_SIZE - len(chunk)))
         frame = engine.push_hop(chunk)
+        csd_frame = csd(frame)
         stability.update(frame.magnitude)
-        events = detector.detect(frame)
+        events = detector.detect(csd_frame)
         now += hop_dur
         for e in events:
             density.process_onset(e.kind, now)
         density.update(now)
-        total_density = sum(density.densities.values())
-        # Percussive-weighted onset strength (matches processor pipeline)
-        perc_weight = np.sqrt(1.0 - stability.stability_per_bin())
-        from flame_sheep_audio._bands import A_WEIGHTS, a_weight_curve
-        a_w = A_WEIGHTS if len(frame.flux) == len(A_WEIGHTS) else a_weight_curve(np.arange(len(frame.flux)))
-        perc_onset = float(np.dot(frame.flux * perc_weight, a_w))
-        tracker.feed(perc_onset, onset_density=total_density)
-        pos += HOP_SIZE
+        a_w = A_WEIGHTS if len(csd_frame.flux) == len(A_WEIGHTS) else a_weight_curve(np.arange(len(csd_frame.flux)))
+        onset_str = float(np.dot(csd_frame.flux, a_w))
+        tracker.feed(onset_str, onset_density=sum(density.densities.values()))
 
     return tracker.effective_bpm
 
