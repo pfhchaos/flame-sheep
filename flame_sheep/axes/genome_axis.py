@@ -15,8 +15,8 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-from flame_sheep_audio import AudioState, BeatEvent, FREQS
-from flame_sheep_audio.response import MelCentroid, Delta, Normalize
+from flame_sheep_audio import AudioState, BeatEvent
+from flame_sheep_audio.response import MelCentroid, Delta
 from flame_sheep.genome import Genome
 from flame_sheep.variations import Variation
 
@@ -80,7 +80,8 @@ class GenomeAxis:
     def __init__(self, genome_factory: Callable[[], Genome],
                  role: RoleMapper,
                  lib: Library | None = None,
-                 rng: np.random.Generator | None = None) -> None:
+                 rng: np.random.Generator | None = None,
+                 freqs: np.ndarray | None = None) -> None:
         self.enabled = True
         self._genome_factory = genome_factory
         self._role = role
@@ -120,7 +121,7 @@ class GenomeAxis:
         self.needs_walker_reset = False
 
         # Mel-space centroid tracking (perceptually uniform, fixes HF bias)
-        self._mel_centroid = MelCentroid(FREQS)
+        self._mel_centroid = MelCentroid(freqs) if freqs is not None else None
         self._mel_delta = Delta()
 
         # Timing
@@ -137,7 +138,10 @@ class GenomeAxis:
         self._section_cooldown += 1
 
         # Compute mel-space centroid delta (perceptually uniform)
-        mel_centroid = self._mel_centroid.compute(audio.spectrum) if len(audio.spectrum) > 0 else 0.0
+        if len(audio.spectrum) > 0 and self._mel_centroid is not None:
+            mel_centroid = self._mel_centroid.compute(audio.spectrum)
+        else:
+            mel_centroid = 0.0
         mel_delta = self._mel_delta.update(mel_centroid)
 
         # Detect section change — suppress during warmup and cooldown

@@ -1039,9 +1039,10 @@ class TestGenomeAxisEvents:
 
     def _make_axis(self):
         _seed = iter(range(1000))
+        from flame_sheep_audio import FREQS
         return GenomeAxis(
             genome_factory=lambda: trivial_genome(next(_seed)),
-            role=_default_role)
+            role=_default_role, freqs=FREQS)
 
     def test_ignores_unknown_events(self):
         axis = self._make_axis()
