@@ -10,7 +10,7 @@ log = logging.getLogger(__name__)
 
 import numpy as np
 
-from flame_sheep_audio import AudioState, FREQS
+from flame_sheep_audio import AudioState
 from flame_sheep_audio.response import MelCentroid, Delta
 from flame_sheep.genome import _lerp_arr
 from flame_sheep.config import cfg
@@ -34,7 +34,8 @@ class PaletteAxis:
     def __init__(self, initial_palette: np.ndarray,
                  role: RoleMapper,
                  lib: Library | None = None,
-                 rng: np.random.Generator | None = None) -> None:
+                 rng: np.random.Generator | None = None,
+                 freqs: np.ndarray | None = None) -> None:
         self.enabled = True
         self._role = role
         self._lib = lib
@@ -48,7 +49,7 @@ class PaletteAxis:
         self.palette_speed   = self.DRIFT_MORPH_SPEED
 
         # Mel-space centroid tracking (perceptually uniform)
-        self._mel_centroid = MelCentroid(FREQS)
+        self._mel_centroid = MelCentroid(freqs) if freqs is not None else None
         self._mel_delta = Delta()
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
@@ -75,7 +76,10 @@ class PaletteAxis:
                 log.debug(f'[backbeat] energy={event.energy:.2f}')
 
         # Mel-space centroid delta (perceptually uniform)
-        mel_centroid = self._mel_centroid.compute(audio.spectrum) if len(audio.spectrum) > 0 else 0.0
+        if len(audio.spectrum) > 0 and self._mel_centroid is not None:
+            mel_centroid = self._mel_centroid.compute(audio.spectrum)
+        else:
+            mel_centroid = 0.0
         mel_delta = self._mel_delta.update(mel_centroid)
 
         # In low backbeat density, centroid shifts trigger palette swaps

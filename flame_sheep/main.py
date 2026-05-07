@@ -104,10 +104,11 @@ class FlameSheepCore:
         role_map = {k: getattr(role_cfg, k) for k in ('downbeat', 'backbeat', 'subdivision', 'energy')}
         self._role = RoleMapper(role_map)
 
-        self._genome_axis = GenomeAxis(genome_factory=factory, role=self._role, lib=lib, rng=self.rng)
+        bin_freqs = orchestrator.audio.bin_freqs
+        self._genome_axis = GenomeAxis(genome_factory=factory, role=self._role, lib=lib, rng=self.rng, freqs=bin_freqs)
         self._palette_axis = PaletteAxis(
             initial_palette=self._genome_axis.current_genome.palette,
-            role=self._role, lib=lib, rng=self.rng)
+            role=self._role, lib=lib, rng=self.rng, freqs=bin_freqs)
         self._zoom_axis = ZoomAxis(role=self._role)
         self._brightness_axis = BrightnessAxis(role=self._role)
         self._detail_axis = DetailAxis(role=self._role)
