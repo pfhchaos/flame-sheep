@@ -213,6 +213,7 @@ class SpectrumPanel(Panel):
         self._band_config = band_config
         self._spectrum: np.ndarray = np.zeros(0)
         self._stability: np.ndarray = np.zeros(0)
+        self._sustained: np.ndarray = np.zeros(0)
         # Precomputed log-frequency x positions (built on first render)
         self._x_positions: np.ndarray | None = None
         self._x_widths: np.ndarray | None = None
@@ -223,6 +224,7 @@ class SpectrumPanel(Panel):
             self._x_widths = None
         self._spectrum = snap.spectrum
         self._stability = snap.stability
+        self._sustained = snap.sustained
 
     def _freq_to_x(self, freq: float, plot_x: float, plot_w: float) -> float:
         """Map frequency to x coordinate on log scale."""
@@ -309,7 +311,7 @@ class SpectrumPanel(Panel):
         plot_x = x + 36.0
         plot_w = w - 40.0
         bracket_h = 20
-        n_strips = 3 if len(self._stability) == len(self._spectrum) else 1
+        n_strips = 3 if (len(self._stability) == len(self._spectrum) or len(self._sustained) == len(self._spectrum)) else 1
         strip_h = (h - bracket_h) / n_strips
 
         # Shared peak for all three strips so proportions are honest.
@@ -317,9 +319,10 @@ class SpectrumPanel(Panel):
         raw_max = self._spectrum[1:].max() if len(self._spectrum) > 1 else 0.0
         shared_max = max(raw_max, self.NOISE_FLOOR)
 
+        has_sustained = len(self._sustained) == len(self._spectrum) and self._sustained.any()
         if n_strips == 3:
-            harmonic = self._spectrum * self._stability
-            percussive = self._spectrum * (1.0 - self._stability)
+            harmonic = self._sustained if has_sustained else self._spectrum * self._stability
+            percussive = np.maximum(self._spectrum - harmonic, 0.0)
             self._draw_spectrum_strip(draw, text, self._spectrum, 'full',
                                       x, y, w, strip_h, _FG, plot_x, plot_w,
                                       max_val=shared_max)
