@@ -15,7 +15,8 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-from flame_sheep_audio import AudioState, BeatEvent
+from flame_sheep_audio import AudioState, BeatEvent, FREQS
+from flame_sheep_audio.response import MelCentroid, Delta, Normalize
 from flame_sheep.genome import Genome
 from flame_sheep.variations import Variation
 
@@ -118,6 +119,10 @@ class GenomeAxis:
         # Walker reset flag (consumed by renderer)
         self.needs_walker_reset = False
 
+        # Mel-space centroid tracking (perceptually uniform, fixes HF bias)
+        self._mel_centroid = MelCentroid(FREQS)
+        self._mel_delta = Delta()
+
         # Timing
         self._last_downbeat_time = 0.0
         self._break_damping = 1.0
@@ -130,6 +135,10 @@ class GenomeAxis:
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
         self._section_warmup += 1
         self._section_cooldown += 1
+
+        # Compute mel-space centroid delta (perceptually uniform)
+        mel_centroid = self._mel_centroid.compute(audio.spectrum) if len(audio.spectrum) > 0 else 0.0
+        mel_delta = self._mel_delta.update(mel_centroid)
 
         # Detect section change — suppress during warmup and cooldown
         WARMUP_FRAMES = 1800  # ~30s at 60fps
@@ -158,16 +167,18 @@ class GenomeAxis:
             # Gate centroid by energy — ignore delta when centroid RMS is low
             # (noise floor wandering, consonant bursts)
             if audio.centroid_harmonic_rms > 0.01:
-                centroid_drive = min(1.0, abs(audio.centroid_delta) / 1000.0)
+                # mel delta ~0-200 for normal music (vs 0-5000 in Hz space)
+                centroid_drive = min(1.0, mel_delta / 100.0)
                 self.morph_speed = self.DRIFT_MORPH_SPEED + centroid_drive * 0.003
             else:
                 self.morph_speed = self.DRIFT_MORPH_SPEED
         else:
             # Beat mode fallback: low-band density swap on large centroid shift
             low_density = self._role.band_state(audio, DOWNBEAT).onset_density
+            # mel delta threshold: ~50 mel ≈ one octave shift at 200 Hz
             if (
                 low_density < cfg.genome.centroid_swap_density_gate
-                and audio.centroid_delta > self.CENTROID_SWAP_THRESHOLD
+                and mel_delta > self.CENTROID_SWAP_THRESHOLD
                 and self.morph_t > 0.3
             ):
                 self.current_genome = self.current_genome.lerp(
@@ -177,7 +188,7 @@ class GenomeAxis:
                 self.morph_t = 0.0
                 self.morph_speed = 0.02
                 log.debug(
-                    f"[centroid swap] delta={audio.centroid_delta:.0f}Hz "
+                    f"[centroid swap] mel_delta={mel_delta:.1f} "
                     f"low_density={low_density:.2f}"
                 )
 

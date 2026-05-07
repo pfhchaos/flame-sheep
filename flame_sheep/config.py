@@ -32,7 +32,7 @@ DEFAULTS = {
         'strong_beat_threshold': 2.0,
         'break_decay': 0.97,
         'density_damping': 0.3,
-        'centroid_swap_threshold': 500.0,
+        'centroid_swap_threshold': 50.0,
         'centroid_swap_density_gate': 0.5,   # low-band density below this enables centroid swap
     },
     'zoom': {

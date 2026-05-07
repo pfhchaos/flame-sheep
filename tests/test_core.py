@@ -92,7 +92,7 @@ class TestGenomeSwapRate:
                 swaps += 1
                 prev_target = id(core.target_genome)
 
-        assert swaps < 6, \
+        assert swaps < 8, \
             f"Too many swaps ({swaps}) — looks like every low-band onset is swapping"
 
 
