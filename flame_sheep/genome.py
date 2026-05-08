@@ -295,10 +295,10 @@ class Genome:
     def rotated(self, angle: float) -> 'Genome':
         """Return a copy with all affine transforms rotated by angle (radians).
 
-        Applies a 2D rotation matrix to the linear part [a,b,d,e] of each
-        transform's affine coefficients. Translation [c,f] is left unchanged.
-        This is how Electric Sheep produces animation loops — a full 2π
-        rotation returns to the original attractor.
+        Pre-multiplies each transform's full 2x3 affine matrix by a rotation
+        matrix R, including the translation column. This rotates the entire
+        attractor as a coherent shape. A full 2π rotation returns to the
+        original attractor. Matches flam3's flam3_rotate().
         """
         cos_a = np.cos(angle)
         sin_a = np.sin(angle)
@@ -307,14 +307,14 @@ class Genome:
         for tr in self.transforms:
             rt = Transform()
             a, b, c, d, e, f = tr.affine
-            # Rotate the linear part: R @ [[a,b],[d,e]]
+            # R @ [[a,b,c],[d,e,f]] — full 2x3 premultiply
             rt.affine = np.array([
                 cos_a * a - sin_a * d,
                 cos_a * b - sin_a * e,
-                c,
+                cos_a * c - sin_a * f,
                 sin_a * a + cos_a * d,
                 sin_a * b + cos_a * e,
-                f,
+                sin_a * c + cos_a * f,
             ], dtype=np.float32)
             rt.variations = tr.variations.copy()
             rt.color = tr.color
