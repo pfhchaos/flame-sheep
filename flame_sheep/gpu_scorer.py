@@ -25,11 +25,12 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-SCORE_VERSION = 5  # v5: GPU render + transform-based clustering
+SCORE_VERSION = 6  # v6: rotation-accumulated centroid + balance
 
 COLOR_SCALE = 1_000_000.0
 DEFAULT_SIZE = 512
 DEFAULT_FRAMES = 60
+DEFAULT_SWEPT_STEPS = 36  # full 2π in 10° increments
 
 
 def _create_context():
@@ -40,14 +41,50 @@ def _create_context():
     return ctx
 
 
+def _swept_histogram(genome, renderer, n_steps: int = DEFAULT_SWEPT_STEPS):
+    """Render genome at n_steps rotation angles, accumulating into one histogram.
+
+    Returns (hit_counts, color_accs) as uint32 arrays, same as
+    renderer.histogram_data().
+    """
+    import math
+    from .renderer import N_ITERS
+    from flame_sheep_audio import N_BINS
+
+    renderer.upload_genome(genome)
+    renderer.reset_walkers()
+    renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
+
+    # Single clear, then accumulate across all rotation steps
+    renderer.clear_histogram()
+
+    base_rotation = genome.rotation
+    for i in range(n_steps):
+        angle = base_rotation + (2.0 * math.pi * i / n_steps)
+        renderer.set_rotation(angle)
+        renderer.dispatch_chaos_game(iterations=N_ITERS)
+        renderer.ctx.memory_barrier()
+
+    # Restore original rotation
+    renderer.set_rotation(base_rotation)
+
+    return renderer.histogram_data()
+
+
 def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
+                     swept_steps: int = DEFAULT_SWEPT_STEPS,
                      ) -> dict[str, float]:
     """Render a genome on GPU and compute all scores.
+
+    Two passes:
+      1. Static: single-frame render for edge/structure/symmetry scores
+      2. Swept: full-rotation accumulation for centroid/balance
 
     Args:
         genome: Genome object.
         renderer: FlameRenderer instance (already created with desired size).
-        n_frames: Number of frames to accumulate.
+        n_frames: Number of frames to accumulate for static pass.
+        swept_steps: Rotation steps for swept pass (0 to skip).
 
     Returns:
         Dict of all score columns.
@@ -57,6 +94,7 @@ def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
     from .renderer import N_ITERS
     from flame_sheep_audio import N_BINS
 
+    # --- Pass 1: Static render (unchanged) ---
     renderer.upload_genome(genome)
     renderer.reset_walkers()
     renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
@@ -97,6 +135,26 @@ def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
 
     # detail_sensitivity: not computed here (needs half-iteration snapshot)
     scores.setdefault('detail_sensitivity', 0.0)
+
+    # --- Pass 2: Swept render (rotation-accumulated) ---
+    if swept_steps > 0:
+        swept_hits, swept_colors = _swept_histogram(
+            genome, renderer, n_steps=swept_steps)
+        swept_hit_grid = swept_hits.astype(np.float64)
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            swept_color_grid = np.where(
+                swept_hits > 0,
+                swept_colors.astype(np.float64) / (swept_hit_grid * COLOR_SCALE),
+                0.0,
+            )
+
+        swept_scores = _score_from_histogram(swept_hit_grid, swept_color_grid)
+
+        # Replace centroid and balance with swept versions
+        scores['centroid_offset_x'] = swept_scores['centroid_offset_x']
+        scores['centroid_offset_y'] = swept_scores['centroid_offset_y']
+        scores['balance'] = swept_scores['balance']
 
     return scores
 
@@ -161,6 +219,8 @@ def main():
                         help='Frames to accumulate (default: %(default)s)')
     parser.add_argument('--all', action='store_true',
                         help='Re-score all genomes, not just outdated ones')
+    parser.add_argument('--swept-steps', type=int, default=DEFAULT_SWEPT_STEPS,
+                        help='Rotation steps for swept centroid (0 to skip, default: %(default)s)')
     parser.add_argument('--limit', type=int, default=0,
                         help='Max genomes to score (0 = unlimited)')
     args = parser.parse_args()
@@ -208,7 +268,8 @@ def main():
     for gid, params_json in rows:
         try:
             genome = _genome_from_json(params_json)
-            scores = score_genome_gpu(genome, renderer, n_frames=args.frames)
+            scores = score_genome_gpu(genome, renderer, n_frames=args.frames,
+                                     swept_steps=args.swept_steps)
             _update_genome(conn, gid, scores)
             conn.commit()
             scored += 1

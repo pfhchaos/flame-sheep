@@ -102,7 +102,8 @@ class FlameRenderer:
         flame_src = _resolve_includes(flame_src, SHADER_DIR)
         flame_src = flame_src.replace('// {{SYMMETRY_GROUPS}}', generate_glsl())
         if scoring:
-            flame_src = '#define SCORING_MODE\n' + flame_src
+            # Insert after #version line — GLSL requires #version first
+            flame_src = flame_src.replace('\n', '\n#define SCORING_MODE\n', 1)
         self.compute_shader = self.ctx.compute_shader(flame_src)
         self.clear_shader = self.ctx.compute_shader(
             (SHADER_DIR / 'clear.comp').read_text()
@@ -226,6 +227,12 @@ class FlameRenderer:
         cs['u_height']       = self.canvas_h
 
         self.palette_tex.write(genome.palette.tobytes())
+
+    def set_rotation(self, angle: float) -> None:
+        """Update only the rotation uniforms (no genome re-upload)."""
+        import math
+        self.compute_shader['u_cos_rot'] = math.cos(angle)
+        self.compute_shader['u_sin_rot'] = math.sin(angle)
 
     def upload_palette(self, palette: np.ndarray) -> None:
         """Upload a palette independently of the genome.
