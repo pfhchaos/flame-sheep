@@ -877,7 +877,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
             if _frame % 300 == 0:
                 fps = 1.0 / frame_time if frame_time > 0 else 0
-                log.info(f'[perf] frame={_frame} fps={fps:.1f} dt={frame_time*1000:.1f}ms iters={frame.iterations}')
+                log.debug(f'[perf] frame={_frame} fps={fps:.1f} dt={frame_time*1000:.1f}ms iters={frame.iterations}')
 
             frame = core.tick(frame_time)
             _watchdog_last = time.perf_counter()

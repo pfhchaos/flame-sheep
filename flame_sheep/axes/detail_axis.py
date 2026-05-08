@@ -26,7 +26,7 @@ class DetailAxis:
     """
 
     def __init__(self, role: RoleMapper, min_iters: int = 100, max_iters: int = 500,
-                 rms_scale: float = 0.07) -> None:
+                 rms_scale: float = 0.23) -> None:
         self.enabled = True
         self._role = role
         self.min_iters = min_iters
@@ -37,7 +37,11 @@ class DetailAxis:
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
         energy = self._envelope.update(audio.centroid_rms)
-        t = min(energy / self.rms_scale, 1.0) ** 0.5
+        # Floor: below rms_floor, stay at min_iters. Scale from floor to scale.
+        rms_floor = 0.05
+        scale_range = max(self.rms_scale - rms_floor, 0.01)
+        t = max(energy - rms_floor, 0.0) / scale_range
+        t = min(t, 1.0) ** 2.0
         self.iterations = int(self.min_iters + t * (self.max_iters - self.min_iters))
 
     def contribute(self, frame: FlameSheepCore.FrameState) -> None:
