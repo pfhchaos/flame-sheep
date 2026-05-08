@@ -300,7 +300,7 @@ class FlameSheepApp(mglw.WindowConfig):
         if self._core.needs_walker_reset:
             self._renderer.reset_walkers()
             self._core.needs_walker_reset = False
-        self._renderer.clear_histogram(decay=0.0)
+        self._renderer.clear_histogram(decay=0.3)
         self._renderer.dispatch_chaos_game(iterations=frame.iterations)
         self.ctx.memory_barrier()
         w, h = self.window_size
@@ -902,7 +902,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             if core.needs_walker_reset:
                 renderer.reset_walkers()
                 core.needs_walker_reset = False
-            renderer.clear_histogram(decay=0.0)
+            renderer.clear_histogram(decay=0.3)
             renderer.dispatch_chaos_game(iterations=frame.iterations)
             ctx.memory_barrier()
             _watchdog_last = time.perf_counter()
