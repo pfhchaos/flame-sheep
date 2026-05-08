@@ -1051,18 +1051,18 @@ class TestGenomeAxisEvents:
         axis.tick(audio, 1/60, 0.0)
 
     def test_break_damps_morph(self):
+        # Give both axes density so morph speed is meaningful
+        density = {'low': 2.0, 'mid': 1.0}
         # Breaking axis — morph should advance slowly
         axis_break = self._make_axis()
-        axis_break.morph_speed = 0.1
         for i in range(60):
-            axis_break.tick(_audio(breaking=True), 1/60, float(i))
+            axis_break.tick(_audio(breaking=True, onset_density=density), 1/60, float(i))
         mt_breaking = axis_break.morph_t
 
         # Normal axis — morph should advance freely
         axis_normal = self._make_axis()
-        axis_normal.morph_speed = 0.1
         for i in range(60):
-            axis_normal.tick(_audio(), 1/60, float(i))
+            axis_normal.tick(_audio(onset_density=density), 1/60, float(i))
         mt_normal = axis_normal.morph_t
 
         assert mt_normal > 0
@@ -1090,16 +1090,16 @@ class TestGenomeAxisEvents:
             "Brief break should barely slow morph"
 
     def test_damping_recovers_after_break(self):
+        density = {'low': 2.0, 'mid': 1.0}
         axis = self._make_axis()
-        axis.morph_speed = 0.1
         # Deep break — morph should be very slow
         for i in range(60):
-            axis.tick(_audio(breaking=True), 1/60, float(i))
+            axis.tick(_audio(breaking=True, onset_density=density), 1/60, float(i))
         mt_after_break = axis.morph_t
 
-        # Recovery — morph in a single frame after recovery should be fast
+        # Recovery — morph should resume at normal speed
         for i in range(60):
-            axis.tick(_audio(breaking=False), 1/60, float(60 + i))
+            axis.tick(_audio(breaking=False, onset_density=density), 1/60, float(60 + i))
         mt_after_recovery = axis.morph_t
         # The 60 recovery frames should add substantially more progress
         recovery_progress = mt_after_recovery - mt_after_break
