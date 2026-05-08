@@ -87,19 +87,22 @@ class FlameRenderer:
                           half the physical size for performance).
     """
 
-    def __init__(self, ctx: moderngl.Context, canvas_w: int, canvas_h: int):
+    def __init__(self, ctx: moderngl.Context, canvas_w: int, canvas_h: int,
+                 scoring: bool = False):
         self.ctx      = ctx
         self.canvas_w = canvas_w
         self.canvas_h = canvas_h
 
-        self._load_shaders()
+        self._load_shaders(scoring=scoring)
         self._create_resources()
 
-    def _load_shaders(self) -> None:
+    def _load_shaders(self, scoring: bool = False) -> None:
         from .variations._symmetry_groups import generate_glsl
         flame_src = (SHADER_DIR / 'flame.comp').read_text()
         flame_src = _resolve_includes(flame_src, SHADER_DIR)
         flame_src = flame_src.replace('// {{SYMMETRY_GROUPS}}', generate_glsl())
+        if scoring:
+            flame_src = '#define SCORING_MODE\n' + flame_src
         self.compute_shader = self.ctx.compute_shader(flame_src)
         self.clear_shader = self.ctx.compute_shader(
             (SHADER_DIR / 'clear.comp').read_text()
@@ -188,6 +191,10 @@ class FlameRenderer:
         self._blur_fbos = {}
         self.blur_radius = 1.0  # adjustable blur strength
 
+        # Debug overlay (lazy init)
+        self._debug_circle_prog = None
+        self._debug_circle_vao = None
+
     def reset_walkers(self) -> None:
         """Re-randomize walker positions. Call after a genome swap to avoid
         stuck walkers that escaped to infinity under a degenerate genome."""
@@ -206,9 +213,11 @@ class FlameRenderer:
         self.weights_buf.write(weights.tobytes())
 
         cs = self.compute_shader
+        import math
         cs['u_n_transforms'] = len(genome.transforms)
         cs['u_zoom']         = genome.zoom
-        cs['u_rotation']     = genome.rotation
+        cs['u_cos_rot']      = math.cos(genome.rotation)
+        cs['u_sin_rot']      = math.sin(genome.rotation)
         cs['u_center']       = tuple(genome.center)
         cs['u_width']        = self.canvas_w
         cs['u_height']       = self.canvas_h
@@ -230,9 +239,14 @@ class FlameRenderer:
             spectrum = np.interp(x_new, x_old, spectrum).astype(np.float32)
         self.audio_tex.write(spectrum.astype(np.float32).tobytes())
 
-    def clear_histogram(self) -> None:
+    def clear_histogram(self, decay: float = 0.0) -> None:
+        """Clear or decay the histogram.
+
+        decay: 0.0 = full clear, 0.9 = keep 90% of previous frame's hits.
+        """
         size = self.canvas_w * self.canvas_h * 2
         self.clear_shader['u_size'] = size
+        self.clear_shader['u_decay_num'] = int(decay * 256)
         groups = (size + 63) // 64
         self.clear_shader.run(group_x=groups)
         self.ctx.memory_barrier()
@@ -340,6 +354,77 @@ class FlameRenderer:
         bp['u_direction'] = (0.0, 1.0 / surface_h)
         bp['u_radius']    = self.blur_radius
         self.blur_vao.render(moderngl.TRIANGLES)
+
+    def draw_debug_circle(self, ndc_x: float, ndc_y: float,
+                          surface_w: int, surface_h: int,
+                          radius_px: float = 30.0,
+                          color: tuple[float, float, float] = (1.0, 0.0, 0.0)) -> None:
+        """Draw a circle overlay at NDC coords (-1..1) on current framebuffer.
+
+        ndc_x, ndc_y: position in normalized device coords (-1..1)
+        radius_px: circle radius in pixels
+        color: RGB float tuple
+        """
+        if self._debug_circle_prog is None:
+            self._debug_circle_prog = self.ctx.program(
+                vertex_shader="""
+                #version 430
+                in vec2 in_pos;
+                void main() { gl_Position = vec4(in_pos, 0.0, 1.0); }
+                """,
+                fragment_shader="""
+                #version 430
+                uniform vec2 u_center;
+                uniform float u_radius;
+                uniform vec2 u_resolution;
+                uniform vec3 u_color;
+                out vec4 fragColor;
+                void main() {
+                    vec2 pixel = gl_FragCoord.xy;
+                    vec2 center_px = (u_center * 0.5 + 0.5) * u_resolution;
+                    float dist = length(pixel - center_px);
+                    float ring = smoothstep(u_radius - 2.0, u_radius - 1.0, dist)
+                               * (1.0 - smoothstep(u_radius + 1.0, u_radius + 2.0, dist));
+                    if (ring < 0.01) discard;
+                    fragColor = vec4(u_color * ring, ring);
+                }
+                """,
+            )
+            self._debug_circle_vao = self.ctx.vertex_array(
+                self._debug_circle_prog,
+                [(self.quad_vbo, '2f', 'in_pos')],
+            )
+
+        self.ctx.enable(moderngl.BLEND)
+        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+
+        p = self._debug_circle_prog
+        p['u_center'] = (ndc_x, ndc_y)
+        p['u_radius'] = radius_px
+        p['u_resolution'] = (float(surface_w), float(surface_h))
+        p['u_color'] = color
+        self._debug_circle_vao.render(moderngl.TRIANGLES)
+
+        self.ctx.disable(moderngl.BLEND)
+
+    def histogram_centroid_ndc(self) -> tuple[float, float] | None:
+        """Compute the hit-weighted centroid from the coarse histogram.
+
+        Returns (ndc_x, ndc_y) in (-1..1) or None if histogram is empty.
+        Uses the GPU-downsampled histogram (~256x256), cheap enough for debug.
+        """
+        hist = self.histogram_data_coarse()
+        total = hist.sum()
+        if total == 0:
+            return None
+        h, w = hist.shape
+        ys, xs = np.mgrid[0:h, 0:w]
+        cx = float(np.sum(xs * hist) / total)
+        cy = float(np.sum(ys * hist) / total)
+        # Convert from pixel coords to NDC (-1..1)
+        ndc_x = (cx / w) * 2.0 - 1.0
+        ndc_y = (cy / h) * 2.0 - 1.0
+        return (ndc_x, ndc_y)
 
     def histogram_data(self) -> tuple[np.ndarray, np.ndarray]:
         """

@@ -63,14 +63,14 @@ def tick_for(core, clock, duration: float, fps: float = 60.0):
 class TestGenomeSwapRate:
 
     def test_swaps_at_expected_rate(self, core, clock):
-        """Genome should swap after dwell completes and strong beat arrives."""
+        """Genome should swap after morph completes."""
         dt = 1.0 / 60
         swaps = 0
         prev_target = id(core.target_genome)
 
-        # Skip dwell — force lifecycle to READY so next beat triggers morph
-        from flame_sheep.axes._morph_lifecycle import MorphState
-        core._genome_axis._lifecycle.state = MorphState.READY
+        # Force into morphing state so morph can complete
+        from flame_sheep.axes.genome_axis import _MorphState
+        core._genome_axis._morph_state = _MorphState.MORPHING
 
         for _ in range(int(10.0 * 60)):  # 10 seconds at 60fps
             clock.advance(dt)
@@ -79,7 +79,7 @@ class TestGenomeSwapRate:
                 swaps += 1
                 prev_target = id(core.target_genome)
 
-        # With dwell bypassed, strong beats should trigger morphs
+        # Morph should complete and swap at least once in 10s
         assert swaps >= 1, \
             f"Expected at least 1 genome swap in 10s, got {swaps}"
 
@@ -88,7 +88,10 @@ class TestGenomeSwapRate:
         dt = 1.0 / 60
         swaps = 0
         # Reset state from previous test
-        core._genome_axis._lifecycle.reset(clock())
+        from flame_sheep.axes.genome_axis import _MorphState
+        core._genome_axis._morph_state = _MorphState.DWELL
+        core._genome_axis._morph_t = 0.0
+        core._genome_axis._dwell_start = clock()
         prev_target = id(core.target_genome)
 
         for _ in range(int(4.0 * 60)):  # 4 seconds

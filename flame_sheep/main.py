@@ -49,6 +49,7 @@ from .genome import Genome, _lerp_arr
 from flame_sheep_audio import BeatEvent, AudioState, DEFAULT_DEVICE
 from flame_sheep_audio.mode import Mode
 from .orchestrator import Orchestrator
+
 from .renderer import FlameRenderer, Viewport
 from .control import ControlPipe, ControlEvent
 from .axes.zoom_axis import ZoomAxis
@@ -56,7 +57,6 @@ from .axes.brightness_axis import BrightnessAxis
 from .axes.detail_axis import DetailAxis
 from .axes.genome_axis import GenomeAxis
 from .axes.palette_axis import PaletteAxis
-from .drift_mode import DriftMode
 from .role_mapper import RoleMapper
 
 
@@ -105,14 +105,13 @@ class FlameSheepCore:
         self._role = RoleMapper(role_map)
 
         bin_freqs = orchestrator.audio.bin_freqs
-        self._genome_axis = GenomeAxis(genome_factory=factory, role=self._role, lib=lib, rng=self.rng, freqs=bin_freqs)
+        self._genome_axis = GenomeAxis(genome_factory=factory, role=self._role, lib=lib, rng=self.rng)
         self._palette_axis = PaletteAxis(
             initial_palette=self._genome_axis.current_genome.palette,
             role=self._role, lib=lib, rng=self.rng, freqs=bin_freqs)
         self._zoom_axis = ZoomAxis(role=self._role)
         self._brightness_axis = BrightnessAxis(role=self._role)
         self._detail_axis = DetailAxis(role=self._role)
-        self._drift_mode = DriftMode(genome_factory=factory, lib=lib, rng=self.rng)
         self._pending_song_start = False
 
     @dataclass
@@ -159,49 +158,16 @@ class FlameSheepCore:
             mode=snap.mode,
         )
 
-        # --- Mode transitions (detected by audio engine) ---
         current_mode = Mode(snap.mode)
 
-        # Drift mode still manages idle genome morphing
-        was_drifting = self._drift_mode.active
-        is_idle = current_mode == Mode.IDLE
-
-        if is_idle and not was_drifting:
-            self._drift_mode.active = True
-            self._drift_mode.enter(self._genome_axis)
-        elif not is_idle and was_drifting:
-            self._drift_mode.active = False
-            self._genome_axis.accept_handoff(
-                self._drift_mode.exit(),
-                loop_id=self._drift_mode.active_loop_id)
-
-        # Advance drift morph when idle
-        if is_idle:
-            self._drift_mode.morph_t = min(1.0,
-                self._drift_mode.morph_t + self._drift_mode.MORPH_SPEED)
-            if self._drift_mode.morph_t >= 1.0:
-                self._drift_mode.current_genome = self._drift_mode.target_genome
-                self._drift_mode.morph_t = 0.0
-                self._drift_mode._swap_next_genome()
-
-        # Tick axes based on mode
-        # Brightness/detail always tick (driven by slow envelope, always useful)
+        # Tick all axes — genome_axis handles mode internally
         self._brightness_axis.tick(audio, frame_time, now)
         self._detail_axis.tick(audio, frame_time, now)
+        self._genome_axis.tick(audio, frame_time, now)
 
         if current_mode == Mode.BEAT:
-            # Full beat-reactive response
             self._palette_axis.tick(audio, frame_time, now)
             self._zoom_axis.tick(audio, frame_time, now)
-            self._genome_axis.tick(audio, frame_time, now)
-        elif current_mode == Mode.ENERGY:
-            # Speech/ambient: slow drift only, no beat-driven morph speed
-            from flame_sheep.config import cfg
-            self._genome_axis.morph_t = min(1.0,
-                self._genome_axis.morph_t + cfg.drift.morph_speed)
-            if self._genome_axis.morph_t >= 1.0:
-                self._genome_axis.morph_t = 0.0
-                self._genome_axis._swap_next_genome()
 
         # Assemble frame state
         frame = self.FrameState(
@@ -212,11 +178,7 @@ class FlameSheepCore:
             iterations=self._detail_axis.iterations,
         )
 
-        # Genome contribution from whichever mode is active
-        if is_idle:
-            self._drift_mode.contribute(frame)
-        else:
-            self._genome_axis.contribute(frame)
+        self._genome_axis.contribute(frame)
         self._palette_axis.contribute(frame)
         self._zoom_axis.contribute(frame)
 
@@ -338,7 +300,7 @@ class FlameSheepApp(mglw.WindowConfig):
         if self._core.needs_walker_reset:
             self._renderer.reset_walkers()
             self._core.needs_walker_reset = False
-        self._renderer.clear_histogram()
+        self._renderer.clear_histogram(decay=0.0)
         self._renderer.dispatch_chaos_game(iterations=frame.iterations)
         self.ctx.memory_barrier()
         w, h = self.window_size
@@ -779,6 +741,12 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             except ValueError:
                 log.info(f'[ctl] invalid tempo: {event.args[0]}')
 
+    def _handle_pause(event):
+        core._genome_axis.on_playback_paused()
+
+    def _handle_resume(event):
+        core._genome_axis.on_playback_resumed()
+
     def _handle_seek(event):
         orch.audio.reset_tempo()
         log.debug('[ctl] seek — reset tempo + drop state')
@@ -798,6 +766,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     orch.on_command('next', _handle_next)
     orch.on_command('song', _handle_song)
     orch.on_command('tempo', _handle_tempo)
+    orch.on_command('pause', _handle_pause)
+    orch.on_command('resume', _handle_resume)
     orch.on_command('seek', _handle_seek)
     orch.on_command('config', _handle_config)
 
@@ -895,7 +865,19 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
             now        = time.perf_counter()
             frame_time = now - last_time
+
+            # Cap framerate — no point rendering faster than the display
+            MIN_FRAME_TIME = 1.0 / cfg.max_fps
+            if frame_time < MIN_FRAME_TIME:
+                time.sleep(MIN_FRAME_TIME - frame_time)
+                now = time.perf_counter()
+                frame_time = now - last_time
+
             last_time  = now
+
+            if _frame % 300 == 0:
+                fps = 1.0 / frame_time if frame_time > 0 else 0
+                log.info(f'[perf] frame={_frame} fps={fps:.1f} dt={frame_time*1000:.1f}ms iters={frame.iterations}')
 
             frame = core.tick(frame_time)
             _watchdog_last = time.perf_counter()
@@ -920,7 +902,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             if core.needs_walker_reset:
                 renderer.reset_walkers()
                 core.needs_walker_reset = False
-            renderer.clear_histogram()
+            renderer.clear_histogram(decay=0.0)
             renderer.dispatch_chaos_game(iterations=frame.iterations)
             ctx.memory_barrier()
             _watchdog_last = time.perf_counter()
@@ -956,14 +938,24 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
 
 def _run_variation_benchmark() -> None:
-    """Benchmark each variation solo on the GPU."""
+    """Benchmark variations and library genomes on the GPU.
+
+    Two phases:
+      1. Per-variation: each variation solo with 3 transforms (isolates cost)
+      2. Library genomes: actual genomes from the library (real-world cost)
+
+    Outputs a cost table with budget classification:
+      OK     — under 2x linear baseline
+      HEAVY  — 2-4x baseline
+      COSTLY — over 4x baseline (consider iteration reduction)
+    """
     import time
     import moderngl
     from .genome import (Genome, Transform, Variation, NUM_VARIATIONS,
                          MAX_TRANSFORMS, MAX_VAR_PARAMS)
     from .renderer import FlameRenderer
 
-    # Variation names for display (skip dunder attrs like __firstlineno__)
+    # Variation names for display
     var_names = {}
     for name in dir(Variation):
         if name.startswith('_'):
@@ -979,17 +971,28 @@ def _run_variation_benchmark() -> None:
     n_frames = 30
     rng = np.random.default_rng(42)
 
-    # Build a base genome with 3 transforms
-    base = Genome.random(rng, n_transforms=3)
+    def _bench_genome(g: Genome) -> float:
+        """Returns ms/frame for a genome at 500 iterations."""
+        renderer.upload_genome(g)
+        for _ in range(n_warmup):
+            renderer.clear_histogram()
+            renderer.dispatch_chaos_game(iterations=500)
+            ctx.finish()
+        t0 = time.perf_counter()
+        for _ in range(n_frames):
+            renderer.clear_histogram()
+            renderer.dispatch_chaos_game(iterations=500)
+            ctx.finish()
+        return (time.perf_counter() - t0) / n_frames * 1000
 
+    # --- Phase 1: Per-variation ---
+    print('\n=== Per-Variation Benchmark (3 transforms, solo) ===\n')
     results = []
     for var_idx in range(NUM_VARIATIONS):
-        # Set all transforms to use only this variation
         g = Genome.random(rng, n_transforms=3)
         for tr in g.transforms:
             tr.variations[:] = 0.0
             tr.variations[var_idx] = 1.0
-            # Set params for parametric variations
             if var_idx in (Variation.JULIAN, Variation.JULIASCOPE):
                 tr.var_params = {'julian_power': 3.0, 'julian_dist': 1.0}
             elif var_idx == Variation.SPLITS:
@@ -997,36 +1000,70 @@ def _run_variation_benchmark() -> None:
             elif var_idx == Variation.CURL:
                 tr.var_params = {'curl_c1': 0.5, 'curl_c2': 0.0}
 
-        renderer.upload_genome(g)
-
-        # Warmup
-        for _ in range(n_warmup):
-            renderer.clear_histogram()
-            renderer.dispatch_chaos_game()
-            ctx.finish()
-
-        # Timed
-        t0 = time.perf_counter()
-        for _ in range(n_frames):
-            renderer.clear_histogram()
-            renderer.dispatch_chaos_game()
-            ctx.finish()
-        elapsed = time.perf_counter() - t0
-
-        ms_per_frame = (elapsed / n_frames) * 1000
+        ms = _bench_genome(g)
         name = var_names.get(var_idx, f'var_{var_idx}')
-        results.append((var_idx, name, ms_per_frame))
-
-    # Also time a baseline with linear only
-    print(f'\n{"idx":>3}  {"variation":<15}  {"ms/frame":>9}  {"rel":>6}')
-    print('-' * 42)
+        results.append((var_idx, name, ms))
 
     baseline = next(r[2] for r in results if r[0] == 0)  # LINEAR
-    for idx, name, ms in results:
-        rel = ms / baseline if baseline > 0 else 0
-        marker = ' **' if rel > 2.0 else ''
-        print(f'{idx:3d}  {name:<15}  {ms:9.3f}  {rel:5.2f}x{marker}')
+    print(f'{"idx":>3}  {"variation":<20}  {"ms/frame":>9}  {"rel":>6}  {"budget"}')
+    print('-' * 58)
 
+    for idx, name, ms in sorted(results, key=lambda r: -r[2]):
+        rel = ms / baseline if baseline > 0 else 0
+        if rel > 4.0:
+            budget = 'COSTLY'
+        elif rel > 2.0:
+            budget = 'HEAVY'
+        else:
+            budget = 'ok'
+        print(f'{idx:3d}  {name:<20}  {ms:9.3f}  {rel:5.2f}x  {budget}')
+
+    print(f'\nBaseline (linear): {baseline:.3f} ms/frame')
+    print(f'Budget at 60fps: {16.7:.1f} ms/frame')
+
+    # --- Phase 2: Library genomes ---
+    from .storage import Library
+    lib = Library()
+    n_genomes = lib.genome_count()
+    if n_genomes > 0:
+        print(f'\n=== Library Genome Benchmark ({min(n_genomes, 50)} genomes) ===\n')
+        top = lib.top_genomes(n=50)
+        genome_results = []
+        for gid, _score in top:
+            g = lib.load_genome(gid, auto_center=False)
+            ms = _bench_genome(g)
+            # Identify dominant variations
+            dom_vars = []
+            for tr in g.transforms:
+                if tr.weight < 0.05:
+                    continue
+                for j, w in enumerate(tr.variations):
+                    if w > 0.1:
+                        dom_vars.append(var_names.get(j, f'v{j}'))
+            genome_results.append((gid, ms, dom_vars))
+
+        print(f'{"id":>5}  {"ms/frame":>9}  {"fps":>5}  {"budget":<8}  variations')
+        print('-' * 70)
+
+        for gid, ms, dom_vars in sorted(genome_results, key=lambda r: -r[1]):
+            fps = 1000 / ms if ms > 0 else 999
+            if ms > 16.7:
+                budget = 'COSTLY'
+            elif ms > 10.0:
+                budget = 'HEAVY'
+            else:
+                budget = 'ok'
+            vars_str = ', '.join(sorted(set(dom_vars)))[:40]
+            print(f'{gid:5d}  {ms:9.3f}  {fps:5.1f}  {budget:<8}  {vars_str}')
+
+        avg = np.mean([r[1] for r in genome_results])
+        worst = max(r[1] for r in genome_results)
+        best = min(r[1] for r in genome_results)
+        costly = sum(1 for r in genome_results if r[1] > 16.7)
+        print(f'\nAvg: {avg:.1f}ms  Best: {best:.1f}ms  Worst: {worst:.1f}ms')
+        print(f'{costly}/{len(genome_results)} genomes over 60fps budget (16.7ms)')
+
+    lib.close()
     ctx.release()
 
 
