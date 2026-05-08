@@ -277,7 +277,7 @@ class GenomeAxis:
     def accept_handoff(self, genome: Genome, loop_id: int | None = None) -> None:
         """Receive genome from drift mode on transition back to active."""
         self.current_genome = genome
-        self._lifecycle.reset(0.0)
+        self._lifecycle.reset()
         self._recent_downbeat_energy = 0.5
         self._break_damping = 1.0
         if loop_id is not None and loop_id != self.active_loop_id:
@@ -291,7 +291,7 @@ class GenomeAxis:
         self.current_genome = self.current_genome.lerp(
             self.target_genome, self._lifecycle.morph_t)
         self._swap_next_genome()
-        self._lifecycle.reset(0.0)
+        self._lifecycle.reset()
         self.needs_walker_reset = True
         log.info("force swap")
 
@@ -327,7 +327,7 @@ class GenomeAxis:
         self.current_genome = self._loop_genomes[start]
         self.target_genome = next(self._loop_sequence)
         self._loop_step += 1
-        self._lifecycle.reset(0.0)
+        self._lifecycle.reset()
         self.needs_walker_reset = True
         log.info(f"[loop] loaded #{loop_id} ({self._loop_structure}, "
                  f"{n} genomes, start={start})")

@@ -87,12 +87,18 @@ class MorphLifecycle:
             return True
         return False
 
-    def reset(self, clock: float) -> None:
-        """Reset to DWELL — used on song start, handoff, etc."""
+    def reset(self, clock: float | None = None) -> None:
+        """Reset to DWELL — used on song start, handoff, etc.
+
+        If clock is None, dwell start will be set from the next tick() call.
+        """
         self.state = MorphState.DWELL
         self.morph_t = 0.0
-        self._dwell_start = clock
-        self._initialized = True
+        if clock is not None:
+            self._dwell_start = clock
+            self._initialized = True
+        else:
+            self._initialized = False
 
     @property
     def is_morphing(self) -> bool:
