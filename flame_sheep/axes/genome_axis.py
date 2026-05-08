@@ -74,6 +74,14 @@ class GenomeAxis:
         return cfg.genome.centroid_swap_threshold
 
     @property
+    def ROTATION_SPEED(self) -> float:
+        return cfg.genome.rotation_speed
+
+    @property
+    def ROTATION_BEAT_BOOST(self) -> float:
+        return cfg.genome.rotation_beat_boost
+
+    @property
     def MIN_GENOME_DISTANCE(self) -> float:
         return cfg.drift.min_genome_distance
 
@@ -123,6 +131,10 @@ class GenomeAxis:
         # Mel-space centroid tracking (perceptually uniform, fixes HF bias)
         self._mel_centroid = MelCentroid(freqs) if freqs is not None else None
         self._mel_delta = Delta()
+
+        # Affine rotation — continuous spin within each genome (à la Electric Sheep)
+        self._rotation_phase = 0.0          # radians, wraps at 2π
+        self._rotation_speed = 0.0          # radians per frame, beat-driven
 
         # Timing
         self._last_downbeat_time = 0.0
@@ -225,8 +237,18 @@ class GenomeAxis:
         # Blend toward baseline — ramps up after swap, decays down after pulse
         self.morph_speed = 0.95 * self.morph_speed + 0.05 * density_speed
 
+        # Advance affine rotation phase — continuous spin within each genome
+        self._rotation_speed = 0.95 * self._rotation_speed + 0.05 * self.ROTATION_SPEED
+        self._rotation_phase += self._rotation_speed * self._break_damping
+        TWO_PI = 2.0 * np.pi
+        if self._rotation_phase >= TWO_PI:
+            self._rotation_phase -= TWO_PI
+
     def contribute(self, frame: FlameSheepCore.FrameState) -> None:
         frame.genome = self.current_genome.lerp(self.target_genome, self.morph_t)
+        # Apply affine rotation for organic movement
+        if self._rotation_phase != 0.0:
+            frame.genome = frame.genome.rotated(self._rotation_phase)
         # Slowly nudge center toward origin — keeps attractor on screen
         CENTER_PULL = 0.002  # ~1% per frame toward center
         frame.genome.center = frame.genome.center * (1.0 - CENTER_PULL)
@@ -268,11 +290,12 @@ class GenomeAxis:
                 f"avg={self._recent_downbeat_energy:.2f}  dist={dist:.3f}"
             )
         else:
-            # Normal downbeat — pulse morph speed (scaled by density)
+            # Normal downbeat — pulse morph speed and rotation (scaled by density)
             self.morph_speed = min(
                 0.15,
                 self.morph_speed + event.energy * self.LOW_MORPH_PULSE * density_scale,
             )
+            self._rotation_speed += event.energy * self.ROTATION_BEAT_BOOST * density_scale
             log.debug(f"[downbeat]  +{since:.3f}s  energy={event.energy:.2f}")
 
     def _handle_song_start(self) -> None:

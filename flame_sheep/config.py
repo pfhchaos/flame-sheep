@@ -34,6 +34,8 @@ DEFAULTS = {
         'density_damping': 0.3,
         'centroid_swap_threshold': 50.0,
         'centroid_swap_density_gate': 0.5,   # low-band density below this enables centroid swap
+        'rotation_speed': 0.02,
+        'rotation_beat_boost': 0.04,
     },
     'zoom': {
         'boost_max': 0.3,
