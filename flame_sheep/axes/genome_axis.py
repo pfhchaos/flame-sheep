@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 from flame_sheep_audio import AudioState, BeatEvent
 from flame_sheep_audio import HOP_SIZE, SAMPLE_RATE
 from flame_sheep_audio.response import MelCentroid, Delta, AsymmetricEnvelope
+from flame_sheep.axes._morph_lifecycle import MorphLifecycle
 from flame_sheep.genome import Genome
 from flame_sheep.variations import Variation
 
@@ -27,44 +28,22 @@ if TYPE_CHECKING:
 
 
 class GenomeAxis:
-    """Downbeat -> genome morph/swap. Manages genome lifecycle, loops, prefetch.
+    """Genome axis — manages genome lifecycle with rotation + morph transitions.
 
-    Responds to event types:
-      - downbeat: count toward swap, pulse morph speed
-      - drop: force swap + freeze morph for N bars
-      - song_start: reset drop/downbeat state
+    Lifecycle (see _morph_lifecycle.MorphLifecycle):
+      DWELL → READY → MORPHING → DWELL (swap genome, repeat)
 
-    Continuous features:
-      - percussiveness: scales morph speed (low = slow drift, high = snappy)
-      - centroid_delta: triggers swaps in low-percussiveness mode
-
-    State:
-        current_genome, target_genome: endpoints of the current morph
-        morph_t: 0..1 progress through current morph
-        morph_speed: how fast morph_t advances per frame
+    Dwell: rotate on current genome for dwell_beats (tempo-timed).
+    Ready: wait for a real beat to trigger morph.
+    Morphing: smooth crossfade to target genome over morph_beats.
+    Rotation: continuous affine rotation throughout all states.
     """
 
     LOOP_HISTORY_SIZE = 8
 
     @property
-    def DRIFT_MORPH_SPEED(self) -> float:
-        return cfg.genome.drift_morph_speed
-
-    @property
-    def LOW_MORPH_PULSE(self) -> float:
-        return cfg.genome.low_morph_pulse
-
-    @property
     def BREAK_DECAY(self) -> float:
         return cfg.genome.break_decay
-
-    @property
-    def DENSITY_MORPH_SCALE(self) -> float:
-        return cfg.genome.density_morph_scale
-
-    @property
-    def STRONG_BEAT_THRESHOLD(self) -> float:
-        return cfg.genome.strong_beat_threshold
 
     @property
     def DENSITY_DAMPING(self) -> float:
@@ -105,11 +84,13 @@ class GenomeAxis:
         self._lib = lib
         self.rng = rng or np.random.default_rng()
 
-        # Morph state
+        # Genome state
         self.current_genome = self._genome_factory()
         self.target_genome = self._genome_factory()
-        self.morph_t = 0.0
-        self.morph_speed = self.DRIFT_MORPH_SPEED
+
+        # Morph lifecycle state machine
+        self._lifecycle = MorphLifecycle(
+            clock=0.0, dwell_beats=self.DWELL_BEATS, morph_beats=self.MORPH_BEATS)
 
         # Prefetch
         self._next_genome: Genome | None = None
@@ -148,15 +129,6 @@ class GenomeAxis:
 
         # Affine rotation — continuous spin (à la Electric Sheep)
         self._rotation_phase = 0.0
-
-        # Morph lifecycle — tempo-timed dwell, beat-triggered morph
-        #   DWELL:    elapsed < dwell_beats/bpm, morph_t=0
-        #   READY:    dwell time elapsed, morph_t=0, waiting for real beat
-        #   MORPHING: morph_t advances 0→1 per-frame over morph_beats/bpm seconds
-        self._dwell_start: float = 0.0      # clock time when dwell started
-        self._morph_ready = False
-        self._morphing = False               # True while morph is in progress
-        self._morph_start: float = 0.0      # clock time when morph started
 
         # Timing
         self._last_downbeat_time = 0.0
@@ -199,32 +171,20 @@ class GenomeAxis:
             elif event.kind == "song_start":
                 self._handle_song_start(clock)
 
-        # Energy mode: centroid derivative drives morph speed continuously
-        # (no discrete swaps — just smooth drift tracking tonal movement)
-        if audio.mode == 'energy':
-            # Gate centroid by energy — ignore delta when centroid RMS is low
-            # (noise floor wandering, consonant bursts)
-            if audio.centroid_harmonic_rms > 0.01:
-                # mel delta ~0-200 for normal music (vs 0-5000 in Hz space)
-                centroid_drive = min(1.0, mel_delta / 100.0)
-                self.morph_speed = self.DRIFT_MORPH_SPEED + centroid_drive * 0.003
-            else:
-                self.morph_speed = self.DRIFT_MORPH_SPEED
-        else:
+        if audio.mode != 'energy':
             # Beat mode fallback: low-band density swap on large centroid shift
             low_density = self._role.band_state(audio, DOWNBEAT).onset_density
             # mel delta threshold: ~50 mel ≈ one octave shift at 200 Hz
             if (
                 low_density < cfg.genome.centroid_swap_density_gate
                 and mel_delta > self.CENTROID_SWAP_THRESHOLD
-                and self.morph_t > 0.3
+                and self._lifecycle.morph_t > 0.3
             ):
                 self.current_genome = self.current_genome.lerp(
-                    self.target_genome, self.morph_t
+                    self.target_genome, self._lifecycle.morph_t
                 )
                 self._swap_next_genome()
-                self.morph_t = 0.0
-                self.morph_speed = 0.02
+                self._lifecycle.reset(clock)
                 log.debug(
                     f"[centroid swap] mel_delta={mel_delta:.1f} "
                     f"low_density={low_density:.2f}"
@@ -238,27 +198,11 @@ class GenomeAxis:
 
         bpm = max(audio.effective_bpm, 60.0)
 
-        # Dwell time check — use tempo to compute when dwell is complete
-        if not self._morph_ready and not self._morphing:
-            dwell_duration = self.DWELL_BEATS * 60.0 / bpm
-            if clock - self._dwell_start >= dwell_duration:
-                self._morph_ready = True
-                log.debug(f"[dwell] {dwell_duration:.1f}s elapsed, morph ready")
-
-        # Morph advancement — smooth per-frame over morph_beats duration
-        if self._morphing:
-            morph_duration = self.MORPH_BEATS * 60.0 / bpm
-            elapsed = clock - self._morph_start
-            self.morph_t = min(1.0, elapsed / max(morph_duration, 0.01))
-
-            if self.morph_t >= 1.0:
-                self.current_genome = self.target_genome
-                self.morph_t = 0.0
-                self._morphing = False
-                self._swap_next_genome()
-                self._dwell_start = clock
-                self._morph_ready = False
-                log.debug("[morph] complete, dwell reset")
+        # Advance morph lifecycle (dwell timing + morph progress)
+        if self._lifecycle.tick(clock, bpm):
+            # Morph completed — swap to next genome
+            self.current_genome = self.target_genome
+            self._swap_next_genome()
 
         # Advance affine rotation — continuous, never stops
         boost = self._rotation_boost.update(0.0, bpm=bpm)
@@ -268,8 +212,16 @@ class GenomeAxis:
         if self._rotation_phase >= TWO_PI:
             self._rotation_phase -= TWO_PI
 
+    @property
+    def morph_t(self) -> float:
+        return self._lifecycle.morph_t
+
+    @morph_t.setter
+    def morph_t(self, value: float) -> None:
+        self._lifecycle.morph_t = value
+
     def contribute(self, frame: FlameSheepCore.FrameState) -> None:
-        frame.genome = self.current_genome.lerp(self.target_genome, self.morph_t)
+        frame.genome = self.current_genome.lerp(self.target_genome, self._lifecycle.morph_t)
         # Apply affine rotation for organic movement
         if self._rotation_phase != 0.0:
             frame.genome = frame.genome.rotated(self._rotation_phase)
@@ -293,26 +245,19 @@ class GenomeAxis:
             self._section_change_pending = False
             self._section_cooldown = 0  # start cooldown
             self.current_genome = self.current_genome.lerp(
-                self.target_genome, self.morph_t
+                self.target_genome, self._lifecycle.morph_t
             )
             self.next_loop()
-            self.morph_t = 0.0
+            self._lifecycle.reset(clock)
             log.info(f"[SWAP+LOOP]  section change consumed on beat")
             return
 
         bpm = max(audio.effective_bpm, 60.0) if audio else 120.0
         kick = event.energy * density_scale
 
-        # Beat arrives while morph ready → start the morph
-        if self._morph_ready and not self._morphing:
-            self._morphing = True
-            self._morph_start = clock
-            log.info(
-                f"[MORPH START]  +{since:.3f}s  energy={event.energy:.2f}  "
-                f"dwell={clock - self._dwell_start:.1f}s"
-            )
-        else:
-            # Normal beat — boost rotation
+        # Let lifecycle handle beat → may trigger READY → MORPHING
+        if not self._lifecycle.on_beat(clock):
+            # Normal beat (not a morph trigger) — boost rotation
             self._rotation_boost.update(kick, bpm=bpm)
             log.debug(f"[downbeat]  +{since:.3f}s  energy={event.energy:.2f}")
 
@@ -323,10 +268,7 @@ class GenomeAxis:
         self._break_damping = 1.0
         self._section_change_pending = False
         self._section_warmup = 0
-        self._dwell_start = clock
-        self._morph_ready = False
-        self._morphing = False
-        self.morph_t = 0.0
+        self._lifecycle.reset(clock)
         # New song, new loop
         if self._lib is not None and self._lib.loop_count() > 1:
             self.next_loop()
@@ -335,8 +277,7 @@ class GenomeAxis:
     def accept_handoff(self, genome: Genome, loop_id: int | None = None) -> None:
         """Receive genome from drift mode on transition back to active."""
         self.current_genome = genome
-        self.morph_t = 0.0
-        self.morph_speed = self.DRIFT_MORPH_SPEED
+        self._lifecycle.reset(0.0)
         self._recent_downbeat_energy = 0.5
         self._break_damping = 1.0
         if loop_id is not None and loop_id != self.active_loop_id:
@@ -347,10 +288,10 @@ class GenomeAxis:
 
     def force_swap(self) -> None:
         """Immediately swap to a new genome."""
-        self.current_genome = self.current_genome.lerp(self.target_genome, self.morph_t)
+        self.current_genome = self.current_genome.lerp(
+            self.target_genome, self._lifecycle.morph_t)
         self._swap_next_genome()
-        self.morph_t = 0.0
-        self.morph_speed = 0.15
+        self._lifecycle.reset(0.0)
         self.needs_walker_reset = True
         log.info("force swap")
 
@@ -386,8 +327,7 @@ class GenomeAxis:
         self.current_genome = self._loop_genomes[start]
         self.target_genome = next(self._loop_sequence)
         self._loop_step += 1
-        self.morph_t = 0.0
-        self.morph_speed = 0.05
+        self._lifecycle.reset(0.0)
         self.needs_walker_reset = True
         log.info(f"[loop] loaded #{loop_id} ({self._loop_structure}, "
                  f"{n} genomes, start={start})")
