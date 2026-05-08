@@ -29,16 +29,17 @@ class MorphLifecycle:
     """Tempo-timed dwell, beat-triggered morph, smooth per-frame crossfade."""
 
     __slots__ = ('state', 'morph_t', '_dwell_start', '_morph_start',
-                 '_dwell_beats', '_morph_beats')
+                 '_dwell_beats', '_morph_beats', '_initialized')
 
-    def __init__(self, clock: float = 0.0,
+    def __init__(self, clock: float | None = None,
                  dwell_beats: int = 16, morph_beats: int = 4) -> None:
         self.state = MorphState.DWELL
         self.morph_t = 0.0
-        self._dwell_start = clock
+        self._dwell_start = clock if clock is not None else 0.0
         self._morph_start = 0.0
         self._dwell_beats = dwell_beats
         self._morph_beats = morph_beats
+        self._initialized = clock is not None
 
     def tick(self, clock: float, bpm: float) -> bool:
         """Advance the lifecycle. Returns True if morph just completed.
@@ -47,6 +48,10 @@ class MorphLifecycle:
         morph_t advancement during MORPHING.
         """
         bpm = max(bpm, 1.0)
+
+        if not self._initialized:
+            self._dwell_start = clock
+            self._initialized = True
 
         if self.state == MorphState.DWELL:
             dwell_duration = self._dwell_beats * 60.0 / bpm
@@ -77,7 +82,7 @@ class MorphLifecycle:
         if self.state == MorphState.READY:
             self.state = MorphState.MORPHING
             self._morph_start = clock
-            log.info(f"[lifecycle] READY → MORPHING (beat at {clock:.2f}s, "
+            log.debug(f"[lifecycle] READY → MORPHING (beat at {clock:.2f}s, "
                      f"dwell was {clock - self._dwell_start:.1f}s)")
             return True
         return False
@@ -87,6 +92,7 @@ class MorphLifecycle:
         self.state = MorphState.DWELL
         self.morph_t = 0.0
         self._dwell_start = clock
+        self._initialized = True
 
     @property
     def is_morphing(self) -> bool:

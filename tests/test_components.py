@@ -340,9 +340,12 @@ class TestGenomeAxisStateMachine:
     def _make_axis(self):
         _seed = iter(range(1000))
         from flame_sheep_audio import FREQS
-        return GenomeAxis(
+        axis = GenomeAxis(
             genome_factory=lambda: trivial_genome(next(_seed)),
             role=_default_role, freqs=FREQS)
+        # Initialize lifecycle clock with first tick
+        axis.tick(_audio(), 1/60, 0.0)
+        return axis
 
     def _dwell_secs(self, axis, bpm=120.0):
         return axis.DWELL_BEATS * 60.0 / bpm
