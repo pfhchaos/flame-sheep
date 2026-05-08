@@ -83,6 +83,10 @@ class GenomeAxis:
         return cfg.genome.rotation_beat_boost
 
     @property
+    def ROTATION_DWELL_CYCLES(self) -> int:
+        return cfg.genome.rotation_dwell_cycles
+
+    @property
     def MIN_GENOME_DISTANCE(self) -> float:
         return cfg.drift.min_genome_distance
 
@@ -139,7 +143,10 @@ class GenomeAxis:
             attack=0.001, release=1.0, hop_time=_hop_time, unit='beats')
 
         # Affine rotation — continuous spin within each genome (à la Electric Sheep)
+        # Dwell: rotate N cycles before allowing morph to next genome
         self._rotation_phase = 0.0          # radians, wraps at 2π
+        self._rotation_cycles = 0           # completed full rotations
+        self._morph_ready = False            # True after N cycles, waiting for strong beat
         self._rotation_boost = AsymmetricEnvelope(
             attack=0.001, release=1.0, hop_time=_hop_time, unit='beats')
 
@@ -221,34 +228,42 @@ class GenomeAxis:
         else:
             self._break_damping = min(1.0, self._break_damping / self.BREAK_DECAY)
 
-        # Advance morph — speed set by low-band events, damped by breaks
-        self.morph_t = min(
-            1.0, self.morph_t + self.morph_speed * self._break_damping
-        )
-
-        if self.morph_t >= 1.0:
-            self.current_genome = self.target_genome
-            self.morph_t = 0.0
-            self._swap_next_genome()
-            self.morph_speed = self.DRIFT_MORPH_SPEED
-
-        # Morph speed: base drift + density baseline + beat boost envelope
-        rhythm_density = (
-            self._role.band_state(audio, DOWNBEAT).onset_density
-            + self._role.band_state(audio, BACKBEAT).onset_density * 0.5
-        )
-        density_speed = self.DRIFT_MORPH_SPEED + rhythm_density * self.DENSITY_MORPH_SCALE
-        morph_boost = self._morph_boost.update(0.0, bpm=max(audio.effective_bpm, 60.0))
-        self.morph_speed = max(self.DRIFT_MORPH_SPEED,
-                               density_speed + morph_boost * self.LOW_MORPH_PULSE)
-
         # Advance affine rotation phase — base speed + beat boost envelope
-        boost = self._rotation_boost.update(0.0, bpm=max(audio.effective_bpm, 60.0))
+        bpm = max(audio.effective_bpm, 60.0)
+        boost = self._rotation_boost.update(0.0, bpm=bpm)
         rotation_speed = self.ROTATION_SPEED + boost * self.ROTATION_BEAT_BOOST
         self._rotation_phase += rotation_speed * self._break_damping
         TWO_PI = 2.0 * np.pi
         if self._rotation_phase >= TWO_PI:
             self._rotation_phase -= TWO_PI
+            self._rotation_cycles += 1
+            if self._rotation_cycles >= self.ROTATION_DWELL_CYCLES and not self._morph_ready:
+                self._morph_ready = True
+                log.debug(f"[dwell] {self._rotation_cycles} cycles complete, morph ready")
+
+        # Advance morph only when morph_ready (dwell complete + beat triggered)
+        if self.morph_t > 0.0:
+            # Morph in progress — advance with beat boost
+            morph_boost = self._morph_boost.update(0.0, bpm=bpm)
+            rhythm_density = (
+                self._role.band_state(audio, DOWNBEAT).onset_density
+                + self._role.band_state(audio, BACKBEAT).onset_density * 0.5
+            )
+            density_speed = self.DRIFT_MORPH_SPEED + rhythm_density * self.DENSITY_MORPH_SCALE
+            self.morph_speed = max(self.DRIFT_MORPH_SPEED,
+                                   density_speed + morph_boost * self.LOW_MORPH_PULSE)
+            self.morph_t = min(
+                1.0, self.morph_t + self.morph_speed * self._break_damping
+            )
+
+            if self.morph_t >= 1.0:
+                self.current_genome = self.target_genome
+                self.morph_t = 0.0
+                self._swap_next_genome()
+                self._rotation_cycles = 0
+                self._morph_ready = False
+                self.morph_speed = self.DRIFT_MORPH_SPEED
+                log.debug("[morph] complete, dwell reset")
 
     def contribute(self, frame: FlameSheepCore.FrameState) -> None:
         frame.genome = self.current_genome.lerp(self.target_genome, self.morph_t)
@@ -282,24 +297,25 @@ class GenomeAxis:
             log.info(f"[SWAP+LOOP]  section change consumed on beat")
             return
 
-        # Strong beat → swap direction (harder to trigger at high density)
+        bpm = max(audio.effective_bpm, 60.0) if audio else 120.0
+        kick = event.energy * density_scale
+
+        # Strong beat + morph ready → start morphing to next genome
         swap_thresh = self.STRONG_BEAT_THRESHOLD * (1.0 + downbeat_density * 0.5)
-        if event.energy > self._recent_downbeat_energy * swap_thresh:
-            self.current_genome = self.current_genome.lerp(
-                self.target_genome, self.morph_t
-            )
-            self._swap_next_genome()
-            self.morph_t = 0.0
-            dist = self.current_genome.distance(self.target_genome)
-            log.debug(
-                f"[SWAP]  +{since:.3f}s  energy={event.energy:.2f}  "
-                f"avg={self._recent_downbeat_energy:.2f}  dist={dist:.3f}"
+        if (self._morph_ready
+                and self.morph_t == 0.0
+                and event.energy > self._recent_downbeat_energy * swap_thresh):
+            self.morph_t = 0.001  # start morph
+            self.morph_speed = 0.02 + kick * self.LOW_MORPH_PULSE
+            self._morph_boost.update(kick, bpm=bpm)
+            log.info(
+                f"[MORPH START]  +{since:.3f}s  energy={event.energy:.2f}  "
+                f"after {self._rotation_cycles} rotations"
             )
         else:
-            # Normal downbeat — pulse morph speed and rotation (scaled by density)
-            bpm = max(audio.effective_bpm, 60.0)
-            kick = event.energy * density_scale
-            self._morph_boost.update(kick, bpm=bpm)
+            # Normal downbeat — pulse rotation (and morph if in progress)
+            if self.morph_t > 0.0:
+                self._morph_boost.update(kick, bpm=bpm)
             self._rotation_boost.update(kick, bpm=bpm)
             log.debug(f"[downbeat]  +{since:.3f}s  energy={event.energy:.2f}")
 

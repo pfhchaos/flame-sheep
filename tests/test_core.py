@@ -63,10 +63,14 @@ def tick_for(core, clock, duration: float, fps: float = 60.0):
 class TestGenomeSwapRate:
 
     def test_swaps_at_expected_rate(self, core, clock):
-        """Genome should swap at a reasonable rate from morph completion."""
+        """Genome should swap after dwell completes and strong beat arrives."""
         dt = 1.0 / 60
         swaps = 0
         prev_target = id(core.target_genome)
+
+        # Skip dwell — test the morph/swap mechanism directly
+        core._genome_axis._morph_ready = True
+        core._genome_axis.morph_t = 0.001  # kick off first morph
 
         for _ in range(int(10.0 * 60)):  # 10 seconds at 60fps
             clock.advance(dt)
@@ -75,7 +79,7 @@ class TestGenomeSwapRate:
                 swaps += 1
                 prev_target = id(core.target_genome)
 
-        # Density-driven morph + morph completion → some swaps
+        # With dwell bypassed, strong beats should trigger morphs
         assert swaps >= 1, \
             f"Expected at least 1 genome swap in 10s, got {swaps}"
 
