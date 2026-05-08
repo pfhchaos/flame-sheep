@@ -16,7 +16,8 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 from flame_sheep_audio import AudioState, BeatEvent
-from flame_sheep_audio.response import MelCentroid, Delta
+from flame_sheep_audio import HOP_SIZE, SAMPLE_RATE
+from flame_sheep_audio.response import MelCentroid, Delta, AsymmetricEnvelope
 from flame_sheep.genome import Genome
 from flame_sheep.variations import Variation
 
@@ -134,7 +135,9 @@ class GenomeAxis:
 
         # Affine rotation — continuous spin within each genome (à la Electric Sheep)
         self._rotation_phase = 0.0          # radians, wraps at 2π
-        self._rotation_speed = 0.0          # radians per frame, beat-driven
+        # Beat boost envelope: instant attack, decay over 1 beat
+        self._rotation_boost = AsymmetricEnvelope(
+            attack=0.001, release=1.0, hop_time=HOP_SIZE / SAMPLE_RATE, unit='beats')
 
         # Timing
         self._last_downbeat_time = 0.0
@@ -237,9 +240,10 @@ class GenomeAxis:
         # Blend toward baseline — ramps up after swap, decays down after pulse
         self.morph_speed = 0.95 * self.morph_speed + 0.05 * density_speed
 
-        # Advance affine rotation phase — continuous spin within each genome
-        self._rotation_speed = 0.95 * self._rotation_speed + 0.05 * self.ROTATION_SPEED
-        self._rotation_phase += self._rotation_speed * self._break_damping
+        # Advance affine rotation phase — base speed + beat boost envelope
+        boost = self._rotation_boost.update(0.0, bpm=max(audio.effective_bpm, 60.0))
+        rotation_speed = self.ROTATION_SPEED + boost * self.ROTATION_BEAT_BOOST
+        self._rotation_phase += rotation_speed * self._break_damping
         TWO_PI = 2.0 * np.pi
         if self._rotation_phase >= TWO_PI:
             self._rotation_phase -= TWO_PI
@@ -295,7 +299,8 @@ class GenomeAxis:
                 0.15,
                 self.morph_speed + event.energy * self.LOW_MORPH_PULSE * density_scale,
             )
-            self._rotation_speed += event.energy * self.ROTATION_BEAT_BOOST * density_scale
+            self._rotation_boost.update(event.energy * density_scale,
+                                       bpm=max(audio.effective_bpm, 60.0))
             log.debug(f"[downbeat]  +{since:.3f}s  energy={event.energy:.2f}")
 
     def _handle_song_start(self) -> None:
