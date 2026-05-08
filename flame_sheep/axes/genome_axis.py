@@ -90,7 +90,7 @@ class GenomeAxis:
 
         # Morph lifecycle state machine
         self._lifecycle = MorphLifecycle(
-            clock=0.0, dwell_beats=self.DWELL_BEATS, morph_beats=self.MORPH_BEATS)
+            dwell_beats=self.DWELL_BEATS, morph_beats=self.MORPH_BEATS)
 
         # Prefetch
         self._next_genome: Genome | None = None
