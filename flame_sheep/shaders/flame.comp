@@ -87,7 +87,8 @@ layout(std430, binding = 5) readonly buffer Weights {
 
 uniform int   u_n_transforms;
 uniform float u_zoom;
-uniform float u_rotation;
+uniform float u_cos_rot;      // precomputed cos(rotation)
+uniform float u_sin_rot;      // precomputed sin(rotation)
 uniform vec2  u_center;
 uniform int   u_width;
 uniform int   u_height;
@@ -115,11 +116,9 @@ int pick_transform(float rand_val) {
 // World → screen pixel mapping
 // ------------------------------------------------------------
 ivec2 world_to_pixel(vec2 p) {
-    // Apply global zoom and rotation
-    float cosR = cos(u_rotation);
-    float sinR = sin(u_rotation);
-    vec2 rotated = vec2(cosR * p.x - sinR * p.y,
-                        sinR * p.x + cosR * p.y);
+    // Apply global zoom and rotation (cos/sin precomputed on CPU)
+    vec2 rotated = vec2(u_cos_rot * p.x - u_sin_rot * p.y,
+                        u_sin_rot * p.x + u_cos_rot * p.y);
     vec2 scaled = (rotated - u_center) * u_zoom;
 
     // Map (-1..1) world space → pixel coords
@@ -189,7 +188,9 @@ void main() {
         uint n_pixels = uint(u_width * u_height);
         atomicAdd(histogram[idx],            1u);                          // hit_count
         atomicAdd(histogram[n_pixels + idx], uint(pc * float(COLOR_SCALE))); // color_acc
+#ifdef SCORING_MODE
         atomicAdd(transform_hits[idx * uint(MAX_TRANSFORMS) + uint(tidx)], 1u);
+#endif
     }
 
     // Save walker state for next dispatch

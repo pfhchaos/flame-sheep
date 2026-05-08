@@ -25,6 +25,7 @@ CONFIG_PATH = Path.home() / '.config' / 'flame-sheep' / 'config.toml'
 
 DEFAULTS = {
     'audio_device': None,  # auto-detect, or string like "Companion Speaker"
+    'max_fps': 60,
     'genome': {
         'drift_morph_speed': 0.001,
         'density_morph_scale': 0.003,

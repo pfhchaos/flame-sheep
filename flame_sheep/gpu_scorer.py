@@ -200,7 +200,7 @@ def main():
              len(rows), total, args.size, args.size, args.frames)
 
     ctx = _create_context()
-    renderer = FlameRenderer(ctx, args.size, args.size)
+    renderer = FlameRenderer(ctx, args.size, args.size, scoring=True)
 
     scored = 0
     t0 = time.monotonic()

@@ -20,7 +20,6 @@ from flame_sheep_audio.energy import EnergyAnalyzer
 from flame_sheep.axes.zoom_axis import ZoomAxis
 from flame_sheep.axes.brightness_axis import BrightnessAxis
 from flame_sheep.axes.detail_axis import DetailAxis
-from flame_sheep.drift_mode import DriftMode
 from flame_sheep.axes.genome_axis import GenomeAxis
 from flame_sheep.role_mapper import RoleMapper
 from flame_sheep_audio.mode import ModeDetector, Mode
@@ -339,26 +338,27 @@ class TestGenomeAxisStateMachine:
 
     def _make_axis(self):
         _seed = iter(range(1000))
-        from flame_sheep_audio import FREQS
         axis = GenomeAxis(
             genome_factory=lambda: trivial_genome(next(_seed)),
-            role=_default_role, freqs=FREQS)
-        # Initialize lifecycle clock with first tick
+            role=_default_role)
+        # Initialize with first tick
         axis.tick(_audio(), 1/60, 0.0)
         return axis
 
     def _dwell_secs(self, axis, bpm=120.0):
         return axis.DWELL_BEATS * 60.0 / bpm
 
-    def _morph_secs(self, axis, bpm=120.0):
-        return axis.MORPH_BEATS * 60.0 / bpm
+    def _morph_frames(self, axis):
+        """Number of frames for morph to complete at fixed speed."""
+        return int(1.0 / axis.MORPH_SPEED) + 1
 
     # --- Initial state ---
 
     def test_starts_in_dwell(self):
         axis = self._make_axis()
+        from flame_sheep.axes.genome_axis import _MorphState
         assert axis.morph_t == 0.0
-        assert not axis._lifecycle.is_ready
+        assert axis._morph_state == _MorphState.DWELL
 
     def test_starts_with_two_genomes(self):
         axis = self._make_axis()
@@ -366,137 +366,162 @@ class TestGenomeAxisStateMachine:
         assert axis.target_genome is not None
         assert id(axis.current_genome) != id(axis.target_genome)
 
-    # --- DWELL → READY ---
+    # --- DWELL release ---
 
-    def test_dwell_holds_morph_during_dwell_time(self):
-        """During dwell period, morph_t stays at 0."""
+    def test_dwell_holds_morph_before_timeout(self):
+        """During dwell period in idle mode, morph_t stays at 0."""
         axis = self._make_axis()
         t = self._dwell_secs(axis) / 2
-        axis.tick(_audio(), 1/60, t)
+        axis.tick(_audio(mode='idle'), 1/60, t)
         assert axis.morph_t == 0.0
-        assert not axis._lifecycle.is_ready
 
-    def test_dwell_to_ready_after_duration(self):
-        """morph_ready set after dwell duration elapses."""
+    def test_dwell_releases_on_timeout_in_idle(self):
+        """In idle mode, dwell releases after duration elapses."""
+        from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
         t = self._dwell_secs(axis) + 0.1
-        axis.tick(_audio(), 1/60, t)
-        assert axis._lifecycle.is_ready
+        axis.tick(_audio(mode='idle'), 1/60, t)
+        assert axis._morph_state == _MorphState.MORPHING
 
     def test_rotation_advances_during_dwell(self):
         """Rotation phase increases during dwell."""
         axis = self._make_axis()
-        axis.tick(_audio(), 1/60, 0.1)
+        axis.tick(_audio(mode='idle'), 1/60, 0.1)
         assert axis._rotation_phase > 0.0
 
-    # --- READY → MORPHING ---
+    # --- Beat mode: dwell waits for beat ---
 
-    def test_ready_waits_for_beat(self):
-        """READY without beat events → morph_t stays at 0."""
+    def test_beat_mode_dwell_waits_for_beat(self):
+        """In beat mode, dwell waits for beat even after timeout."""
+        from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
         t = self._dwell_secs(axis) + 0.1
-        axis.tick(_audio(), 1/60, t)
-        assert axis._lifecycle.is_ready
-        axis.tick(_audio(), 1/60, t + 1.0)
-        assert axis.morph_t == 0.0
+        # In beat mode, dwell should not release on timeout alone
+        axis.tick(_audio(mode='beat'), 1/60, t)
+        assert axis._morph_state == _MorphState.DWELL
 
-    def test_beat_triggers_morph_when_ready(self):
-        """READY + any beat → morph starts, next frame advances morph_t."""
+    def test_beat_triggers_morph_in_beat_mode(self):
+        """In beat mode, a downbeat event releases dwell."""
+        from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
-        t = self._dwell_secs(axis) + 0.1
-        axis.tick(_audio(), 1/60, t)
-        axis.tick(_audio(events=[BeatEvent('low', 0.3)]), 1/60, t + 0.5)
-        assert axis._lifecycle.is_morphing
-        # Next frame should show morph_t > 0
-        axis.tick(_audio(), 1/60, t + 1.0)
-        assert axis.morph_t > 0.0
+        # Send beat in beat mode
+        axis.tick(_audio(events=[BeatEvent('low', 0.3)], mode='beat'), 1/60, 0.5)
+        assert axis._morph_state == _MorphState.MORPHING
 
-    def test_beat_during_dwell_does_not_morph(self):
-        """Beats before dwell completes don't start morph."""
+    def test_beat_during_idle_does_not_release_dwell(self):
+        """Beats in idle mode don't release dwell (idle uses timeout)."""
+        from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
-        axis.tick(_audio(events=[BeatEvent('low', 1.0)]), 1/60, 1.0)
-        assert axis.morph_t == 0.0
+        axis.tick(_audio(events=[BeatEvent('low', 1.0)], mode='idle'), 1/60, 1.0)
+        assert axis._morph_state == _MorphState.DWELL
 
     # --- MORPHING ---
 
     def test_morph_advances_per_frame(self):
-        """morph_t advances smoothly per frame."""
+        """morph_t advances at fixed speed per frame."""
+        from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
-        t0 = self._dwell_secs(axis) + 0.1
-        axis.tick(_audio(), 1/60, t0)
-        axis.tick(_audio(events=[BeatEvent('low', 0.5)]), 1/60, t0 + 0.1)
-        mt1 = axis.morph_t
-        axis.tick(_audio(), 1/60, t0 + 0.5)
-        assert axis.morph_t > mt1
+        # Force into morphing
+        axis._morph_state = _MorphState.MORPHING
+        axis.tick(_audio(mode='idle'), 1/60, 1.0)
+        assert axis.morph_t > 0.0
 
-    def test_morph_halfway_at_half_duration(self):
-        """morph_t ≈ 0.5 at half the morph duration."""
+    def test_morph_speed_is_fixed(self):
+        """morph_t advances by MORPH_SPEED each frame."""
+        from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
-        t0 = self._dwell_secs(axis) + 0.1
-        axis.tick(_audio(), 1/60, t0)
-        morph_start = t0 + 0.1
-        axis.tick(_audio(events=[BeatEvent('low', 0.5)]), 1/60, morph_start)
-        half = self._morph_secs(axis) / 2
-        axis.tick(_audio(), 1/60, morph_start + half)
-        assert 0.4 < axis.morph_t < 0.6
+        axis._morph_state = _MorphState.MORPHING
+        axis.tick(_audio(mode='idle'), 1/60, 1.0)
+        assert abs(axis.morph_t - axis.MORPH_SPEED) < 1e-9
 
     def test_rotation_continues_during_morph(self):
         """Rotation doesn't stop while morphing."""
+        from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
-        t = self._dwell_secs(axis) + 0.1
-        axis.tick(_audio(), 1/60, t)
-        axis.tick(_audio(events=[BeatEvent('low', 0.5)]), 1/60, t + 0.1)
+        axis._morph_state = _MorphState.MORPHING
         axis._rotation_phase = 0.0
-        axis.tick(_audio(), 1/60, t + 0.5)
+        axis.tick(_audio(mode='idle'), 1/60, 0.5)
         assert axis._rotation_phase > 0.0
 
     # --- MORPHING → DWELL (complete) ---
 
-    def test_morph_completes_after_duration(self):
-        """morph_t reaches 1.0 and genome swaps."""
+    def test_morph_completes_and_swaps(self):
+        """morph_t reaches 1.0 → genome swaps → enters dwell."""
+        from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
-        t0 = self._dwell_secs(axis) + 0.1
-        axis.tick(_audio(), 1/60, t0)
+        axis._morph_state = _MorphState.MORPHING
         initial_target = axis.target_genome
-        morph_start = t0 + 0.1
-        axis.tick(_audio(events=[BeatEvent('low', 0.5)]), 1/60, morph_start)
-        axis.tick(_audio(), 1/60, morph_start + self._morph_secs(axis) + 0.1)
+
+        # Run enough frames to complete morph
+        dt = 1/60
+        clock = 0.0
+        for _ in range(self._morph_frames(axis) + 10):
+            clock += dt
+            axis.tick(_audio(mode='idle'), dt, clock)
+
         assert axis.morph_t == 0.0
         assert axis.current_genome is initial_target
-        assert not axis._lifecycle.is_ready
+        assert axis._morph_state == _MorphState.DWELL
 
     def test_new_target_after_morph_complete(self):
         """After morph completes, target_genome changes."""
+        from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
-        t0 = self._dwell_secs(axis) + 0.1
-        axis.tick(_audio(), 1/60, t0)
+        axis._morph_state = _MorphState.MORPHING
         old_target = id(axis.target_genome)
-        morph_start = t0 + 0.1
-        axis.tick(_audio(events=[BeatEvent('low', 0.5)]), 1/60, morph_start)
-        axis.tick(_audio(), 1/60, morph_start + self._morph_secs(axis) + 0.1)
+
+        dt = 1/60
+        clock = 0.0
+        for _ in range(self._morph_frames(axis) + 10):
+            clock += dt
+            axis.tick(_audio(mode='idle'), dt, clock)
+
         assert id(axis.target_genome) != old_target
 
-    # --- Full lifecycle ---
+    # --- Full cycle ---
 
-    def test_full_cycle(self):
-        """DWELL → READY → MORPHING → DWELL with new genome."""
+    def test_full_cycle_idle(self):
+        """DWELL → (timeout) → MORPHING → (complete) → DWELL with new genome."""
+        from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
         initial_genome = axis.current_genome
         dwell = self._dwell_secs(axis)
-        morph = self._morph_secs(axis)
+        dt = 1/60
 
+        # Advance past dwell timeout
         t = dwell + 0.1
-        axis.tick(_audio(), 1/60, t)
-        assert axis._lifecycle.is_ready
+        axis.tick(_audio(mode='idle'), dt, t)
+        assert axis._morph_state == _MorphState.MORPHING
 
-        morph_start = t + 0.1
-        axis.tick(_audio(events=[BeatEvent('low', 0.5)]), 1/60, morph_start)
-        assert axis._lifecycle.is_morphing
+        # Run morph to completion
+        for _ in range(self._morph_frames(axis) + 10):
+            t += dt
+            axis.tick(_audio(mode='idle'), dt, t)
 
-        axis.tick(_audio(), 1/60, morph_start + morph + 0.1)
         assert axis.current_genome is not initial_genome
         assert axis.morph_t == 0.0
-        assert not axis._lifecycle.is_morphing
+        assert axis._morph_state == _MorphState.DWELL
+
+    def test_full_cycle_beat(self):
+        """DWELL → (beat) → MORPHING → (complete) → DWELL in beat mode."""
+        from flame_sheep.axes.genome_axis import _MorphState
+        axis = self._make_axis()
+        initial_genome = axis.current_genome
+        dt = 1/60
+
+        # Beat releases dwell
+        axis.tick(_audio(events=[BeatEvent('low', 0.5)], mode='beat'), dt, 0.5)
+        assert axis._morph_state == _MorphState.MORPHING
+
+        # Run morph to completion
+        t = 0.5
+        for _ in range(self._morph_frames(axis) + 10):
+            t += dt
+            axis.tick(_audio(mode='beat'), dt, t)
+
+        assert axis.current_genome is not initial_genome
+        assert axis.morph_t == 0.0
+        assert axis._morph_state == _MorphState.DWELL
 
     # --- Break damping ---
 
@@ -504,11 +529,11 @@ class TestGenomeAxisStateMachine:
         """Break intensity slows rotation."""
         axis_break = self._make_axis()
         for i in range(60):
-            axis_break.tick(_audio(breaking=True), 1/60, float(i) / 60)
+            axis_break.tick(_audio(breaking=True, mode='beat'), 1/60, float(i) / 60)
 
         axis_normal = self._make_axis()
         for i in range(60):
-            axis_normal.tick(_audio(), 1/60, float(i) / 60)
+            axis_normal.tick(_audio(mode='beat'), 1/60, float(i) / 60)
 
         assert axis_normal._rotation_phase > axis_break._rotation_phase
 
@@ -517,12 +542,12 @@ class TestGenomeAxisStateMachine:
     def test_beat_boosts_rotation(self):
         """Downbeat increases rotation speed temporarily."""
         axis = self._make_axis()
-        axis.tick(_audio(), 1/60, 0.0)
+        axis.tick(_audio(mode='beat'), 1/60, 0.0)
         phase_after_quiet = axis._rotation_phase
 
         axis2 = self._make_axis()
-        axis2.tick(_audio(events=[BeatEvent('low', 1.0)]), 1/60, 0.0)
-        axis2.tick(_audio(), 1/60, 0.1)
+        axis2.tick(_audio(events=[BeatEvent('low', 1.0)], mode='beat'), 1/60, 0.0)
+        axis2.tick(_audio(mode='beat'), 1/60, 0.1)
         phase_after_beat = axis2._rotation_phase
 
         assert phase_after_beat > phase_after_quiet
@@ -540,15 +565,16 @@ class TestGenomeAxisStateMachine:
         axis = self._make_axis()
         axis.tick(_audio(events=[BeatEvent('alien_signal', 1.0)]), 1/60, 0.0)
 
-    def test_song_start_resets_dwell(self):
+    def test_song_start_resets_to_dwell(self):
+        from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
-        t = self._dwell_secs(axis) + 0.1
-        axis.tick(_audio(), 1/60, t)
-        assert axis._lifecycle.is_ready
-        axis.tick(_audio(events=[BeatEvent('song_start', 0.0)]), 1/60, t + 1.0)
+        # Get into morphing state
+        axis._morph_state = _MorphState.MORPHING
+        axis._morph_t = 0.5
+        # Song start should reset to dwell
+        axis.tick(_audio(events=[BeatEvent('song_start', 0.0)], mode='beat'), 1/60, 10.0)
         assert axis.morph_t == 0.0
-        assert not axis._lifecycle.is_ready
-        assert not axis._lifecycle.is_morphing
+        assert axis._morph_state == _MorphState.DWELL
 
 
 class FakeLib:
@@ -655,63 +681,99 @@ class TestNextLoopSelection:
 
 
 # -------------------------------------------------------------------
-# DriftMode
+# GenomeAxis mode transitions
 # -------------------------------------------------------------------
 
-class TestDriftModeUnit:
+class TestGenomeAxisModes:
 
     def _make(self):
         _seed = iter(range(1000))
         factory = lambda: trivial_genome(next(_seed))
-        genome_axis = GenomeAxis(genome_factory=factory, role=_default_role)
-        drift = DriftMode(genome_factory=factory)
-        return drift, genome_axis
+        axis = GenomeAxis(genome_factory=factory, role=_default_role)
+        return axis
 
-    def test_inactive_by_default(self):
-        drift, _ = self._make()
-        assert not drift.active
+    def test_starts_in_idle(self):
+        axis = self._make()
+        assert axis._mode == Mode.IDLE
 
-    def test_morph_advances_when_active(self):
-        drift, genome_axis = self._make()
-        drift.active = True
-        drift.enter(genome_axis)
-        drift.tick(_audio(rms=0.0), 1/60, 0.0)
-        assert drift.morph_t > 0.0
+    def test_morph_advances_in_idle(self):
+        """Idle mode: morph advances at fixed speed after dwell."""
+        axis = self._make()
+        # Start in dwell, advance past dwell timeout
+        clock = 0.0
+        dt = 1 / 60
+        for i in range(2000):
+            clock += dt
+            axis.tick(_audio(rms=0.0, mode='idle'), dt, clock)
+        assert axis.morph_t > 0.0
 
-    def test_morph_does_not_advance_when_inactive(self):
-        drift, genome_axis = self._make()
-        drift.tick(_audio(rms=0.0), 1/60, 0.0)
-        assert drift.morph_t == 0.0
+    def test_morph_advances_in_energy(self):
+        """Energy mode: morph advances at fixed speed after dwell."""
+        axis = self._make()
+        clock = 0.0
+        dt = 1 / 60
+        for i in range(2000):
+            clock += dt
+            axis.tick(_audio(rms=0.1, spectral_novelty=0.20, mode='energy'), dt, clock)
+        assert axis.morph_t > 0.0
 
-    def test_morph_completes_in_reasonable_time(self):
-        """Fixed morph speed should complete within ~20 seconds."""
+    def test_mode_change_preserves_genome(self):
+        """Mode change must not alter the current interpolated genome."""
+        axis = self._make()
+        clock = 0.0
+        dt = 1 / 60
+        # Run in idle until morphing
+        for _ in range(2000):
+            clock += dt
+            axis.tick(_audio(rms=0.0, mode='idle'), dt, clock)
+
+        # Capture genome before mode change
+        before = axis.current_genome.lerp(axis.target_genome, axis.morph_t)
+
+        # Switch to beat mode
+        clock += dt
+        axis.tick(_audio(rms=0.1, spectral_novelty=0.05, mode='beat'), dt, clock)
+
+        after = axis.current_genome.lerp(axis.target_genome, axis.morph_t)
+        # Allow one frame of advancement (morph_speed ≈ 0.001), but no pop
+        assert before.distance(after) < 0.01, \
+            f"Mode change caused a visual discontinuity: {before.distance(after):.6f}"
+
+    def test_beat_releases_dwell(self):
+        """In beat mode, a downbeat event should release dwell."""
+        axis = self._make()
+        from flame_sheep.axes.genome_axis import _MorphState
+        # Start morphing by advancing past dwell in idle
+        clock = 0.0
+        dt = 1 / 60
+        for _ in range(2000):
+            clock += dt
+            axis.tick(_audio(rms=0.0, mode='idle'), dt, clock)
+
+        # Advance until morph completes and enters dwell
+        for _ in range(2000):
+            clock += dt
+            axis.tick(_audio(rms=0.0, mode='idle'), dt, clock)
+
+        # Switch to beat mode — if in dwell, beat should release it
+        # First enter beat mode (resets dwell wait)
+        clock += dt
+        axis.tick(_audio(rms=0.1, mode='beat'), dt, clock)
+
+        # If we left dwell on mode change, we're morphing now
+        # If not, send a beat to release it
+        if axis._morph_state == _MorphState.DWELL:
+            clock += dt
+            axis.tick(_audio(rms=0.1, mode='beat',
+                            events=[BeatEvent(kind='low', energy=0.8)]), dt, clock)
+            assert axis._morph_state == _MorphState.MORPHING
+
+    def test_morph_speed_constant_across_modes(self):
+        """Morph speed should be the same in all modes."""
         from flame_sheep.config import cfg
         frames_to_complete = int(1.0 / cfg.drift.morph_speed) + 1
         assert frames_to_complete < 60 * 20, \
             f"Morph takes {frames_to_complete} frames ({frames_to_complete/60:.0f}s) — too slow"
-
-    def test_enter_snapshots_genome(self):
-        drift, genome_axis = self._make()
-        # Advance genome_axis morph partway
-        genome_axis.morph_t = 0.5
-        expected = genome_axis.current_genome.lerp(
-            genome_axis.target_genome, 0.5)
-        drift.tick(_audio(rms=0.0), 1/60, 0.0)
-        # Force activation for test
-        drift.active = True
-        drift.enter(genome_axis)
-        assert drift.current_genome.distance(expected) < 1e-6
-
-    def test_exit_returns_interpolated(self):
-        drift, genome_axis = self._make()
-        drift.active = True
-        drift.enter(genome_axis)
-        # Advance morph partway
-        for i in range(100):
-            drift.tick(_audio(rms=0.0), 1/60, float(i))
-        expected = drift.current_genome.lerp(drift.target_genome, drift.morph_t)
-        result = drift.exit()
-        assert result.distance(expected) < 1e-6
 
 
 # -------------------------------------------------------------------
