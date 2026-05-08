@@ -304,9 +304,9 @@ class GenomeAxis:
     def contribute(self, frame: FlameSheepCore.FrameState) -> None:
         """Write interpolated genome to frame. Same for all modes."""
         frame.genome = self.current_genome.lerp(self.target_genome, self._morph_t)
-        # Pull center toward origin — don't rotate it, because the
-        # static centroid doesn't represent the rotational center of mass.
-        # Once we have rotation-accumulated scoring this can be smarter.
+        # Pull center toward origin — swept centroid from GPU scorer
+        # handles the main correction via auto_center on load. This
+        # runtime pull compensates for residual drift during morphing.
         CENTER_PULL = 0.002
         frame.genome.center = frame.genome.center * (1.0 - CENTER_PULL)
         if self._rotation_phase != 0.0:
