@@ -355,7 +355,7 @@ class TestGenomeAxisStateMachine:
     def test_starts_in_dwell(self):
         axis = self._make_axis()
         assert axis.morph_t == 0.0
-        assert not axis._morph_ready
+        assert not axis._lifecycle.is_ready
 
     def test_starts_with_two_genomes(self):
         axis = self._make_axis()
@@ -371,14 +371,14 @@ class TestGenomeAxisStateMachine:
         t = self._dwell_secs(axis) / 2
         axis.tick(_audio(), 1/60, t)
         assert axis.morph_t == 0.0
-        assert not axis._morph_ready
+        assert not axis._lifecycle.is_ready
 
     def test_dwell_to_ready_after_duration(self):
         """morph_ready set after dwell duration elapses."""
         axis = self._make_axis()
         t = self._dwell_secs(axis) + 0.1
         axis.tick(_audio(), 1/60, t)
-        assert axis._morph_ready
+        assert axis._lifecycle.is_ready
 
     def test_rotation_advances_during_dwell(self):
         """Rotation phase increases during dwell."""
@@ -393,7 +393,7 @@ class TestGenomeAxisStateMachine:
         axis = self._make_axis()
         t = self._dwell_secs(axis) + 0.1
         axis.tick(_audio(), 1/60, t)
-        assert axis._morph_ready
+        assert axis._lifecycle.is_ready
         axis.tick(_audio(), 1/60, t + 1.0)
         assert axis.morph_t == 0.0
 
@@ -403,7 +403,7 @@ class TestGenomeAxisStateMachine:
         t = self._dwell_secs(axis) + 0.1
         axis.tick(_audio(), 1/60, t)
         axis.tick(_audio(events=[BeatEvent('low', 0.3)]), 1/60, t + 0.5)
-        assert axis._morphing
+        assert axis._lifecycle.is_morphing
         # Next frame should show morph_t > 0
         axis.tick(_audio(), 1/60, t + 1.0)
         assert axis.morph_t > 0.0
@@ -460,7 +460,7 @@ class TestGenomeAxisStateMachine:
         axis.tick(_audio(), 1/60, morph_start + self._morph_secs(axis) + 0.1)
         assert axis.morph_t == 0.0
         assert axis.current_genome is initial_target
-        assert not axis._morph_ready
+        assert not axis._lifecycle.is_ready
 
     def test_new_target_after_morph_complete(self):
         """After morph completes, target_genome changes."""
@@ -484,16 +484,16 @@ class TestGenomeAxisStateMachine:
 
         t = dwell + 0.1
         axis.tick(_audio(), 1/60, t)
-        assert axis._morph_ready
+        assert axis._lifecycle.is_ready
 
         morph_start = t + 0.1
         axis.tick(_audio(events=[BeatEvent('low', 0.5)]), 1/60, morph_start)
-        assert axis._morphing
+        assert axis._lifecycle.is_morphing
 
         axis.tick(_audio(), 1/60, morph_start + morph + 0.1)
         assert axis.current_genome is not initial_genome
         assert axis.morph_t == 0.0
-        assert not axis._morphing
+        assert not axis._lifecycle.is_morphing
 
     # --- Break damping ---
 
@@ -541,11 +541,11 @@ class TestGenomeAxisStateMachine:
         axis = self._make_axis()
         t = self._dwell_secs(axis) + 0.1
         axis.tick(_audio(), 1/60, t)
-        assert axis._morph_ready
+        assert axis._lifecycle.is_ready
         axis.tick(_audio(events=[BeatEvent('song_start', 0.0)]), 1/60, t + 1.0)
         assert axis.morph_t == 0.0
-        assert not axis._morph_ready
-        assert not axis._morphing
+        assert not axis._lifecycle.is_ready
+        assert not axis._lifecycle.is_morphing
 
 
 class FakeLib:

@@ -68,9 +68,9 @@ class TestGenomeSwapRate:
         swaps = 0
         prev_target = id(core.target_genome)
 
-        # Skip dwell — test the morph/swap mechanism directly
-        core._genome_axis._morph_ready = True
-        core._genome_axis.morph_t = 0.001  # kick off first morph
+        # Skip dwell — force lifecycle to READY so next beat triggers morph
+        from flame_sheep.axes._morph_lifecycle import MorphState
+        core._genome_axis._lifecycle.state = MorphState.READY
 
         for _ in range(int(10.0 * 60)):  # 10 seconds at 60fps
             clock.advance(dt)
@@ -88,10 +88,7 @@ class TestGenomeSwapRate:
         dt = 1.0 / 60
         swaps = 0
         # Reset state from previous test
-        core._genome_axis._morph_ready = False
-        core._genome_axis._morphing = False
-        core._genome_axis.morph_t = 0.0
-        core._genome_axis._dwell_start = clock()
+        core._genome_axis._lifecycle.reset(clock())
         prev_target = id(core.target_genome)
 
         for _ in range(int(4.0 * 60)):  # 4 seconds
@@ -177,14 +174,14 @@ class TestMorphInvariants:
             assert 0.0 <= core.morph_t <= 1.0, \
                 f"morph_t out of range: {core.morph_t}"
 
-    def test_morph_speed_bounded(self, core, clock):
-        """morph_speed should stay within sane bounds."""
+    def test_morph_t_bounded(self, core, clock):
+        """morph_t should stay within [0, 1]."""
         dt = 1.0 / 60
         for _ in range(int(4.0 * 60)):
             clock.advance(dt)
             _tick(core, dt)
-            assert 0.0 < core.morph_speed <= 1.0, \
-                f"morph_speed out of range: {core.morph_speed}"
+            assert 0.0 <= core.morph_t <= 1.0, \
+                f"morph_t out of range: {core.morph_t}"
 
     def test_palette_t_in_range(self, core, clock):
         """palette_t must always be in [0, 1]."""
