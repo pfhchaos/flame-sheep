@@ -191,6 +191,9 @@ class FlameRenderer:
         self._blur_fbos = {}
         self.blur_radius = 1.0  # adjustable blur strength
 
+        # Temporal decay tracking for tonemap normalization
+        self._decay = 0.0  # set by clear_histogram()
+
         # Debug overlay (lazy init)
         self._debug_circle_prog = None
         self._debug_circle_vao = None
@@ -244,6 +247,7 @@ class FlameRenderer:
 
         decay: 0.0 = full clear, 0.9 = keep 90% of previous frame's hits.
         """
+        self._decay = decay
         size = self.canvas_w * self.canvas_h * 2
         self.clear_shader['u_size'] = size
         self.clear_shader['u_decay_num'] = int(decay * 256)
@@ -294,6 +298,9 @@ class FlameRenderer:
         The caller must have already made the target window's EGL surface
         current before calling this. After this returns, call win.swap().
         """
+        # Effective accumulated frames from temporal decay (geometric series)
+        accum_frames = 1.0 / (1.0 - self._decay) if self._decay > 0 else 1.0
+
         # Fast path: no blur — render tonemap directly to screen
         if self.blur_radius <= 0:
             self.ctx.viewport = (0, 0, surface_w, surface_h)
@@ -301,16 +308,17 @@ class FlameRenderer:
             self.palette_tex.use(location=0)
 
             p = self.tonemap_program
-            p['u_palette']    = 0
-            p['u_width']      = self.canvas_w
-            p['u_height']     = self.canvas_h
-            p['u_viewport_x'] = viewport.x
-            p['u_viewport_y'] = viewport.y
-            p['u_viewport_w'] = viewport.w
-            p['u_viewport_h'] = viewport.h
-            p['u_surface_w']  = surface_w
-            p['u_surface_h']  = surface_h
-            p['u_brightness'] = brightness
+            p['u_palette']       = 0
+            p['u_width']         = self.canvas_w
+            p['u_height']        = self.canvas_h
+            p['u_viewport_x']    = viewport.x
+            p['u_viewport_y']    = viewport.y
+            p['u_viewport_w']    = viewport.w
+            p['u_viewport_h']    = viewport.h
+            p['u_surface_w']     = surface_w
+            p['u_surface_h']     = surface_h
+            p['u_brightness']    = brightness
+            p['u_accum_frames']  = accum_frames
 
             self.quad_vao.render(moderngl.TRIANGLES)
             return
@@ -324,16 +332,17 @@ class FlameRenderer:
         self.palette_tex.use(location=0)
 
         p = self.tonemap_program
-        p['u_palette']    = 0
-        p['u_width']      = self.canvas_w
-        p['u_height']     = self.canvas_h
-        p['u_viewport_x'] = viewport.x
-        p['u_viewport_y'] = viewport.y
-        p['u_viewport_w'] = viewport.w
-        p['u_viewport_h'] = viewport.h
-        p['u_surface_w']  = surface_w
-        p['u_surface_h']  = surface_h
-        p['u_brightness'] = brightness
+        p['u_palette']       = 0
+        p['u_width']         = self.canvas_w
+        p['u_height']        = self.canvas_h
+        p['u_viewport_x']    = viewport.x
+        p['u_viewport_y']    = viewport.y
+        p['u_viewport_w']    = viewport.w
+        p['u_viewport_h']    = viewport.h
+        p['u_surface_w']     = surface_w
+        p['u_surface_h']     = surface_h
+        p['u_brightness']    = brightness
+        p['u_accum_frames']  = accum_frames
 
         self.quad_vao.render(moderngl.TRIANGLES)
 
