@@ -292,6 +292,41 @@ class Genome:
         result.center   = _lerp_arr(self.center,   other.center,   t)
         return result
 
+    def rotated(self, angle: float) -> 'Genome':
+        """Return a copy with all affine transforms rotated by angle (radians).
+
+        Applies a 2D rotation matrix to the linear part [a,b,d,e] of each
+        transform's affine coefficients. Translation [c,f] is left unchanged.
+        This is how Electric Sheep produces animation loops — a full 2π
+        rotation returns to the original attractor.
+        """
+        cos_a = np.cos(angle)
+        sin_a = np.sin(angle)
+        result = Genome()
+        result.transforms = []
+        for tr in self.transforms:
+            rt = Transform()
+            a, b, c, d, e, f = tr.affine
+            # Rotate the linear part: R @ [[a,b],[d,e]]
+            rt.affine = np.array([
+                cos_a * a - sin_a * d,
+                cos_a * b - sin_a * e,
+                c,
+                sin_a * a + cos_a * d,
+                sin_a * b + cos_a * e,
+                f,
+            ], dtype=np.float32)
+            rt.variations = tr.variations.copy()
+            rt.color = tr.color
+            rt.weight = tr.weight
+            rt.var_params = dict(tr.var_params)
+            result.transforms.append(rt)
+        result.palette = self.palette.copy()
+        result.zoom = self.zoom
+        result.rotation = self.rotation
+        result.center = self.center.copy()
+        return result
+
     def to_gpu_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Pack genome into flat arrays for GPU upload.
