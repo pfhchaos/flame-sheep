@@ -149,13 +149,14 @@ class GenomeAxis:
         # Affine rotation — continuous spin (à la Electric Sheep)
         self._rotation_phase = 0.0
 
-        # Morph lifecycle — beat-counted
-        #   DWELL:    _dwell_beats < DWELL_BEATS, morph_t=0
-        #   READY:    _dwell_beats >= DWELL_BEATS, morph_t=0, waiting for strong beat
-        #   MORPHING: morph_t advances from 0→1 over MORPH_BEATS beats
-        self._dwell_beats = 0
+        # Morph lifecycle — tempo-timed dwell, beat-triggered morph
+        #   DWELL:    elapsed < dwell_beats/bpm, morph_t=0
+        #   READY:    dwell time elapsed, morph_t=0, waiting for real beat
+        #   MORPHING: morph_t advances 0→1 per-frame over morph_beats/bpm seconds
+        self._dwell_start: float = 0.0      # clock time when dwell started
         self._morph_ready = False
-        self._morph_beats = 0               # beats elapsed since morph started
+        self._morphing = False               # True while morph is in progress
+        self._morph_start: float = 0.0      # clock time when morph started
 
         # Timing
         self._last_downbeat_time = 0.0
@@ -196,7 +197,7 @@ class GenomeAxis:
             if event.kind == self._role.band_for_role(DOWNBEAT):
                 self._handle_downbeat(event, clock, audio)
             elif event.kind == "song_start":
-                self._handle_song_start()
+                self._handle_song_start(clock)
 
         # Energy mode: centroid derivative drives morph speed continuously
         # (no discrete swaps — just smooth drift tracking tonal movement)
@@ -235,8 +236,31 @@ class GenomeAxis:
         else:
             self._break_damping = min(1.0, self._break_damping / self.BREAK_DECAY)
 
-        # Advance affine rotation — continuous, never stops
         bpm = max(audio.effective_bpm, 60.0)
+
+        # Dwell time check — use tempo to compute when dwell is complete
+        if not self._morph_ready and not self._morphing:
+            dwell_duration = self.DWELL_BEATS * 60.0 / bpm
+            if clock - self._dwell_start >= dwell_duration:
+                self._morph_ready = True
+                log.debug(f"[dwell] {dwell_duration:.1f}s elapsed, morph ready")
+
+        # Morph advancement — smooth per-frame over morph_beats duration
+        if self._morphing:
+            morph_duration = self.MORPH_BEATS * 60.0 / bpm
+            elapsed = clock - self._morph_start
+            self.morph_t = min(1.0, elapsed / max(morph_duration, 0.01))
+
+            if self.morph_t >= 1.0:
+                self.current_genome = self.target_genome
+                self.morph_t = 0.0
+                self._morphing = False
+                self._swap_next_genome()
+                self._dwell_start = clock
+                self._morph_ready = False
+                log.debug("[morph] complete, dwell reset")
+
+        # Advance affine rotation — continuous, never stops
         boost = self._rotation_boost.update(0.0, bpm=bpm)
         rotation_speed = self.ROTATION_SPEED + boost * self.ROTATION_BEAT_BOOST
         self._rotation_phase += rotation_speed * self._break_damping
@@ -279,54 +303,29 @@ class GenomeAxis:
         bpm = max(audio.effective_bpm, 60.0) if audio else 120.0
         kick = event.energy * density_scale
 
-        if self.morph_t > 0.0:
-            # MORPHING: advance morph by one beat
-            self._morph_beats += 1
-            self.morph_t = min(1.0, self._morph_beats / max(self.MORPH_BEATS, 1))
-            self._rotation_boost.update(kick, bpm=bpm)
-
-            if self.morph_t >= 1.0:
-                self.current_genome = self.target_genome
-                self.morph_t = 0.0
-                self._swap_next_genome()
-                self._dwell_beats = 0
-                self._morph_beats = 0
-                self._morph_ready = False
-                log.debug("[morph] complete, dwell reset")
-            else:
-                log.debug(f"[morph]  beat {self._morph_beats}/{self.MORPH_BEATS}  "
-                          f"t={self.morph_t:.2f}")
+        # Beat arrives while morph ready → start the morph
+        if self._morph_ready and not self._morphing:
+            self._morphing = True
+            self._morph_start = clock
+            log.info(
+                f"[MORPH START]  +{since:.3f}s  energy={event.energy:.2f}  "
+                f"dwell={clock - self._dwell_start:.1f}s"
+            )
         else:
-            # DWELL / READY: count beats, check for strong beat trigger
-            self._dwell_beats += 1
-            if self._dwell_beats >= self.DWELL_BEATS and not self._morph_ready:
-                self._morph_ready = True
-                log.debug(f"[dwell] {self._dwell_beats} beats complete, morph ready")
+            # Normal beat — boost rotation
+            self._rotation_boost.update(kick, bpm=bpm)
+            log.debug(f"[downbeat]  +{since:.3f}s  energy={event.energy:.2f}")
 
-            swap_thresh = self.STRONG_BEAT_THRESHOLD * (1.0 + downbeat_density * 0.5)
-            if (self._morph_ready
-                    and event.energy > self._recent_downbeat_energy * swap_thresh):
-                self.morph_t = 1.0 / max(self.MORPH_BEATS, 1)  # first beat of morph
-                self._morph_beats = 1
-                log.info(
-                    f"[MORPH START]  +{since:.3f}s  energy={event.energy:.2f}  "
-                    f"after {self._dwell_beats} beats dwell"
-                )
-            else:
-                self._rotation_boost.update(kick, bpm=bpm)
-                log.debug(f"[downbeat]  +{since:.3f}s  energy={event.energy:.2f}  "
-                          f"dwell={self._dwell_beats}")
-
-    def _handle_song_start(self) -> None:
+    def _handle_song_start(self, clock: float = 0.0) -> None:
         """Reset state for new song — swap loop + reset energy tracking."""
-        self._last_downbeat_time = 0.0
+        self._last_downbeat_time = clock
         self._recent_downbeat_energy = 0.5
         self._break_damping = 1.0
         self._section_change_pending = False
         self._section_warmup = 0
-        self._dwell_beats = 0
-        self._morph_beats = 0
+        self._dwell_start = clock
         self._morph_ready = False
+        self._morphing = False
         self.morph_t = 0.0
         # New song, new loop
         if self._lib is not None and self._lib.loop_count() > 1:

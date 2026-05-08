@@ -84,9 +84,14 @@ class TestGenomeSwapRate:
             f"Expected at least 1 genome swap in 10s, got {swaps}"
 
     def test_not_every_low_swaps(self, core, clock):
-        """Genome should NOT swap on every single low-band onset."""
+        """During dwell, beats should not cause genome swaps."""
         dt = 1.0 / 60
         swaps = 0
+        # Reset state from previous test
+        core._genome_axis._morph_ready = False
+        core._genome_axis._morphing = False
+        core._genome_axis.morph_t = 0.0
+        core._genome_axis._dwell_start = clock()
         prev_target = id(core.target_genome)
 
         for _ in range(int(4.0 * 60)):  # 4 seconds
