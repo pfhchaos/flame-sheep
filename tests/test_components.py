@@ -328,43 +328,42 @@ class TestDetailAxisUnit:
 # -------------------------------------------------------------------
 
 class TestGenomeAxisStateMachine:
-    """Test the genome axis morph lifecycle as a state machine.
+    """Test the genome axis morph lifecycle as a beat-counted state machine.
 
     States:
-      DWELL     — rotating on current genome, morph_t=0, cycles < N
+      DWELL     — rotating, morph_t=0, dwell_beats < DWELL_BEATS
       READY     — dwell complete, morph_t=0, waiting for strong beat
-      MORPHING  — morph_t advancing toward 1.0, still rotating
-      (on morph_t >= 1.0 → swap genome, reset to DWELL)
+      MORPHING  — morph_t advancing 0→1 over MORPH_BEATS beats
+      (on morph complete → swap genome, reset to DWELL)
     """
 
-    def _make_axis(self, dwell_cycles=3):
-        """Create axis with short dwell for testing."""
+    QUIET_BEAT = [BeatEvent('low', 0.2)]
+    LOUD_BEAT = [BeatEvent('low', 1.0)]
+
+    def _make_axis(self):
         _seed = iter(range(1000))
         from flame_sheep_audio import FREQS
-        axis = GenomeAxis(
+        return GenomeAxis(
             genome_factory=lambda: trivial_genome(next(_seed)),
             role=_default_role, freqs=FREQS)
-        # Override dwell to something testable
-        axis._dwell_override = dwell_cycles
-        return axis
 
-    def _advance_rotation(self, axis, n_cycles):
-        """Advance rotation phase through n full cycles."""
-        import math
-        # Each cycle is 2π radians. At ROTATION_SPEED=0.02 rad/frame,
-        # one cycle = 2π/0.02 ≈ 314 frames. Force it directly.
-        for _ in range(n_cycles):
-            axis._rotation_phase = 0.0
-            axis._rotation_cycles += 1
-        if axis._rotation_cycles >= axis.ROTATION_DWELL_CYCLES:
-            axis._morph_ready = True
+    def _feed_beats(self, axis, n, energy=0.2, clock_start=0.0):
+        """Feed n quiet downbeats to advance dwell counter."""
+        for i in range(n):
+            axis.tick(_audio(events=[BeatEvent('low', energy)]),
+                      1/60, clock_start + float(i))
+
+    def _make_ready(self, axis):
+        """Advance axis to READY state (dwell complete, waiting for strong beat)."""
+        self._feed_beats(axis, axis.DWELL_BEATS, energy=0.2)
+        assert axis._morph_ready
 
     # --- Initial state ---
 
     def test_starts_in_dwell(self):
         axis = self._make_axis()
         assert axis.morph_t == 0.0
-        assert axis._rotation_cycles == 0
+        assert axis._dwell_beats == 0
         assert not axis._morph_ready
 
     def test_starts_with_two_genomes(self):
@@ -373,20 +372,26 @@ class TestGenomeAxisStateMachine:
         assert axis.target_genome is not None
         assert id(axis.current_genome) != id(axis.target_genome)
 
-    # --- DWELL → READY transition ---
+    # --- DWELL → READY ---
+
+    def test_dwell_counts_beats(self):
+        """Each downbeat increments dwell counter."""
+        axis = self._make_axis()
+        self._feed_beats(axis, 5)
+        assert axis._dwell_beats == 5
 
     def test_dwell_holds_morph_at_zero(self):
-        """During dwell, morph_t stays at 0 regardless of beats."""
+        """During dwell, morph_t stays at 0 even with strong beats."""
         axis = self._make_axis()
-        for i in range(30):
-            axis.tick(_audio(events=[BeatEvent('low', 1.0)]), 1/60, float(i))
+        # Feed loud beats but fewer than DWELL_BEATS
+        self._feed_beats(axis, axis.DWELL_BEATS - 1, energy=1.0)
         assert axis.morph_t == 0.0
 
-    def test_dwell_to_ready_after_n_cycles(self):
-        """morph_ready becomes True after ROTATION_DWELL_CYCLES."""
+    def test_dwell_to_ready_after_n_beats(self):
+        """morph_ready set after DWELL_BEATS downbeats."""
         axis = self._make_axis()
         assert not axis._morph_ready
-        self._advance_rotation(axis, axis.ROTATION_DWELL_CYCLES)
+        self._feed_beats(axis, axis.DWELL_BEATS)
         assert axis._morph_ready
 
     def test_rotation_advances_during_dwell(self):
@@ -395,157 +400,119 @@ class TestGenomeAxisStateMachine:
         axis.tick(_audio(), 1/60, 0.0)
         assert axis._rotation_phase > 0.0
 
-    # --- READY → MORPHING transition ---
+    # --- READY → MORPHING ---
 
     def test_ready_waits_for_strong_beat(self):
-        """morph_ready + quiet beats → stays at morph_t=0."""
+        """READY + quiet beats → stays at morph_t=0."""
         axis = self._make_axis()
-        self._advance_rotation(axis, axis.ROTATION_DWELL_CYCLES)
-        assert axis._morph_ready
-        # Quiet beats should not trigger morph
-        for i in range(10):
-            axis.tick(_audio(events=[BeatEvent('low', 0.2)]), 1/60, float(i))
+        self._make_ready(axis)
+        # More quiet beats — shouldn't trigger morph
+        self._feed_beats(axis, 5, energy=0.2, clock_start=100.0)
         assert axis.morph_t == 0.0
 
     def test_strong_beat_starts_morph(self):
-        """morph_ready + strong beat → morph_t > 0."""
+        """READY + strong beat → morph_t > 0."""
         axis = self._make_axis()
-        self._advance_rotation(axis, axis.ROTATION_DWELL_CYCLES)
-        # Build low energy average
-        for i in range(10):
-            axis.tick(_audio(events=[BeatEvent('low', 0.2)]), 1/60, float(i))
-        # Strong beat triggers morph
-        axis.tick(_audio(events=[BeatEvent('low', 1.0)]), 1/60, 20.0)
+        self._make_ready(axis)
+        axis.tick(_audio(events=self.LOUD_BEAT), 1/60, 100.0)
         assert axis.morph_t > 0.0
 
-    # --- MORPHING state ---
-
-    def test_morph_advances_each_frame(self):
-        """Once morphing, morph_t increases each tick."""
+    def test_morph_starts_at_first_beat_fraction(self):
+        """First morph beat sets morph_t = 1/MORPH_BEATS."""
         axis = self._make_axis()
-        self._advance_rotation(axis, axis.ROTATION_DWELL_CYCLES)
-        axis.morph_t = 0.01  # in progress
-        prev = axis.morph_t
-        density = {'low': 2.0, 'mid': 1.0}
-        axis.tick(_audio(onset_density=density), 1/60, 0.0)
-        assert axis.morph_t > prev
+        self._make_ready(axis)
+        axis.tick(_audio(events=self.LOUD_BEAT), 1/60, 100.0)
+        expected = 1.0 / axis.MORPH_BEATS
+        assert axis.morph_t == pytest.approx(expected)
+
+    # --- MORPHING ---
+
+    def test_morph_advances_on_beats(self):
+        """Each beat during morph advances morph_t by 1/MORPH_BEATS."""
+        axis = self._make_axis()
+        self._make_ready(axis)
+        axis.tick(_audio(events=self.LOUD_BEAT), 1/60, 100.0)
+        after_1 = axis.morph_t
+        axis.tick(_audio(events=self.QUIET_BEAT), 1/60, 101.0)
+        after_2 = axis.morph_t
+        assert after_2 > after_1
+        assert after_2 == pytest.approx(2.0 / axis.MORPH_BEATS)
+
+    def test_morph_does_not_advance_without_beats(self):
+        """Frames without beats don't advance morph_t."""
+        axis = self._make_axis()
+        self._make_ready(axis)
+        axis.tick(_audio(events=self.LOUD_BEAT), 1/60, 100.0)
+        mt = axis.morph_t
+        # 10 frames with no beats
+        for i in range(10):
+            axis.tick(_audio(), 1/60, 100.5 + i * 0.01)
+        assert axis.morph_t == mt
 
     def test_rotation_continues_during_morph(self):
         """Rotation doesn't stop while morphing."""
         axis = self._make_axis()
-        self._advance_rotation(axis, axis.ROTATION_DWELL_CYCLES)
-        axis.morph_t = 0.01
+        self._make_ready(axis)
+        axis.tick(_audio(events=self.LOUD_BEAT), 1/60, 100.0)
         axis._rotation_phase = 0.0
-        axis.tick(_audio(), 1/60, 0.0)
+        axis.tick(_audio(), 1/60, 101.0)
         assert axis._rotation_phase > 0.0
 
-    def test_density_drives_morph_speed(self):
-        """Higher onset density → faster morph."""
-        axis_slow = self._make_axis()
-        axis_slow.morph_t = 0.01
-        axis_slow._morph_ready = True
-        axis_slow.tick(_audio(onset_density={'low': 1.0, 'mid': 0}), 1/60, 0.0)
+    # --- MORPHING → DWELL (complete) ---
 
-        axis_fast = self._make_axis()
-        axis_fast.morph_t = 0.01
-        axis_fast._morph_ready = True
-        axis_fast.tick(_audio(onset_density={'low': 5.0, 'mid': 0}), 1/60, 0.0)
-
-        assert axis_fast.morph_speed > axis_slow.morph_speed
-
-    def test_beat_boosts_morph_during_morphing(self):
-        """Beats during morph increase morph speed temporarily."""
+    def test_morph_completes_after_n_beats(self):
+        """Morph completes after exactly MORPH_BEATS beats."""
         axis = self._make_axis()
-        axis._morph_ready = True
-        axis.morph_t = 0.01
-        density = {'low': 2.0, 'mid': 1.0}
-        # Tick without beat
-        axis.tick(_audio(onset_density=density), 1/60, 0.0)
-        speed_no_beat = axis.morph_speed
-        # Tick with beat
-        axis.tick(_audio(events=[BeatEvent('low', 0.8)], onset_density=density), 1/60, 1.0)
-        axis.tick(_audio(onset_density=density), 1/60, 2.0)  # let boost take effect
-        speed_with_beat = axis.morph_speed
-        assert speed_with_beat > speed_no_beat
-
-    # --- MORPHING → DWELL (morph complete) ---
-
-    def test_morph_complete_swaps_genome(self):
-        """morph_t reaching 1.0 swaps to target and resets to dwell."""
-        axis = self._make_axis()
-        axis._morph_ready = True
+        self._make_ready(axis)
         initial_target = axis.target_genome
-        # Force morph near completion
-        axis.morph_t = 0.999
-        density = {'low': 2.0, 'mid': 1.0}
-        axis.tick(_audio(onset_density=density), 1/60, 0.0)
-        # Should have completed: current = old target, morph_t reset
-        assert axis.current_genome is initial_target
+        # First beat starts morph
+        axis.tick(_audio(events=self.LOUD_BEAT), 1/60, 100.0)
+        # Remaining beats complete it
+        for i in range(1, axis.MORPH_BEATS):
+            axis.tick(_audio(events=self.QUIET_BEAT), 1/60, 100.0 + i)
+        # Should have completed
         assert axis.morph_t == 0.0
-        assert axis._rotation_cycles == 0
+        assert axis.current_genome is initial_target
+        assert axis._dwell_beats == 0
         assert not axis._morph_ready
 
     def test_new_target_after_morph_complete(self):
         """After morph completes, target_genome changes."""
         axis = self._make_axis()
-        axis._morph_ready = True
+        self._make_ready(axis)
         old_target = id(axis.target_genome)
-        axis.morph_t = 0.999
-        density = {'low': 2.0, 'mid': 1.0}
-        axis.tick(_audio(onset_density=density), 1/60, 0.0)
+        # Complete a full morph
+        axis.tick(_audio(events=self.LOUD_BEAT), 1/60, 100.0)
+        for i in range(1, axis.MORPH_BEATS):
+            axis.tick(_audio(events=self.QUIET_BEAT), 1/60, 100.0 + i)
         assert id(axis.target_genome) != old_target
 
     # --- Full lifecycle ---
 
-    def test_full_dwell_ready_morph_cycle(self):
-        """Drive through complete DWELL → READY → MORPHING → DWELL cycle."""
+    def test_full_cycle(self):
+        """DWELL → READY → MORPHING → DWELL with new genome."""
         axis = self._make_axis()
         initial_genome = axis.current_genome
 
-        # DWELL: advance rotation cycles
-        self._advance_rotation(axis, axis.ROTATION_DWELL_CYCLES)
-        assert axis._morph_ready
+        # DWELL → READY
+        self._make_ready(axis)
         assert axis.morph_t == 0.0
 
-        # READY: build energy baseline then strong beat
-        for i in range(10):
-            axis.tick(_audio(events=[BeatEvent('low', 0.2)]), 1/60, float(i))
-        axis.tick(_audio(events=[BeatEvent('low', 1.0)]), 1/60, 20.0)
-        assert axis.morph_t > 0.0  # MORPHING
+        # READY → MORPHING (strong beat)
+        axis.tick(_audio(events=self.LOUD_BEAT), 1/60, 100.0)
+        assert axis.morph_t > 0.0
 
-        # MORPHING: advance to completion
-        density = {'low': 2.0, 'mid': 1.0}
-        for i in range(2000):
-            axis.tick(_audio(onset_density=density), 1/60, 30.0 + float(i))
-            if axis.morph_t == 0.0 and axis._rotation_cycles == 0:
-                break  # morph completed, back in DWELL
-        else:
-            pytest.fail("Morph never completed in 2000 frames")
+        # MORPHING → DWELL (complete morph)
+        for i in range(1, axis.MORPH_BEATS):
+            axis.tick(_audio(events=self.QUIET_BEAT), 1/60, 100.0 + i)
 
         # Back in DWELL with new genome
         assert axis.current_genome is not initial_genome
+        assert axis.morph_t == 0.0
+        assert axis._dwell_beats == 0
         assert not axis._morph_ready
-        assert axis._rotation_cycles == 0
 
     # --- Break damping ---
-
-    def test_break_damps_morph(self):
-        """Break intensity slows morph advancement."""
-        density = {'low': 2.0, 'mid': 1.0}
-        axis_break = self._make_axis()
-        axis_break._morph_ready = True
-        axis_break.morph_t = 0.001
-        for i in range(60):
-            axis_break.tick(_audio(breaking=True, onset_density=density), 1/60, float(i))
-
-        axis_normal = self._make_axis()
-        axis_normal._morph_ready = True
-        axis_normal.morph_t = 0.001
-        for i in range(60):
-            axis_normal.tick(_audio(onset_density=density), 1/60, float(i))
-
-        assert axis_normal.morph_t > 0
-        assert axis_break.morph_t < axis_normal.morph_t * 0.5
 
     def test_break_damps_rotation(self):
         """Break intensity slows rotation."""
@@ -564,17 +531,14 @@ class TestGenomeAxisStateMachine:
     def test_beat_boosts_rotation(self):
         """Downbeat increases rotation speed temporarily."""
         axis = self._make_axis()
-        # Baseline rotation
         axis.tick(_audio(), 1/60, 0.0)
         phase_after_quiet = axis._rotation_phase
 
         axis2 = self._make_axis()
         axis2.tick(_audio(events=[BeatEvent('low', 1.0)]), 1/60, 0.0)
-        # Next frame should show boosted rotation
         axis2.tick(_audio(), 1/60, 1.0)
         phase_after_beat = axis2._rotation_phase
 
-        # Beat-boosted should have rotated more
         assert phase_after_beat > phase_after_quiet
 
     # --- Misc ---
@@ -589,14 +553,15 @@ class TestGenomeAxisStateMachine:
     def test_ignores_unknown_events(self):
         axis = self._make_axis()
         axis.tick(_audio(events=[BeatEvent('alien_signal', 1.0)]), 1/60, 0.0)
-        # Should not raise or change state
 
-    def test_song_start_resets(self):
+    def test_song_start_resets_dwell(self):
         axis = self._make_axis()
-        for i in range(10):
-            axis.tick(_audio(events=[BeatEvent('low', 0.5)]), 1/60, float(i))
+        self._feed_beats(axis, 10)
+        assert axis._dwell_beats == 10
         axis.tick(_audio(events=[BeatEvent('song_start', 0.0)]), 1/60, 20.0)
-        assert axis._recent_downbeat_energy == 0.5
+        assert axis._dwell_beats == 0
+        assert axis.morph_t == 0.0
+        assert not axis._morph_ready
 
 
 class FakeLib:
