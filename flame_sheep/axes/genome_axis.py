@@ -133,11 +133,15 @@ class GenomeAxis:
         self._mel_centroid = MelCentroid(freqs) if freqs is not None else None
         self._mel_delta = Delta()
 
+        # Beat boost envelopes: instant attack, decay over 1 beat
+        _hop_time = HOP_SIZE / SAMPLE_RATE
+        self._morph_boost = AsymmetricEnvelope(
+            attack=0.001, release=1.0, hop_time=_hop_time, unit='beats')
+
         # Affine rotation — continuous spin within each genome (à la Electric Sheep)
         self._rotation_phase = 0.0          # radians, wraps at 2π
-        # Beat boost envelope: instant attack, decay over 1 beat
         self._rotation_boost = AsymmetricEnvelope(
-            attack=0.001, release=1.0, hop_time=HOP_SIZE / SAMPLE_RATE, unit='beats')
+            attack=0.001, release=1.0, hop_time=_hop_time, unit='beats')
 
         # Timing
         self._last_downbeat_time = 0.0
@@ -228,17 +232,15 @@ class GenomeAxis:
             self._swap_next_genome()
             self.morph_speed = self.DRIFT_MORPH_SPEED
 
-        # Ramp morph speed toward density-driven baseline
-        # Downbeat + backbeat drive morph (rhythm section), subdivision drives zoom
+        # Morph speed: base drift + density baseline + beat boost envelope
         rhythm_density = (
             self._role.band_state(audio, DOWNBEAT).onset_density
             + self._role.band_state(audio, BACKBEAT).onset_density * 0.5
         )
-        density_speed = (
-            self.DRIFT_MORPH_SPEED + rhythm_density * self.DENSITY_MORPH_SCALE
-        )
-        # Blend toward baseline — ramps up after swap, decays down after pulse
-        self.morph_speed = 0.95 * self.morph_speed + 0.05 * density_speed
+        density_speed = self.DRIFT_MORPH_SPEED + rhythm_density * self.DENSITY_MORPH_SCALE
+        morph_boost = self._morph_boost.update(0.0, bpm=max(audio.effective_bpm, 60.0))
+        self.morph_speed = max(self.DRIFT_MORPH_SPEED,
+                               density_speed + morph_boost * self.LOW_MORPH_PULSE)
 
         # Advance affine rotation phase — base speed + beat boost envelope
         boost = self._rotation_boost.update(0.0, bpm=max(audio.effective_bpm, 60.0))
@@ -295,12 +297,10 @@ class GenomeAxis:
             )
         else:
             # Normal downbeat — pulse morph speed and rotation (scaled by density)
-            self.morph_speed = min(
-                0.15,
-                self.morph_speed + event.energy * self.LOW_MORPH_PULSE * density_scale,
-            )
-            self._rotation_boost.update(event.energy * density_scale,
-                                       bpm=max(audio.effective_bpm, 60.0))
+            bpm = max(audio.effective_bpm, 60.0)
+            kick = event.energy * density_scale
+            self._morph_boost.update(kick, bpm=bpm)
+            self._rotation_boost.update(kick, bpm=bpm)
             log.debug(f"[downbeat]  +{since:.3f}s  energy={event.energy:.2f}")
 
     def _handle_song_start(self) -> None:
