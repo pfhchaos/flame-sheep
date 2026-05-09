@@ -619,6 +619,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     ctx = session.create_moderngl_context()
     renderer = FlameRenderer(ctx, canvas_w, canvas_h)
     renderer.blur_radius = blur_radius
+    renderer.set_ppmm(canvas_ppmm)
 
     # Per-monitor perspective skew (degrees, positive = angled right)
     _monitor_skew = {
@@ -629,6 +630,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     renderer.temporal_decay = 0.0  # image-space temporal off (using histogram decay instead)
 
     _blur_comparison = False
+    _test_pattern = args.test_pattern if hasattr(args, 'test_pattern') else False
 
     # --- library + evolution state ---
     from .storage import Library
@@ -907,16 +909,17 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             if orch.session.gpu_paused:
                 session.release_current()
                 continue
-            renderer.upload_audio(frame.spectrum)
-            renderer.upload_genome(frame.genome)
-            renderer.upload_palette(frame.palette)
-            if core.needs_walker_reset:
-                renderer.reset_walkers()
-                core.needs_walker_reset = False
-            renderer.clear_histogram(decay=0.3)
-            renderer.dispatch_chaos_game(iterations=frame.iterations)
-            ctx.memory_barrier()
-            renderer.reduce_histogram_max()
+            if not _test_pattern:
+                renderer.upload_audio(frame.spectrum)
+                renderer.upload_genome(frame.genome)
+                renderer.upload_palette(frame.palette)
+                if core.needs_walker_reset:
+                    renderer.reset_walkers()
+                    core.needs_walker_reset = False
+                renderer.clear_histogram(decay=0.3)
+                renderer.dispatch_chaos_game(iterations=frame.iterations)
+                ctx.memory_barrier()
+                renderer.reduce_histogram_max()
             _watchdog_last = time.perf_counter()
 
             # Tonemap pass — only swap surfaces the compositor is ready for
@@ -924,7 +927,9 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 if not session.make_current(surf):
                     continue  # this surface is dead, skip it
                 renderer.set_skew(_monitor_skew.get(name, 0.0))
-                if _blur_comparison and surf.width >= 3000:
+                if _test_pattern:
+                    renderer.render_test_pattern(viewports[name], surf.width, surf.height)
+                elif _blur_comparison and surf.width >= 3000:
                     renderer.render_blur_comparison(viewports[name], surf.width, surf.height,
                                                     brightness=frame.brightness,
                                                     radii=(0.6, 1.0))
@@ -1189,6 +1194,8 @@ def main() -> None:
                         help='use synthetic metronome instead of real audio (120bpm, predictable beats)')
     parser.add_argument('--debug', action='store_true',
                         help='open debug overlay window (audio analysis visualization)')
+    parser.add_argument('--test-pattern', action='store_true',
+                        help='show grid test pattern instead of fractal (alignment debugging)')
     parser.add_argument('--generate-genomes', type=int, metavar='N',
                         help='generate N random genomes into the library and exit')
     parser.add_argument('--compose-loops', type=int, metavar='N', default=None,

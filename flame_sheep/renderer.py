@@ -122,6 +122,10 @@ class FlameRenderer:
         self.reduce_max_shader = self.ctx.compute_shader(
             (SHADER_DIR / 'reduce_max.comp').read_text()
         )
+        self.test_pattern_program = self.ctx.program(
+            vertex_shader   = (SHADER_DIR / 'tonemap.vert').read_text(),
+            fragment_shader = (SHADER_DIR / 'test_pattern.frag').read_text(),
+        )
         self.de_shader = self.ctx.compute_shader(
             (SHADER_DIR / 'density_estimation.comp').read_text()
         )
@@ -409,6 +413,38 @@ class FlameRenderer:
 
             self._blur_fbos[key] = (fbo_a, tex_a, fbo_b, tex_b)
         return self._blur_fbos[key]
+
+    def render_test_pattern(self, viewport: Viewport, surface_w: int, surface_h: int) -> None:
+        """Render a grid test pattern for multi-monitor alignment.
+
+        Uses the same vertex shader (with skew) as the tonemap, so
+        perspective correction and viewport slicing are identical.
+        """
+        _bind_default_framebuffer()
+        self.ctx.viewport = (0, 0, surface_w, surface_h)
+
+        try:
+            self.test_pattern_program['u_skew'] = self._skew
+        except KeyError:
+            pass
+
+        p = self.test_pattern_program
+        p['u_width']      = self.canvas_w
+        p['u_height']     = self.canvas_h
+        p['u_viewport_x'] = viewport.x
+        p['u_viewport_y'] = viewport.y
+        p['u_viewport_w'] = viewport.w
+        p['u_viewport_h'] = viewport.h
+        p['u_surface_w']  = surface_w
+        p['u_surface_h']  = surface_h
+        if 'u_ppmm' in p:
+            p['u_ppmm']   = getattr(self, '_ppmm', 1.0)
+
+        self.quad_vao.render(moderngl.TRIANGLES)
+
+    def set_ppmm(self, ppmm: float) -> None:
+        """Set canvas pixels per millimeter (for test pattern physical grid)."""
+        self._ppmm = ppmm
 
     def render_tonemap(self, viewport: Viewport, surface_w: int, surface_h: int,
                        brightness: float = 6.0, dt: float = 1/60) -> None:
