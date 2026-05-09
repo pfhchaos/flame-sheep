@@ -19,13 +19,20 @@ from flame_sheep.symmetry import symmetry_scores
 
 GOLDEN_DIR = Path(__file__).parent / 'golden'
 
-# Same fixtures as the generator
+# Same fixtures as the generator — must match exactly
 TEST_POINTS = [
-    (1.0, 0.5),
-    (0.0, 0.0),
-    (-0.3, 0.7),
-    (0.5, -0.5),
-    (2.0, 1.0),
+    ( 1.0,   0.5),
+    ( 0.0,   0.0),
+    (-0.3,   0.7),
+    ( 0.5,  -0.5),
+    ( 2.0,   1.0),
+    (-0.8,  -0.4),
+    ( 0.05,  0.03),
+    ( 0.95,  0.31),
+    ( 1.05,  0.31),
+    ( 0.49,  0.49),
+    ( 0.51,  0.51),
+    (-1.5,   0.8),
 ]
 
 # Fixed affine for affine-reading variations (15/17/21/22)
@@ -56,11 +63,48 @@ PARAM_FIXTURES = {
     Variation.SATTRACTOR: {'sat_m': 6.0},
     Variation.WALLPAPER: {'wallpaper_group': 0.0},
     Variation.FRIEZE: {'frieze_group': 0.0},
+    # batch 2 parametric
+    Variation.RADIAL_BLUR: {'radial_blur_angle': 0.5},
+    Variation.PERSPECTIVE: {'perspective_angle': 0.8, 'perspective_dist': 2.0},
+    Variation.SUPER_SHAPE: {'super_shape_rnd': 0.3, 'super_shape_m': 4.0,
+                            'super_shape_n1': 2.0, 'super_shape_n2': 2.0,
+                            'super_shape_n3': 2.0, 'super_shape_holes': 0.0},
+    Variation.PIE: {'pie_slices': 6.0, 'pie_rotation': 0.0, 'pie_thickness': 0.5},
+    Variation.PARABOLA: {'parabola_height': 1.0, 'parabola_width': 1.0},
+    Variation.CONIC: {'conic_eccentricity': 1.0, 'conic_holes': 0.0},
+    Variation.ESCHER: {'escher_beta': 0.3},
+    Variation.OSCILLOSCOPE: {'osc_separation': 1.0, 'osc_frequency': 3.14159,
+                             'osc_amplitude': 1.0, 'osc_damping': 0.1},
+    Variation.CURVE: {'curve_xamp': 0.5, 'curve_yamp': 0.3,
+                      'curve_xlength': 1.0, 'curve_ylength': 1.0},
+    Variation.WEDGE_JULIA: {'wedge_julia_angle': 0.3, 'wedge_julia_count': 2.0,
+                            'wedge_julia_power': 4.0, 'wedge_julia_dist': 1.0},
+    Variation.WEDGE: {'wedge_angle': 0.3, 'wedge_hole': 0.0,
+                      'wedge_count': 2.0, 'wedge_swirl': 0.5},
+    Variation.WEDGE_SPH: {'wedge_sph_angle': 0.3, 'wedge_sph_hole': 0.0,
+                          'wedge_sph_count': 2.0, 'wedge_sph_swirl': 0.5},
+    Variation.LAZYSUSAN: {'lazysusan_x': 0.1, 'lazysusan_y': 0.1,
+                          'lazysusan_spin': 0.5, 'lazysusan_space': 0.2,
+                          'lazysusan_twist': 0.3},
+    Variation.MODULUS_FUNC: {'modulus_x': 0.5, 'modulus_y': 0.5},
+    Variation.BENT2: {'bent2_x': 1.5, 'bent2_y': -0.5},
+    Variation.BIPOLAR: {'bipolar_shift': 0.3},
+    Variation.FLUX: {'flux_spread': 0.5},
+    Variation.SPLIT: {'split_xsize': 0.5, 'split_ysize': 0.5},
+    Variation.SEPARATION: {'separation_x': 0.5, 'separation_y': 0.5,
+                           'separation_xinside': 0.2, 'separation_yinside': 0.3},
+    Variation.POPCORN2: {'popcorn2_x': 0.1, 'popcorn2_y': 0.1, 'popcorn2_c': 3.0},
 }
 
 RANDOM_VARIATIONS = {Variation.JULIA, Variation.SATTRACTOR, Variation.WALLPAPER,
                      Variation.FRIEZE, Variation.JULIAN, Variation.JULIASCOPE,
-                     Variation.ICON, Variation.CPOW}
+                     Variation.ICON, Variation.CPOW,
+                     Variation.BLUR, Variation.GAUSSIAN_BLUR, Variation.RADIAL_BLUR,
+                     Variation.NOISE, Variation.PIE, Variation.ARCH, Variation.PARABOLA,
+                     Variation.RAYS, Variation.CONIC, Variation.SQUARE,
+                     Variation.TWINTRIAN, Variation.SUPER_SHAPE,
+                     Variation.WEDGE_JULIA, Variation.BLADE, Variation.FLOWER,
+                     Variation.LISSAJOUS, Variation.EPISPIRAL, Variation.BOARDERS}
 
 
 @pytest.fixture(scope='module')
@@ -88,19 +132,41 @@ class TestTransformGoldenMasters:
         cpu_mod._current_var_params = params
         affine = TEST_AFFINE if var_idx in AFFINE_VARIATIONS else None
 
-        for px, py in TEST_POINTS:
-            key = f'v{var_idx}_{px}_{py}'
-            if key not in transform_golden:
-                pytest.skip(f'No golden data for {key}')
+        # Test all points that have golden data for this variation
+        tested = 0
+        for key, expected in transform_golden.items():
+            if not key.startswith(f'v{var_idx}_'):
+                continue
+            # Parse point from key: v{idx}_{px}_{py}
+            parts = key.split('_', 1)[1]  # everything after vN_
+            # Handle negative numbers: split on _ but rejoin negative signs
+            coords = parts.split('_')
+            # Reconstruct px, py from the key
+            # Keys look like: v0_1.0_0.5 or v0_-0.3_0.7
+            i = 0
+            vals = []
+            while i < len(coords):
+                if coords[i] == '' and i + 1 < len(coords):
+                    # Negative number: empty string before the minus
+                    vals.append(float('-' + coords[i + 1]))
+                    i += 2
+                else:
+                    vals.append(float(coords[i]))
+                    i += 1
+            if len(vals) != 2:
+                continue
+            px, py = vals
 
             if var_idx in RANDOM_VARIATIONS:
                 np.random.seed(42)
             rx, ry = apply_variation_cpu(var_idx, px, py, 1.0, affine)
-            expected = transform_golden[key]
 
             np.testing.assert_allclose(
                 [rx, ry], expected, atol=1e-6,
                 err_msg=f'Variation {var_idx} at ({px}, {py})')
+            tested += 1
+
+        assert tested > 0, f'No golden data for variation {var_idx}'
 
 
 class TestSymmetryGoldenMasters:
