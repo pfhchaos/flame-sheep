@@ -141,12 +141,15 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float,
         rr = ((r + cc) % (2*cc)) - cc + r * (1 - cc)
         return w*rr*np.cos(th), w*rr*np.sin(th)
     elif var_idx == 22: # fan — reads c,f from affine
-        # flam3: fan spacing from affine coefficients c,f
+        # flam3: dx = π*c², dy = f, dx2 = dx/2
+        # a += (fmod(a+dy,dx) > dx2) ? -dx2 : dx2
         c = affine[2] if affine is not None else 0.5
         f = affine[5] if affine is not None else 0.5
-        t = np.pi * c*c + 1e-6
-        th2 = th - t if ((th + f) % (2*t)) > t else th + t
-        return w*r*np.cos(th2), w*r*np.sin(th2)
+        dx = np.pi * c*c + 1e-6
+        dx2 = 0.5 * dx
+        a = th  # atan2(x, y) = flam3's precalc_atan
+        a += -dx2 if (np.fmod(a + f, dx) > dx2) else dx2
+        return w*r*np.cos(a), w*r*np.sin(a)
     elif var_idx == 23: # blob
         low = _current_var_params.get('blob_low', 0.3)
         high = _current_var_params.get('blob_high', 1.2)

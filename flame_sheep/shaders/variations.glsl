@@ -128,12 +128,17 @@ vec2 var_rings(vec2 p, Polar pc, int tidx) {
 }
 vec2 var_fan(vec2 p, Polar pc, int tidx) {
     // flam3 fan: reads c,f from the live affine
+    // dx = π*c², dx2 = dx/2, a += (fmod(a+f,dx) > dx2) ? -dx2 : dx2
     int abase = tidx * 6;
     float c = u_affines[abase + 2];
     float f = u_affines[abase + 5];
-    float t = 3.14159265 * c * c + 1e-6;
-    float th2 = (mod(pc.theta + f, 2.0*t) > t) ? pc.theta - t : pc.theta + t;
-    return pc.r_val * vec2(cos(th2), sin(th2));
+    float dx = 3.14159265 * c * c + 1e-6;
+    float dx2 = 0.5 * dx;
+    float a = pc.theta;
+    // Use fmod equivalent: val - dx * trunc(val/dx) to match C's fmod
+    float fmod_val = (a + f) - dx * trunc((a + f) / dx);
+    a += (fmod_val > dx2) ? -dx2 : dx2;
+    return pc.r_val * vec2(cos(a), sin(a));
 }
 vec2 var_blob(vec2 p, Polar pc, int slot) {
     float low   = u_active_vars[slot + PARAM_OFFSET + 0];
