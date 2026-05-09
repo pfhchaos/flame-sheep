@@ -620,7 +620,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     renderer = FlameRenderer(ctx, canvas_w, canvas_h)
     renderer.blur_radius = blur_radius
     renderer.temporal_decay = 0.0  # image-space temporal off (using histogram decay instead)
-    _comparison_mode = False
+
+    _blur_comparison = False
 
     # --- library + evolution state ---
     from .storage import Library
@@ -915,13 +916,13 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             for name, surf in ready.items():
                 if not session.make_current(surf):
                     continue  # this surface is dead, skip it
-                if _comparison_mode and surf.width >= 3000:
-                    # Comparison only on the big monitor
-                    renderer.render_comparison_v2(viewports[name], surf.width, surf.height,
-                                                  brightness=frame.brightness, dt=frame_time)
+                if _blur_comparison and surf.width >= 3000:
+                    renderer.render_blur_comparison(viewports[name], surf.width, surf.height,
+                                                    brightness=frame.brightness,
+                                                    radii=(0.6, 1.0))
                 else:
                     renderer.render_tonemap(viewports[name], surf.width, surf.height,
-                                           brightness=frame.brightness, dt=frame_time)
+                                           brightness=frame.brightness)
                 if not session.swap(surf):
                     break  # wayland connection lost
                 _watchdog_last = time.perf_counter()
@@ -1192,7 +1193,7 @@ def main() -> None:
                         help='generate N random palettes into the library')
     parser.add_argument('--stats', action='store_true',
                         help='print library statistics and exit')
-    parser.add_argument('--blur-radius', type=float, default=1.0,
+    parser.add_argument('--blur-radius', type=float, default=0.6,
                         help='wallpaper blur strength (0=off, 1=light, 2+=heavy; default: 1.0)')
     parser.add_argument('--log-features', action='store_true',
                         help='log audio features as JSON lines for offline analysis')
