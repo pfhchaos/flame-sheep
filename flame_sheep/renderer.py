@@ -130,6 +130,7 @@ class FlameRenderer:
     def _create_resources(self) -> None:
         w, h = self.canvas_w, self.canvas_h
         n_pixels = w * h
+        self._rng_frame_counter = 0
 
         # Histogram SSBO (binding=0): two packed uint arrays
         #   [0        .. n_pixels-1] = hit_count
@@ -322,6 +323,8 @@ class FlameRenderer:
 
     def dispatch_chaos_game(self, iterations: int = N_ITERS) -> None:
         self.compute_shader['u_iterations'] = iterations
+        self.compute_shader['u_rng_seed'] = self._rng_frame_counter
+        self._rng_frame_counter += 1
         groups = N_WALKERS // 64
         self.compute_shader.run(group_x=groups)
 

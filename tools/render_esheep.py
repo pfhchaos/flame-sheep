@@ -115,15 +115,11 @@ def render_genome(genome, renderer, ctx,
         renderer.dispatch_chaos_game(iterations=N_ITERS)
         ctx.memory_barrier()
 
-    # Use flam3-accurate tonemapping with the sheep's own parameters
-    flam3_brightness = getattr(genome, '_flam3_brightness', 4.0)
-    flam3_gamma = getattr(genome, '_flam3_gamma', 4.0)
-    # sample_density: total samples accumulated per pixel
-    total_samples = 65536 * N_ITERS * n_frames  # walkers * iters * frames
-    sample_density = total_samples / (renderer.canvas_w * renderer.canvas_h)
-    static_png = renderer.snapshot_flam3_png(
-        brightness=flam3_brightness, gamma=flam3_gamma,
-        sample_density=sample_density)
+    # Use the self-normalizing tonemap with consistent brightness.
+    # The flam3 tonemap needs further calibration (k1/k2 don't translate
+    # directly because our histogram stores hit counts, not pre-scaled RGB).
+    # For CNN training, consistency matters more than matching flam3 exactly.
+    static_png = renderer.snapshot_png(brightness=8.0)
 
     # --- Swept render (rotation-accumulated) ---
     renderer.upload_genome(genome)
@@ -139,9 +135,7 @@ def render_genome(genome, renderer, ctx,
         ctx.memory_barrier()
     renderer.set_rotation(base_rotation)
 
-    swept_png = renderer.snapshot_flam3_png(
-        brightness=flam3_brightness, gamma=flam3_gamma,
-        sample_density=sample_density)
+    swept_png = renderer.snapshot_png(brightness=8.0)
 
     return static_png, swept_png
 
