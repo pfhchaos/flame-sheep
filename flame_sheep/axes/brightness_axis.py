@@ -28,7 +28,7 @@ class BrightnessAxis:
     """
 
     def __init__(self, role: RoleMapper, floor: float = 0.7, ceiling: float = 12.0,
-                 rms_scale: float = 0.07, noise_floor: float = 0.002) -> None:
+                 rms_scale: float = 0.23, noise_floor: float = 0.05) -> None:
         self.enabled = True
         self._role = role
         self.floor = floor
