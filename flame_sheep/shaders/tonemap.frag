@@ -42,8 +42,7 @@ uniform int u_surface_w;      // actual EGL surface width (physical pixels)
 uniform int u_surface_h;      // actual EGL surface height (physical pixels)
 
 // Tone mapping parameters — tweak these to taste
-uniform float u_gamma     = 1.8;    // gamma correction (lower = brighter midtones)
-uniform float u_brightness= 6.0;    // overall brightness multiplier
+uniform float u_gamma     = 1.8;    // audio-driven gamma (lower = brighter/vivid, higher = ghostly)
 uniform float u_vibrancy  = 1.0;    // 0=desaturated, 1=full color
 
 // Actual max hit count from GPU reduction pass (binding=8)
@@ -95,10 +94,12 @@ void main() {
     float log_hits = log(float(hits) + 1.0);
     float log_max = log(float(max_hits) + 1.0);
     float alpha = (log_max > 0.0)
-        ? clamp(log_hits / log_max * u_brightness, 0.0, 1.0)
+        ? clamp(log_hits / log_max, 0.0, 1.0)
         : 0.0;
 
-    // Gamma correction — same as display gamma, makes it look right on screen
+    // Gamma: controls how much of the density range is visible.
+    // Low gamma (1.2) = vivid, filaments pop. High gamma (2.5) = ghostly.
+    // Driven by the brightness axis based on audio energy.
     alpha = pow(alpha, 1.0 / u_gamma);
 
     // --------------------------------------------------------

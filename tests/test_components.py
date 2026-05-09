@@ -304,7 +304,9 @@ class TestBrightnessAxisUnit:
         axis = BrightnessAxis(role=_default_role)
         mid = axis.noise_floor + (axis.rms_scale - axis.noise_floor) * 0.5
         axis.tick(_audio(harmonic_rms=mid), 1/60, 0.0)
-        assert axis.floor < axis.brightness < axis.ceiling
+        # floor > ceiling for gamma (quiet=high gamma, loud=low gamma)
+        lo, hi = min(axis.floor, axis.ceiling), max(axis.floor, axis.ceiling)
+        assert lo < axis.brightness < hi
 
     def test_below_noise_floor_returns_floor(self):
         axis = BrightnessAxis(role=_default_role)

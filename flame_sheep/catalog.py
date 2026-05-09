@@ -145,7 +145,7 @@ def render_genome_gpu(genome, ctx, size: int = 2048, n_frames: int = 60,
     p['u_viewport_h'] = size
     p['u_surface_w'] = size
     p['u_surface_h'] = size
-    p['u_brightness'] = brightness
+    p['u_gamma'] = brightness
 
     renderer.quad_vao.render(moderngl.TRIANGLES)
 
