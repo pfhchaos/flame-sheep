@@ -575,14 +575,17 @@ vec2 var_cell(vec2 p, Polar pc, int slot) {
 }
 
 vec2 var_whorl(vec2 p, Polar pc, int slot) {
-    // Whorl — parameterized radial twist (generalized swirl)
+    // Whorl — flam3 uses (weight - r) in BOTH branches
+    // Weight is 1.0 (applied by caller), so denominator = 1.0 - r
     float inside  = u_active_vars[slot + PARAM_OFFSET + 0];
     float outside = u_active_vars[slot + PARAM_OFFSET + 1];
+    float denom = 1.0 - pc.r_val;  // weight(1) - r, same both branches
+    if (abs(denom) < 1e-6) denom = sign(denom) * 1e-6;
     float a;
     if (pc.r_val < 1.0) {
-        a = pc.phi + inside / max(1.0 - pc.r_val, 1e-6);
+        a = pc.phi + inside / denom;
     } else {
-        a = pc.phi + outside / max(pc.r_val - 1.0, 1e-6);
+        a = pc.phi + outside / denom;
     }
     return pc.r_val * vec2(cos(a), sin(a));
 }

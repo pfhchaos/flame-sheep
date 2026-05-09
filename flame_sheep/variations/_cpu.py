@@ -493,14 +493,17 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float,
             if ix >= 0: iy = -(2*iy + 1); ix *= 2
             else: iy = -(2*iy + 1); ix = -(2*ix + 1)
         return w*(dx + ix*sz), w*(-dy - iy*sz)
-    elif var_idx == 57: # whorl
+    elif var_idx == 57: # whorl — flam3 uses (weight - r) in BOTH branches
         ins = _current_var_params.get('whorl_inside', 0.5)
         out = _current_var_params.get('whorl_outside', 0.5)
         rr = np.sqrt(x*x + y*y) + 1e-10
-        if rr < 1.0:
-            a = np.arctan2(y, x) + ins / max(1.0 - rr, 1e-6)
+        denom = w - rr  # weight - r, same sign convention both branches
+        if abs(denom) < 1e-10:
+            denom = 1e-10 if denom >= 0 else -1e-10
+        if rr < w:
+            a = np.arctan2(y, x) + ins / denom
         else:
-            a = np.arctan2(y, x) + out / max(rr - 1.0, 1e-6)
+            a = np.arctan2(y, x) + out / denom
         return w*rr*np.cos(a), w*rr*np.sin(a)
     elif var_idx == 58: # disc2
         twist = _current_var_params.get('disc2_twist', 1.0)
