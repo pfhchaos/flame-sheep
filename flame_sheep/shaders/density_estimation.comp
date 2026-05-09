@@ -1,0 +1,90 @@
+#version 430 core
+
+// ============================================================
+// density_estimation.comp — spatially-varying density estimation blur
+// ============================================================
+// Matches flam3's density estimation: sparse pixels get wide gaussian
+// kernels, dense pixels stay sharp. This reveals filament structure
+// that would otherwise be invisible single-pixel dots.
+//
+// Gather approach: each output pixel reads from a neighborhood of
+// input pixels, weighting each by a gaussian whose sigma comes from
+// the INPUT pixel's density. Low-density inputs scatter widely.
+// ============================================================
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Input histogram (original, read-only)
+layout(std430, binding = 11) readonly buffer InputHistogram {
+    uint in_histogram[];  // [hits..., colors...]
+};
+
+// Output histogram (DE-filtered)
+layout(std430, binding = 12) buffer OutputHistogram {
+    uint out_histogram[];  // [hits..., colors...]
+};
+
+uniform int u_width;
+uniform int u_height;
+uniform int u_max_radius;      // estimator_radius (typically 7-11)
+uniform float u_curve;         // estimator_curve (typically 0.4-0.6)
+uniform float u_min_density;   // minimum hit count to consider (noise floor)
+
+// Max hit count (from reduce_max pass)
+layout(std430, binding = 8) readonly buffer MaxBuf {
+    uint max_hits;
+};
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= u_width || pos.y >= u_height) return;
+
+    uint n_pixels = uint(u_width * u_height);
+    int max_r = u_max_radius;
+    float max_density = float(max_hits);
+    if (max_density < 1.0) max_density = 1.0;
+
+    // Gather: each source pixel scatters to this output pixel.
+    // The contribution is source_density * gaussian(dist, source_sigma),
+    // normalized per-source (divide by source's kernel integral) so
+    // each source preserves its total energy while spreading it.
+    float total_hits = 0.0;
+    float total_color = 0.0;
+
+    for (int dy = -max_r; dy <= max_r; dy++) {
+        for (int dx = -max_r; dx <= max_r; dx++) {
+            int ix = pos.x + dx;
+            int iy = pos.y + dy;
+
+            if (ix < 0 || ix >= u_width || iy < 0 || iy >= u_height) continue;
+
+            uint src_idx = uint(iy * u_width + ix);
+            float src_hits = float(in_histogram[src_idx]);
+
+            if (src_hits < u_min_density) continue;
+
+            // Source pixel's blur radius based on its density
+            float density_ratio = max_density / src_hits;
+            float radius = float(max_r) * pow(density_ratio, u_curve);
+            radius = clamp(radius, 0.5, float(max_r));
+
+            float dist2 = float(dx * dx + dy * dy);
+            if (dist2 > radius * radius) continue;
+
+            float sigma = radius / 2.5;
+            float weight = exp(-dist2 / (2.0 * sigma * sigma));
+
+            // Normalize by the source kernel's approximate integral (2π σ²)
+            // so each source preserves its total energy while spreading
+            float kernel_area = 6.28318530 * sigma * sigma;
+            float contribution = weight / max(kernel_area, 0.01);
+
+            total_hits += src_hits * contribution;
+            total_color += float(in_histogram[n_pixels + src_idx]) * contribution;
+        }
+    }
+
+    uint out_idx = uint(pos.y * u_width + pos.x);
+    out_histogram[out_idx] = uint(min(total_hits, 4294967000.0));
+    out_histogram[n_pixels + out_idx] = uint(min(total_color, 4294967000.0));
+}

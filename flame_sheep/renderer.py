@@ -122,6 +122,9 @@ class FlameRenderer:
         self.reduce_max_shader = self.ctx.compute_shader(
             (SHADER_DIR / 'reduce_max.comp').read_text()
         )
+        self.de_shader = self.ctx.compute_shader(
+            (SHADER_DIR / 'density_estimation.comp').read_text()
+        )
         self.tonemap_flam3_program = self.ctx.program(
             vertex_shader   = (SHADER_DIR / 'tonemap.vert').read_text(),
             fragment_shader = (SHADER_DIR / 'tonemap_flam3.frag').read_text(),
@@ -138,6 +141,12 @@ class FlameRenderer:
         histogram_data = np.zeros(n_pixels * 2, dtype=np.uint32)
         self.histogram_buf = self.ctx.buffer(histogram_data.tobytes())
         self.histogram_buf.bind_to_storage_buffer(0)
+
+        # DE input/output histogram SSBOs (binding=11, 12)
+        self._de_in_buf = self.ctx.buffer(histogram_data.tobytes())
+        self._de_out_buf = self.ctx.buffer(histogram_data.tobytes())
+        self._de_in_buf.bind_to_storage_buffer(11)
+        self._de_out_buf.bind_to_storage_buffer(12)
 
         # Per-transform hit counts SSBO (binding=7)
         xform_hits_data = np.zeros(n_pixels * MAX_TRANSFORMS, dtype=np.uint32)
@@ -338,6 +347,49 @@ class FlameRenderer:
         groups = (n_pixels + 255) // 256
         self.reduce_max_shader.run(group_x=groups)
         self.ctx.memory_barrier()
+
+    def apply_density_estimation(self, max_radius: int = 9,
+                                  curve: float = 0.4,
+                                  min_density: float = 0.0) -> None:
+        """Apply flam3-style density estimation to the histogram.
+
+        Spatially-varying gaussian blur: sparse pixels get wide kernels,
+        dense pixels stay sharp. Reveals filament structure that would
+        otherwise be invisible single-pixel dots.
+
+        Modifies the histogram in-place (copies to DE buffers, runs shader,
+        copies result back).
+
+        Args:
+            max_radius: maximum blur kernel radius (flam3 estimator_radius)
+            curve: density falloff curve (flam3 estimator_curve, typically 0.4-0.6)
+            min_density: minimum hits to consider (below = noise)
+        """
+        w, h = self.canvas_w, self.canvas_h
+
+        # Need max_hits for the shader
+        self.reduce_histogram_max()
+
+        # Copy current histogram → DE input buffer
+        data = self.histogram_buf.read()
+        self._de_in_buf.write(data)
+
+        # Run DE shader
+        de = self.de_shader
+        de['u_width'] = w
+        de['u_height'] = h
+        de['u_max_radius'] = max_radius
+        de['u_curve'] = float(curve)
+        de['u_min_density'] = float(min_density)
+
+        groups_x = (w + 15) // 16
+        groups_y = (h + 15) // 16
+        de.run(group_x=groups_x, group_y=groups_y)
+        self.ctx.memory_barrier()
+
+        # Copy DE output → main histogram buffer
+        result = self._de_out_buf.read()
+        self.histogram_buf.write(result)
 
     def _get_blur_fbos(self, w: int, h: int) -> tuple[moderngl.Framebuffer, moderngl.Texture, moderngl.Framebuffer, moderngl.Texture]:
         """Get or create a pair of FBOs for two-pass blur at the given size."""
@@ -813,6 +865,17 @@ class FlameRenderer:
         buf = io.BytesIO()
         Image.fromarray(img, 'RGBA').save(buf, format='PNG', optimize=True)
         return buf.getvalue()
+
+    def snapshot_de_png(self, brightness: float = 6.0,
+                        max_radius: int = 9, curve: float = 0.4) -> bytes:
+        """Render with density estimation, then tonemap to PNG.
+
+        Applies spatially-varying DE blur to the histogram before
+        tonemapping. Sparse regions get wide blurs revealing filament
+        structure; dense regions stay sharp.
+        """
+        self.apply_density_estimation(max_radius=max_radius, curve=curve)
+        return self.snapshot_png(brightness=brightness)
 
     def snapshot_flam3_png(self, brightness: float = 4.0, gamma: float = 4.0,
                            vibrancy: float = 1.0, contrast: float = 1.0,
