@@ -1349,9 +1349,13 @@ vec2 apply_variations(vec2 p, int tidx) {
 // u_pre_active_vars SSBO. Empty slots (-1) = immediate break.
 // ------------------------------------------------------------
 vec2 apply_pre_variations(vec2 p, int tidx) {
+    int base = tidx * MAX_ACTIVE_VARS * SLOT_SIZE;
+
+    // Quick check: if first slot is empty, return input unchanged
+    if (int(u_pre_active_vars[base]) < 0) return p;
+
     Polar pc = polar_compute(p);
     vec2 result = vec2(0.0);
-    int base = tidx * MAX_ACTIVE_VARS * SLOT_SIZE;
 
     for (int i = 0; i < MAX_ACTIVE_VARS; i++) {
         int slot = base + i * SLOT_SIZE;

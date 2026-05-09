@@ -17,6 +17,11 @@ layout(std430, binding = 3) readonly buffer ActiveVariations {
     float u_active_vars[];
 };
 
+// Pre-variations buffer (needed by variations.glsl, unused in this test)
+layout(std430, binding = 10) readonly buffer PreVariations {
+    float u_pre_active_vars[];
+};
+
 // {{SYMMETRY_GROUPS}}
 
 #include "rng.glsl"
