@@ -42,7 +42,7 @@ uniform int u_surface_w;      // actual EGL surface width (physical pixels)
 uniform int u_surface_h;      // actual EGL surface height (physical pixels)
 
 // Tone mapping parameters — tweak these to taste
-uniform float u_gamma     = 1.8;    // audio-driven gamma (lower = brighter/vivid, higher = ghostly)
+uniform float u_gamma;              // audio-driven gamma (lower = brighter/vivid, higher = ghostly)
 uniform float u_vibrancy  = 1.0;    // 0=desaturated, 1=full color
 
 // Actual max hit count from GPU reduction pass (binding=8)

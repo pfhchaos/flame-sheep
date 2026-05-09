@@ -30,15 +30,15 @@ class BrightnessAxis:
     def __init__(
         self,
         role: RoleMapper,
-        floor: float = 2.5,         # gamma when quiet (ghostly)
-        ceiling: float = 1.2,       # gamma when loud (vivid)
+        floor: float = 0.7,  # gamma when quiet (dark, behind text)
+        ceiling: float = 3.0,  # gamma when loud (vivid, filaments pop)
         rms_scale: float = 0.23,
         noise_floor: float = 0.05,
     ) -> None:
         self.enabled = True
         self._role = role
-        self.floor = floor          # high gamma = dim
-        self.ceiling = ceiling      # low gamma = bright
+        self.floor = floor  # high gamma = dim
+        self.ceiling = ceiling  # low gamma = bright
         self.rms_scale = rms_scale
         self.noise_floor = noise_floor
         self.gamma = floor
