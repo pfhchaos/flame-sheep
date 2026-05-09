@@ -522,7 +522,7 @@ def refine_loop(
         a, b, cc, d, e, f = tr.affine
         nx = a * x + b * y + cc
         ny = d * x + e * y + f
-        nx, ny = apply_variations_cpu(tr.variations, nx, ny)
+        nx, ny = apply_variations_cpu(tr.variations, nx, ny, tr.affine)
         x, y = nx, ny
         c = (c + tr.color) * 0.5
         if not (np.isfinite(x) and np.isfinite(y)):

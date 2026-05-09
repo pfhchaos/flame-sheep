@@ -86,23 +86,27 @@ vec2 var_bent(vec2 p, Polar pc) {
 
 // --- Parametric flam3 variations (15-29) ---
 
-vec2 var_waves(vec2 p, Polar pc, int slot) {
-    float freq_x = u_active_vars[slot + PARAM_OFFSET + 0];
-    float freq_y = u_active_vars[slot + PARAM_OFFSET + 1];
-    float amp_x  = u_active_vars[slot + PARAM_OFFSET + 2];
-    float amp_y  = u_active_vars[slot + PARAM_OFFSET + 3];
-    return vec2(p.x + freq_x * sin(p.y / max(amp_x*amp_x, 1e-6)),
-                p.y + freq_y * sin(p.x / max(amp_y*amp_y, 1e-6)));
+vec2 var_waves(vec2 p, Polar pc, int tidx) {
+    // flam3 waves: reads b,c,e,f from the live affine
+    int abase = tidx * 6;
+    float b = u_affines[abase + 1];
+    float c = u_affines[abase + 2];
+    float e = u_affines[abase + 4];
+    float f = u_affines[abase + 5];
+    return vec2(p.x + b * sin(p.y / max(c*c, 1e-6)),
+                p.y + e * sin(p.x / max(f*f, 1e-6)));
 }
 vec2 var_fisheye(vec2 p, Polar pc) {
     float ri = 2.0 / (pc.r_val + 1.0);
     return ri * vec2(p.y, p.x);
 }
-vec2 var_popcorn(vec2 p, Polar pc, int slot) {
-    float cx = u_active_vars[slot + PARAM_OFFSET + 0];
-    float cy = u_active_vars[slot + PARAM_OFFSET + 1];
-    return vec2(p.x + cx * sin(tan(3.0 * p.y)),
-                p.y + cy * sin(tan(3.0 * p.x)));
+vec2 var_popcorn(vec2 p, Polar pc, int tidx) {
+    // flam3 popcorn: reads c,f from the live affine
+    int abase = tidx * 6;
+    float c = u_affines[abase + 2];
+    float f = u_affines[abase + 5];
+    return vec2(p.x + c * sin(tan(3.0 * p.y)),
+                p.y + f * sin(tan(3.0 * p.x)));
 }
 vec2 var_exponential(vec2 p, Polar pc) {
     return exp(p.x - 1.0) * vec2(cos(3.14159265 * p.y), sin(3.14159265 * p.y));
@@ -114,15 +118,19 @@ vec2 var_cosine(vec2 p, Polar pc) {
     return vec2(cos(3.14159265 * p.x) * cosh(p.y),
                -sin(3.14159265 * p.x) * sinh(p.y));
 }
-vec2 var_rings(vec2 p, Polar pc, int slot) {
-    float c = u_active_vars[slot + PARAM_OFFSET + 0];
+vec2 var_rings(vec2 p, Polar pc, int tidx) {
+    // flam3 rings: reads c from the live affine
+    int abase = tidx * 6;
+    float c = u_affines[abase + 2];
     float cc = c * c + 1e-6;
     float rr = mod(pc.r_val + cc, 2.0 * cc) - cc + pc.r_val * (1.0 - cc);
     return rr * vec2(cos(pc.theta), sin(pc.theta));
 }
-vec2 var_fan(vec2 p, Polar pc, int slot) {
-    float c = u_active_vars[slot + PARAM_OFFSET + 0];
-    float f = u_active_vars[slot + PARAM_OFFSET + 1];
+vec2 var_fan(vec2 p, Polar pc, int tidx) {
+    // flam3 fan: reads c,f from the live affine
+    int abase = tidx * 6;
+    float c = u_affines[abase + 2];
+    float f = u_affines[abase + 5];
     float t = 3.14159265 * c * c + 1e-6;
     float th2 = (mod(pc.theta + f, 2.0*t) > t) ? pc.theta - t : pc.theta + t;
     return pc.r_val * vec2(cos(th2), sin(th2));
@@ -735,10 +743,455 @@ vec2 var_ripple(vec2 p, Polar pc, int slot) {
     return vec2(p.x + nx * os, p.y + ny * os);
 }
 
+// --- Displaced parameterized variants (70-73) + waves2 (74) ---
+
+vec2 var_waves_param(vec2 p, Polar pc, int slot) {
+    // Same formula as waves, but reads from explicit params instead of affine
+    float freq_x = u_active_vars[slot + PARAM_OFFSET + 0];
+    float freq_y = u_active_vars[slot + PARAM_OFFSET + 1];
+    float amp_x  = u_active_vars[slot + PARAM_OFFSET + 2];
+    float amp_y  = u_active_vars[slot + PARAM_OFFSET + 3];
+    return vec2(p.x + freq_x * sin(p.y / max(amp_x*amp_x, 1e-6)),
+                p.y + freq_y * sin(p.x / max(amp_y*amp_y, 1e-6)));
+}
+
+vec2 var_popcorn_param(vec2 p, Polar pc, int slot) {
+    float cx = u_active_vars[slot + PARAM_OFFSET + 0];
+    float cy = u_active_vars[slot + PARAM_OFFSET + 1];
+    return vec2(p.x + cx * sin(tan(3.0 * p.y)),
+                p.y + cy * sin(tan(3.0 * p.x)));
+}
+
+vec2 var_rings_param(vec2 p, Polar pc, int slot) {
+    float c = u_active_vars[slot + PARAM_OFFSET + 0];
+    float cc = c * c + 1e-6;
+    float rr = mod(pc.r_val + cc, 2.0 * cc) - cc + pc.r_val * (1.0 - cc);
+    return rr * vec2(cos(pc.theta), sin(pc.theta));
+}
+
+vec2 var_fan_param(vec2 p, Polar pc, int slot) {
+    float c = u_active_vars[slot + PARAM_OFFSET + 0];
+    float f = u_active_vars[slot + PARAM_OFFSET + 1];
+    float t = 3.14159265 * c * c + 1e-6;
+    float th2 = (mod(pc.theta + f, 2.0*t) > t) ? pc.theta - t : pc.theta + t;
+    return pc.r_val * vec2(cos(th2), sin(th2));
+}
+
+vec2 var_waves2(vec2 p, Polar pc, int slot) {
+    // flam3 waves2: x + scalex*sin(y*freqx) — different formula from waves
+    float scalex = u_active_vars[slot + PARAM_OFFSET + 0];
+    float scaley = u_active_vars[slot + PARAM_OFFSET + 1];
+    float freqx  = u_active_vars[slot + PARAM_OFFSET + 2];
+    float freqy  = u_active_vars[slot + PARAM_OFFSET + 3];
+    return vec2(p.x + scalex * sin(p.y * freqx),
+                p.y + scaley * sin(p.x * freqy));
+}
+
+// --- flam3 standard batch 2 (75-121) ---
+
+vec2 var_blur(vec2 p, Polar pc) {
+    float a = rng_float() * 6.28318530;
+    float r = rng_float();
+    return r * vec2(cos(a), sin(a));
+}
+
+vec2 var_gaussian_blur(vec2 p, Polar pc) {
+    float a = rng_float() * 6.28318530;
+    float r = rng_float() + rng_float() + rng_float() + rng_float() - 2.0;
+    return r * vec2(cos(a), sin(a));
+}
+
+vec2 var_radial_blur(vec2 p, Polar pc, int slot) {
+    float ang = u_active_vars[slot + PARAM_OFFSET + 0];
+    float rndg = rng_float() + rng_float() + rng_float() + rng_float() - 2.0;
+    float spin = sin(ang * 1.57079632);
+    float zoom = cos(ang * 1.57079632);
+    float alpha = pc.phi + spin * rndg;
+    float rz = zoom * rndg - 1.0;
+    return vec2(pc.r_val * cos(alpha) + rz * p.x,
+                pc.r_val * sin(alpha) + rz * p.y);
+}
+
+vec2 var_perspective(vec2 p, Polar pc, int slot) {
+    float ang = u_active_vars[slot + PARAM_OFFSET + 0];
+    float dist = u_active_vars[slot + PARAM_OFFSET + 1];
+    float vsin = sin(ang * 1.57079632);
+    float vfcos = dist * cos(ang * 1.57079632);
+    float d = dist - p.y * vsin;
+    if (abs(d) < 1e-10) return p;
+    float t = 1.0 / d;
+    return vec2(dist * p.x * t, vfcos * p.y * t);
+}
+
+vec2 var_super_shape(vec2 p, Polar pc, int slot) {
+    float rnd = u_active_vars[slot + PARAM_OFFSET + 0];
+    float m   = u_active_vars[slot + PARAM_OFFSET + 1];
+    float n1  = u_active_vars[slot + PARAM_OFFSET + 2];
+    float n2  = u_active_vars[slot + PARAM_OFFSET + 3];
+    float n3  = u_active_vars[slot + PARAM_OFFSET + 4];
+    float holes = u_active_vars[slot + PARAM_OFFSET + 5];
+    float theta = m * 0.25 * pc.phi + 0.78539816;
+    float t1 = pow(abs(cos(theta)), n2);
+    float t2 = pow(abs(sin(theta)), n3);
+    if (abs(n1) < 1e-10 || pc.r_val < 1e-10) return p;
+    float r = ((rnd * rng_float() + (1.0 - rnd) * pc.r_val) - holes)
+              * pow(t1 + t2, -1.0 / n1) / pc.r_val;
+    return r * p;
+}
+
+vec2 var_noise(vec2 p, Polar pc) {
+    float a = rng_float() * 6.28318530;
+    float r = rng_float();
+    return vec2(p.x * r * cos(a), p.y * r * sin(a));
+}
+
+vec2 var_secant2(vec2 p, Polar pc) {
+    float r = pc.r_val;
+    float cr = cos(r);
+    if (abs(cr) < 1e-10) return vec2(p.x, p.y);
+    float icr = 1.0 / cr;
+    return vec2(p.x, cr < 0.0 ? icr + 1.0 : icr - 1.0);
+}
+
+vec2 var_pie(vec2 p, Polar pc, int slot) {
+    float slices = u_active_vars[slot + PARAM_OFFSET + 0];
+    float rot    = u_active_vars[slot + PARAM_OFFSET + 1];
+    float thick  = u_active_vars[slot + PARAM_OFFSET + 2];
+    float sl = floor(rng_float() * slices + 0.5);
+    float a = rot + 6.28318530 * (sl + rng_float() * thick) / slices;
+    float r = rng_float();
+    return r * vec2(cos(a), sin(a));
+}
+
+vec2 var_arch(vec2 p, Polar pc) {
+    float ang = rng_float() * 3.14159265;
+    float sr = sin(ang);
+    float cr = cos(ang);
+    if (abs(cr) < 1e-10) return vec2(sr, sr);
+    return vec2(sr, sr * sr / cr);
+}
+
+vec2 var_parabola(vec2 p, Polar pc, int slot) {
+    float h = u_active_vars[slot + PARAM_OFFSET + 0];
+    float w = u_active_vars[slot + PARAM_OFFSET + 1];
+    float sr = sin(pc.r_val);
+    float cr = cos(pc.r_val);
+    return vec2(h * sr * sr * rng_float(), w * cr * rng_float());
+}
+
+vec2 var_rays(vec2 p, Polar pc) {
+    float ang = rng_float() * 3.14159265;
+    float r = 1.0 / max(pc.r_sq, 1e-10);
+    float tanr = tan(ang) * r;
+    return tanr * vec2(cos(p.x), sin(p.y));
+}
+
+vec2 var_conic(vec2 p, Polar pc, int slot) {
+    float ecc = u_active_vars[slot + PARAM_OFFSET + 0];
+    float holes = u_active_vars[slot + PARAM_OFFSET + 1];
+    float ct = p.x / max(pc.r_val, 1e-10);
+    float r = (rng_float() - holes) * ecc / (1.0 + ecc * ct) / max(pc.r_val, 1e-10);
+    return r * p;
+}
+
+vec2 var_escher(vec2 p, Polar pc, int slot) {
+    float beta = u_active_vars[slot + PARAM_OFFSET + 0];
+    float seb = sin(beta), ceb = cos(beta);
+    float vc = 0.5 * (1.0 + ceb);
+    float vd = 0.5 * seb;
+    float a = pc.phi;
+    float lnr = 0.5 * log(max(pc.r_sq, 1e-10));
+    float m = exp(vc * lnr - vd * a);
+    float n = vc * a + vd * lnr;
+    return m * vec2(cos(n), sin(n));
+}
+
+vec2 var_elliptic(vec2 p, Polar pc) {
+    float sq = p.y * p.y + p.x * p.x;
+    float x2 = 2.0 * p.x;
+    float xmax = max(0.5 * (sqrt(max(sq + x2, 0.0) + 1e-10) +
+                            sqrt(max(abs(sq - x2), 0.0) + 1e-10)), 1.0);
+    float a = clamp(p.x / xmax, -1.0, 1.0);
+    float ssx = sqrt(max(xmax - 1.0, 0.0));
+    float sign = p.y > 0.0 ? 1.0 : -1.0;
+    float v = 2.0 / 3.14159265;
+    return vec2(v * asin(a), sign * v * log(xmax + ssx + 1e-10));
+}
+
+vec2 var_oscilloscope(vec2 p, Polar pc, int slot) {
+    float sep  = u_active_vars[slot + PARAM_OFFSET + 0];
+    float freq = u_active_vars[slot + PARAM_OFFSET + 1];
+    float amp  = u_active_vars[slot + PARAM_OFFSET + 2];
+    float damp = u_active_vars[slot + PARAM_OFFSET + 3];
+    float t = amp * exp(-abs(p.x) * damp) * cos(6.28318530 * freq * p.x) + sep;
+    float dy = abs(p.y) <= t ? -p.y : p.y;
+    return vec2(p.x, dy);
+}
+
+vec2 var_edisc(vec2 p, Polar pc) {
+    float tmp = pc.r_sq + 1.0;
+    float tmp2 = 2.0 * p.x;
+    float r1 = sqrt(max(tmp + tmp2, 0.0));
+    float r2 = sqrt(max(tmp - tmp2, 0.0));
+    float xmax = max((r1 + r2) * 0.5, 1.0);
+    float a1 = log(xmax + sqrt(max(xmax - 1.0, 0.0)));
+    float a2 = -acos(clamp(p.x / xmax, -1.0, 1.0));
+    float snv = sin(a1);
+    if (p.y > 0.0) snv = -snv;
+    float w = 1.0 / 11.57034632;
+    return vec2(w * cosh(a2) * cos(a1), w * sinh(a2) * snv);
+}
+
+vec2 var_square(vec2 p, Polar pc) {
+    return vec2(rng_float() - 0.5, rng_float() - 0.5);
+}
+
+vec2 var_curve(vec2 p, Polar pc, int slot) {
+    float xamp = u_active_vars[slot + PARAM_OFFSET + 0];
+    float yamp = u_active_vars[slot + PARAM_OFFSET + 1];
+    float xl   = u_active_vars[slot + PARAM_OFFSET + 2];
+    float yl   = u_active_vars[slot + PARAM_OFFSET + 3];
+    float xl2 = max(xl * xl, 1e-10);
+    float yl2 = max(yl * yl, 1e-10);
+    return vec2(p.x + xamp * exp(-p.y * p.y / xl2),
+                p.y + yamp * exp(-p.x * p.x / yl2));
+}
+
+vec2 var_twintrian(vec2 p, Polar pc) {
+    float r = rng_float() * pc.r_val;
+    float sr = sin(r), cr = cos(r);
+    float diff = log(max(sr * sr, 1e-20)) / 2.302585 + cr;  // log10
+    return vec2(p.x * diff, p.x * (diff - sr * 3.14159265));
+}
+
+vec2 var_wedge_julia(vec2 p, Polar pc, int slot) {
+    float ang   = u_active_vars[slot + PARAM_OFFSET + 0];
+    float count = u_active_vars[slot + PARAM_OFFSET + 1];
+    float power = u_active_vars[slot + PARAM_OFFSET + 2];
+    float dist  = u_active_vars[slot + PARAM_OFFSET + 3];
+    float abs_n = abs(power);
+    float cn = dist / power * 0.5;
+    float cf = 1.0 - ang * count / 3.14159265 * 0.5;
+    float t_rnd = floor(abs_n * rng_float());
+    float a = (pc.phi + 6.28318530 * t_rnd) / power;
+    float c = floor((count * a + 3.14159265) / 3.14159265 * 0.5);
+    a = a * cf + c * ang;
+    float ri = pow(max(pc.r_val, 1e-6), cn);
+    return ri * vec2(cos(a), sin(a));
+}
+
+vec2 var_wedge(vec2 p, Polar pc, int slot) {
+    float ang   = u_active_vars[slot + PARAM_OFFSET + 0];
+    float hole  = u_active_vars[slot + PARAM_OFFSET + 1];
+    float count = u_active_vars[slot + PARAM_OFFSET + 2];
+    float swirl = u_active_vars[slot + PARAM_OFFSET + 3];
+    float a = pc.phi + swirl * pc.r_val;
+    float c = floor((count * a + 3.14159265) / 3.14159265 * 0.5);
+    float cf = 1.0 - ang * count / 3.14159265 * 0.5;
+    a = a * cf + c * ang;
+    float r = pc.r_val + hole;
+    return r * vec2(cos(a), sin(a));
+}
+
+vec2 var_wedge_sph(vec2 p, Polar pc, int slot) {
+    float ang   = u_active_vars[slot + PARAM_OFFSET + 0];
+    float hole  = u_active_vars[slot + PARAM_OFFSET + 1];
+    float count = u_active_vars[slot + PARAM_OFFSET + 2];
+    float swirl = u_active_vars[slot + PARAM_OFFSET + 3];
+    float ri = 1.0 / max(pc.r_val, 1e-10);
+    float a = pc.phi + swirl * ri;
+    float c = floor((count * a + 3.14159265) / 3.14159265 * 0.5);
+    float cf = 1.0 - ang * count / 3.14159265 * 0.5;
+    a = a * cf + c * ang;
+    float r = ri + hole;
+    return r * vec2(cos(a), sin(a));
+}
+
+vec2 var_lazysusan(vec2 p, Polar pc, int slot) {
+    float lx    = u_active_vars[slot + PARAM_OFFSET + 0];
+    float ly    = u_active_vars[slot + PARAM_OFFSET + 1];
+    float spin  = u_active_vars[slot + PARAM_OFFSET + 2];
+    float space = u_active_vars[slot + PARAM_OFFSET + 3];
+    float twist = u_active_vars[slot + PARAM_OFFSET + 4];
+    float xx = p.x - lx;
+    float yy = p.y + ly;
+    float rr = sqrt(xx * xx + yy * yy);
+    // amount is 1.0 (weight applied by caller)
+    if (rr < 1.0) {
+        float a = atan(yy, xx) + spin + twist * (1.0 - rr);
+        rr = rr;
+        return vec2(rr * cos(a) + lx, rr * sin(a) - ly);
+    } else {
+        rr = 1.0 + space / max(rr, 1e-10);
+        return vec2(rr * xx + lx, rr * yy - ly);
+    }
+}
+
+vec2 var_modulus_func(vec2 p, Polar pc, int slot) {
+    float mx = u_active_vars[slot + PARAM_OFFSET + 0];
+    float my = u_active_vars[slot + PARAM_OFFSET + 1];
+    float xr = 2.0 * mx, yr = 2.0 * my;
+    float ox, oy;
+    if (p.x > mx) ox = -mx + mod(p.x + mx, xr);
+    else if (p.x < -mx) ox = mx - mod(mx - p.x, xr);
+    else ox = p.x;
+    if (p.y > my) oy = -my + mod(p.y + my, yr);
+    else if (p.y < -my) oy = my - mod(my - p.y, yr);
+    else oy = p.y;
+    return vec2(ox, oy);
+}
+
+vec2 var_bent2(vec2 p, Polar pc, int slot) {
+    float bx = u_active_vars[slot + PARAM_OFFSET + 0];
+    float by = u_active_vars[slot + PARAM_OFFSET + 1];
+    float nx = p.x < 0.0 ? p.x * bx : p.x;
+    float ny = p.y < 0.0 ? p.y * by : p.y;
+    return vec2(nx, ny);
+}
+
+vec2 var_bipolar(vec2 p, Polar pc, int slot) {
+    float shift = u_active_vars[slot + PARAM_OFFSET + 0];
+    float x2y2 = pc.r_sq;
+    float ps = -1.57079632 * shift;
+    float y2 = 0.5 * atan(2.0 * p.y, x2y2 - 1.0) + ps;
+    if (y2 > 1.57079632) y2 = -1.57079632 + mod(y2 + 1.57079632, 3.14159265);
+    else if (y2 < -1.57079632) y2 = 1.57079632 - mod(1.57079632 - y2, 3.14159265);
+    float t = x2y2 + 1.0;
+    float tp = t + 2.0 * p.x;
+    float tm = max(t - 2.0 * p.x, 1e-10);
+    return vec2(0.159154943 * log(tp / tm), 0.636619772 * y2);
+}
+
+vec2 var_flux(vec2 p, Polar pc, int slot) {
+    float spread = u_active_vars[slot + PARAM_OFFSET + 0];
+    float xpw = p.x + 1.0;  // amount=1 (weight applied by caller)
+    float xmw = p.x - 1.0;
+    float avgr = (2.0 + spread) * sqrt(sqrt(max(p.y*p.y + xpw*xpw, 1e-10))
+                                     / sqrt(max(p.y*p.y + xmw*xmw, 1e-10)));
+    float avga = (atan(p.y, xmw) - atan(p.y, xpw)) * 0.5;
+    return avgr * vec2(cos(avga), sin(avga));
+}
+
+vec2 var_split(vec2 p, Polar pc, int slot) {
+    float xs = u_active_vars[slot + PARAM_OFFSET + 0];
+    float ys = u_active_vars[slot + PARAM_OFFSET + 1];
+    float sx = cos(p.x * xs * 3.14159265) >= 0.0 ? 1.0 : -1.0;
+    float sy = cos(p.y * ys * 3.14159265) >= 0.0 ? 1.0 : -1.0;
+    return vec2(p.x * sy, p.y * sx);
+}
+
+vec2 var_separation(vec2 p, Polar pc, int slot) {
+    float sx  = u_active_vars[slot + PARAM_OFFSET + 0];
+    float sy  = u_active_vars[slot + PARAM_OFFSET + 1];
+    float sxi = u_active_vars[slot + PARAM_OFFSET + 2];
+    float syi = u_active_vars[slot + PARAM_OFFSET + 3];
+    float sx2 = sx * sx, sy2 = sy * sy;
+    float ox, oy;
+    if (p.x > 0.0) ox = sqrt(p.x*p.x + sx2) - p.x * sxi;
+    else if (p.x < 0.0) ox = -(sqrt(p.x*p.x + sx2) + p.x * sxi);
+    else ox = 0.0;
+    if (p.y > 0.0) oy = sqrt(p.y*p.y + sy2) - p.y * syi;
+    else if (p.y < 0.0) oy = -(sqrt(p.y*p.y + sy2) + p.y * syi);
+    else oy = 0.0;
+    return vec2(ox, oy);
+}
+
+vec2 var_polar2(vec2 p, Polar pc) {
+    float v = 1.0 / 3.14159265;
+    return vec2(v * pc.phi, v * 0.5 * log(max(pc.r_sq, 1e-10)));
+}
+
+vec2 var_foci(vec2 p, Polar pc) {
+    float expx = exp(min(p.x, 20.0)) * 0.5;
+    float expnx = 0.25 / max(expx, 1e-10);
+    float tmp = expx + expnx - cos(p.y);
+    if (abs(tmp) < 1e-10) return p;
+    float d = 1.0 / tmp;
+    return vec2((expx - expnx) * d, sin(p.y) * d);
+}
+
+vec2 var_popcorn2(vec2 p, Polar pc, int slot) {
+    float px = u_active_vars[slot + PARAM_OFFSET + 0];
+    float py = u_active_vars[slot + PARAM_OFFSET + 1];
+    float c  = u_active_vars[slot + PARAM_OFFSET + 2];
+    return vec2(p.x + px * sin(tan(p.y * c)),
+                p.y + py * sin(tan(p.x * c)));
+}
+
+vec2 var_secant_func(vec2 p, Polar pc) {
+    float r = pc.r_val;
+    float cr = cos(r);
+    if (abs(cr) < 1e-10) return vec2(p.x, p.y);
+    return vec2(p.x, 1.0 / cr);
+}
+
+// --- Complex trig (z = x + iy) ---
+
+vec2 var_sin_func(vec2 p, Polar pc)  { return vec2(sin(p.x)*cosh(p.y),  cos(p.x)*sinh(p.y)); }
+vec2 var_cos_func(vec2 p, Polar pc)  { return vec2(cos(p.x)*cosh(p.y), -sin(p.x)*sinh(p.y)); }
+
+vec2 var_tan_func(vec2 p, Polar pc) {
+    float d = cos(2.0*p.x) + cosh(2.0*p.y);
+    if (abs(d) < 1e-10) return p;
+    return vec2(sin(2.0*p.x)/d, sinh(2.0*p.y)/d);
+}
+vec2 var_sec_func(vec2 p, Polar pc) {
+    float d = cos(2.0*p.x) + cosh(2.0*p.y);
+    if (abs(d) < 1e-10) return p;
+    float s = 2.0/d;
+    return vec2(s*cos(p.x)*cosh(p.y), s*sin(p.x)*sinh(p.y));
+}
+vec2 var_csc_func(vec2 p, Polar pc) {
+    float d = cosh(2.0*p.y) - cos(2.0*p.x);
+    if (abs(d) < 1e-10) return p;
+    float s = 2.0/d;
+    return vec2(s*sin(p.x)*cosh(p.y), -s*cos(p.x)*sinh(p.y));
+}
+vec2 var_cot_func(vec2 p, Polar pc) {
+    float d = cosh(2.0*p.y) - cos(2.0*p.x);
+    if (abs(d) < 1e-10) return p;
+    return vec2(sin(2.0*p.x)/d, -sinh(2.0*p.y)/d);
+}
+
+vec2 var_sinh_func(vec2 p, Polar pc) { return vec2(sinh(p.x)*cos(p.y),  cosh(p.x)*sin(p.y)); }
+vec2 var_cosh_func(vec2 p, Polar pc) { return vec2(cosh(p.x)*cos(p.y),  sinh(p.x)*sin(p.y)); }
+
+vec2 var_tanh_func(vec2 p, Polar pc) {
+    float d = cos(2.0*p.y) + cosh(2.0*p.x);
+    if (abs(d) < 1e-10) return p;
+    return vec2(sinh(2.0*p.x)/d, sin(2.0*p.y)/d);
+}
+vec2 var_sech_func(vec2 p, Polar pc) {
+    float d = cos(2.0*p.y) + cosh(2.0*p.x);
+    if (abs(d) < 1e-10) return p;
+    float s = 2.0/d;
+    return vec2(s*cos(p.y)*cosh(p.x), -s*sin(p.y)*sinh(p.x));
+}
+vec2 var_csch_func(vec2 p, Polar pc) {
+    float d = cosh(2.0*p.x) - cos(2.0*p.y);
+    if (abs(d) < 1e-10) return p;
+    float s = 2.0/d;
+    return vec2(s*sinh(p.x)*cos(p.y), -s*cosh(p.x)*sin(p.y));
+}
+vec2 var_coth_func(vec2 p, Polar pc) {
+    float d = cosh(2.0*p.x) - cos(2.0*p.y);
+    if (abs(d) < 1e-10) return p;
+    return vec2(sinh(2.0*p.x)/d, sin(2.0*p.y)/d);
+}
+
+vec2 var_exp_func(vec2 p, Polar pc) {
+    float e = exp(p.x);
+    return e * vec2(cos(p.y), sin(p.y));
+}
+
+vec2 var_log_func(vec2 p, Polar pc) {
+    return vec2(0.5 * log(max(pc.r_sq, 1e-10)), pc.phi);
+}
+
 // ------------------------------------------------------------
 // Apply single variation by index (switch-based dispatch)
 // ------------------------------------------------------------
-vec2 apply_single_variation(int var_idx, vec2 p, Polar pc, int slot) {
+vec2 apply_single_variation(int var_idx, vec2 p, Polar pc, int slot, int tidx) {
     switch (var_idx) {
         case  0: return var_linear(p, pc);
         case  1: return var_sinusoidal(p, pc);
@@ -755,14 +1208,14 @@ vec2 apply_single_variation(int var_idx, vec2 p, Polar pc, int slot) {
         case 12: return var_ex(p, pc);
         case 13: return var_julia(p, pc);
         case 14: return var_bent(p, pc);
-        case 15: return var_waves(p, pc, slot);
+        case 15: return var_waves(p, pc, tidx);
         case 16: return var_fisheye(p, pc);
-        case 17: return var_popcorn(p, pc, slot);
+        case 17: return var_popcorn(p, pc, tidx);
         case 18: return var_exponential(p, pc);
         case 19: return var_power(p, pc);
         case 20: return var_cosine(p, pc);
-        case 21: return var_rings(p, pc, slot);
-        case 22: return var_fan(p, pc, slot);
+        case 21: return var_rings(p, pc, tidx);
+        case 22: return var_fan(p, pc, tidx);
         case 23: return var_blob(p, pc, slot);
         case 24: return var_pdj(p, pc, slot);
         case 25: return var_fan2(p, pc, slot);
@@ -810,6 +1263,58 @@ vec2 apply_single_variation(int var_idx, vec2 p, Polar pc, int slot) {
         case 67: return var_stripes(p, pc, slot);
         case 68: return var_lissajous(p, pc, slot);
         case 69: return var_ripple(p, pc, slot);
+        case 70: return var_waves_param(p, pc, slot);
+        case 71: return var_popcorn_param(p, pc, slot);
+        case 72: return var_rings_param(p, pc, slot);
+        case 73: return var_fan_param(p, pc, slot);
+        case 74: return var_waves2(p, pc, slot);
+        case 75: return var_blur(p, pc);
+        case 76: return var_gaussian_blur(p, pc);
+        case 77: return var_radial_blur(p, pc, slot);
+        case 78: return var_perspective(p, pc, slot);
+        case 79: return var_super_shape(p, pc, slot);
+        case 80: return var_noise(p, pc);
+        case 81: return var_secant2(p, pc);
+        case 82: return var_pie(p, pc, slot);
+        case 83: return var_arch(p, pc);
+        case 84: return var_parabola(p, pc, slot);
+        case 85: return var_rays(p, pc);
+        case 86: return var_conic(p, pc, slot);
+        case 87: return var_escher(p, pc, slot);
+        case 88: return var_elliptic(p, pc);
+        case 89: return var_oscilloscope(p, pc, slot);
+        case 90: return var_edisc(p, pc);
+        case 91: return var_square(p, pc);
+        case 92: return var_curve(p, pc, slot);
+        case 93: return var_twintrian(p, pc);
+        case 94: return var_wedge_julia(p, pc, slot);
+        case 95: return var_wedge(p, pc, slot);
+        case 96: return var_wedge_sph(p, pc, slot);
+        case 97: return var_lazysusan(p, pc, slot);
+        case 98: return var_modulus_func(p, pc, slot);
+        case 99: return var_bent2(p, pc, slot);
+        case 100: return var_bipolar(p, pc, slot);
+        case 101: return var_flux(p, pc, slot);
+        case 102: return var_split(p, pc, slot);
+        case 103: return var_separation(p, pc, slot);
+        case 104: return var_polar2(p, pc);
+        case 105: return var_foci(p, pc);
+        case 106: return var_popcorn2(p, pc, slot);
+        case 107: return var_secant_func(p, pc);
+        case 108: return var_sin_func(p, pc);
+        case 109: return var_cos_func(p, pc);
+        case 110: return var_tan_func(p, pc);
+        case 111: return var_sec_func(p, pc);
+        case 112: return var_csc_func(p, pc);
+        case 113: return var_cot_func(p, pc);
+        case 114: return var_sinh_func(p, pc);
+        case 115: return var_cosh_func(p, pc);
+        case 116: return var_tanh_func(p, pc);
+        case 117: return var_sech_func(p, pc);
+        case 118: return var_csch_func(p, pc);
+        case 119: return var_coth_func(p, pc);
+        case 120: return var_exp_func(p, pc);
+        case 121: return var_log_func(p, pc);
         default: return p;
     }
 }
@@ -830,7 +1335,29 @@ vec2 apply_variations(vec2 p, int tidx) {
 
         if (var_idx < 0) break;
 
-        result += w * apply_single_variation(var_idx, p, pc, slot);
+        result += w * apply_single_variation(var_idx, p, pc, slot, tidx);
+    }
+
+    return result;
+}
+
+// ------------------------------------------------------------
+// Apply pre-variations (before affine). Same dispatch, reads from
+// u_pre_active_vars SSBO. Empty slots (-1) = immediate break.
+// ------------------------------------------------------------
+vec2 apply_pre_variations(vec2 p, int tidx) {
+    Polar pc = polar_compute(p);
+    vec2 result = vec2(0.0);
+    int base = tidx * MAX_ACTIVE_VARS * SLOT_SIZE;
+
+    for (int i = 0; i < MAX_ACTIVE_VARS; i++) {
+        int slot = base + i * SLOT_SIZE;
+        int var_idx = int(u_pre_active_vars[slot]);
+        float w = u_pre_active_vars[slot + 1];
+
+        if (var_idx < 0) break;
+
+        result += w * apply_single_variation(var_idx, p, pc, slot, tidx);
     }
 
     return result;

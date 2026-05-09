@@ -113,7 +113,8 @@ VAR_POINTS: dict[int, list[tuple[float, float]]] = {
     # --- Angle sector group ---
     Variation.COLLIDEOSCOPE: _ANGLE_SECTORS + [(0.5, -0.3), (-0.6, 0.4), (1.2, 0.1)],
     Variation.KALEIDOSCOPE:  _ANGLE_SECTORS + [(0.5, -0.3), (-0.6, 0.4), (1.2, 0.1)],
-    Variation.FAN:           BASE_POINTS + _ANGLE_SECTORS,
+    Variation.FAN:           BASE_POINTS + _ANGLE_SECTORS,  # affine-reading
+    Variation.FAN_PARAM:     BASE_POINTS + _ANGLE_SECTORS,
     Variation.FAN2:          BASE_POINTS + _ANGLE_SECTORS,
 
     # --- RNG branch coverage (need 24+ points) ---
@@ -173,25 +174,13 @@ VAR_PARAM_SETS: dict[int, dict[str, dict]] = {
     Variation.FLIPCIRCLE:   {'default': {}},
     Variation.BLADE:        {'default': {}},
 
+    # --- Affine-reading (no params, read from affine coefficients) ---
+    Variation.WAVES:        {'default': {}},
+    Variation.POPCORN:      {'default': {}},
+    Variation.RINGS:        {'default': {}},
+    Variation.FAN:          {'default': {}},
+
     # --- Parametric: 2+ param sets ---
-    Variation.WAVES: {
-        'default': {'waves_freq_x': 0.5, 'waves_freq_y': 0.3,
-                    'waves_amp_x': 0.8, 'waves_amp_y': 0.6},
-        'high_freq': {'waves_freq_x': 5.0, 'waves_freq_y': 7.0,
-                      'waves_amp_x': 0.2, 'waves_amp_y': 0.1},
-    },
-    Variation.POPCORN: {
-        'default': {'popcorn_cx': 0.3, 'popcorn_cy': 0.5},
-        'strong': {'popcorn_cx': 1.5, 'popcorn_cy': 1.5},
-    },
-    Variation.RINGS: {
-        'default': {'rings_c': 0.4},
-        'tight': {'rings_c': 0.1},
-    },
-    Variation.FAN: {
-        'default': {'fan_c': 0.3, 'fan_f': 0.5},
-        'narrow': {'fan_c': 0.1, 'fan_f': 0.8},
-    },
     Variation.BLOB: {
         'default': {'blob_low': 0.3, 'blob_high': 1.2, 'blob_waves': 6.0},
         'tight': {'blob_low': 0.8, 'blob_high': 1.0, 'blob_waves': 3.0},
@@ -355,6 +344,31 @@ VAR_PARAM_SETS: dict[int, dict[str, dict]] = {
                          'ripple_cx': 0.0, 'ripple_cy': 0.0, 'ripple_phase': 0.0,
                          'ripple_scale': 1.0, 'ripple_fixd': 0.0},
     },
+    # --- Displaced parameterized variants ---
+    Variation.WAVES_PARAM: {
+        'default': {'waves_freq_x': 0.5, 'waves_freq_y': 0.3,
+                    'waves_amp_x': 0.8, 'waves_amp_y': 0.6},
+        'high_freq': {'waves_freq_x': 5.0, 'waves_freq_y': 7.0,
+                      'waves_amp_x': 0.2, 'waves_amp_y': 0.1},
+    },
+    Variation.POPCORN_PARAM: {
+        'default': {'popcorn_cx': 0.3, 'popcorn_cy': 0.5},
+        'strong': {'popcorn_cx': 1.5, 'popcorn_cy': 1.5},
+    },
+    Variation.RINGS_PARAM: {
+        'default': {'rings_c': 0.4},
+        'tight': {'rings_c': 0.1},
+    },
+    Variation.FAN_PARAM: {
+        'default': {'fan_c': 0.3, 'fan_f': 0.5},
+        'narrow': {'fan_c': 0.1, 'fan_f': 0.8},
+    },
+    Variation.WAVES2: {
+        'default': {'waves2_scalex': 0.05, 'waves2_scaley': 0.05,
+                    'waves2_freqx': 7.0, 'waves2_freqy': 13.0},
+        'strong': {'waves2_scalex': 0.2, 'waves2_scaley': 0.2,
+                   'waves2_freqx': 3.0, 'waves2_freqy': 5.0},
+    },
 }
 
 # Variations that use RNG — need deterministic seeding to match GPU
@@ -439,8 +453,16 @@ def variation_shader(gpu_ctx):
     return prog
 
 
+# Fixed affine for affine-reading variations (15/17/21/22)
+TEST_AFFINE = np.array([0.8, 0.5, 0.3, -0.2, 0.6, 0.5], dtype=np.float32)
+
+AFFINE_VARIATIONS = {Variation.WAVES, Variation.POPCORN,
+                     Variation.RINGS, Variation.FAN}
+
+
 def _run_variation_gpu(gpu_ctx, shader, var_idx: int, params: dict,
-                       points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+                       points: list[tuple[float, float]],
+                       affine: np.ndarray | None = None) -> list[tuple[float, float]]:
     """Run a variation on the GPU and return output points."""
     n = len(points)
 
@@ -452,6 +474,14 @@ def _run_variation_gpu(gpu_ctx, shader, var_idx: int, params: dict,
     # Output points buffer
     out_buf = gpu_ctx.buffer(reserve=n * 2 * 4)
     out_buf.bind_to_storage_buffer(7)
+
+    # Affines buffer (binding 2) — identity default, or test affine
+    if affine is not None:
+        affine_data = affine.copy()
+    else:
+        affine_data = np.array([1, 0, 0, 0, 1, 0], dtype=np.float32)
+    aff_buf = gpu_ctx.buffer(affine_data.tobytes())
+    aff_buf.bind_to_storage_buffer(2)
 
     # Active vars buffer (single variation at tidx=0)
     active_vars = _build_active_vars(var_idx, params)
@@ -471,6 +501,7 @@ def _run_variation_gpu(gpu_ctx, shader, var_idx: int, params: dict,
     in_buf.release()
     out_buf.release()
     av_buf.release()
+    aff_buf.release()
 
     return [(float(out_data[i, 0]), float(out_data[i, 1])) for i in range(n)]
 
@@ -484,14 +515,18 @@ def test_variation_gpu_matches_cpu(var_idx, param_set_name, gpu_ctx, variation_s
     uses_rng = var_idx in RANDOM_VARIATIONS
     points = VAR_POINTS.get(var_idx, BASE_POINTS)
 
+    # Affine-reading variations need a test affine
+    affine = TEST_AFFINE if var_idx in AFFINE_VARIATIONS else None
+
     # Run GPU
-    gpu_results = _run_variation_gpu(gpu_ctx, variation_shader, var_idx, params, points)
+    gpu_results = _run_variation_gpu(gpu_ctx, variation_shader, var_idx, params, points,
+                                     affine=affine)
 
     # Run CPU — for RNG variations, seed xorshift32 per-point to match GPU
     for i, (px, py) in enumerate(points):
         if uses_rng:
             cpu_mod._rng = cpu_mod.Xorshift32(seed=i * 17 + 1)
-        cx, cy = apply_variation_cpu(var_idx, px, py, 1.0)
+        cx, cy = apply_variation_cpu(var_idx, px, py, 1.0, affine)
         if uses_rng:
             cpu_mod._rng = None
         gx, gy = gpu_results[i]

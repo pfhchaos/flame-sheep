@@ -8,6 +8,11 @@ layout(local_size_x = 64) in;
 #define SLOT_SIZE 10
 #define PARAM_OFFSET 2
 
+// Affine coefficients — needed by affine-reading variations (waves, popcorn, rings, fan)
+layout(std430, binding = 2) readonly buffer Affines {
+    float u_affines[];   // [a,b,c,d,e,f] per transform
+};
+
 layout(std430, binding = 3) readonly buffer ActiveVariations {
     float u_active_vars[];
 };

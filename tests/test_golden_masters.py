@@ -28,12 +28,20 @@ TEST_POINTS = [
     (2.0, 1.0),
 ]
 
+# Fixed affine for affine-reading variations (15/17/21/22)
+TEST_AFFINE = np.array([0.8, 0.5, 0.3, -0.2, 0.6, 0.5], dtype=np.float32)
+
+AFFINE_VARIATIONS = {Variation.WAVES, Variation.POPCORN,
+                     Variation.RINGS, Variation.FAN}
+
 PARAM_FIXTURES = {
-    Variation.WAVES: {'waves_freq_x': 0.5, 'waves_freq_y': 0.3,
-                      'waves_amp_x': 0.8, 'waves_amp_y': 0.6},
-    Variation.POPCORN: {'popcorn_cx': 0.3, 'popcorn_cy': 0.5},
-    Variation.RINGS: {'rings_c': 0.4},
-    Variation.FAN: {'fan_c': 0.3, 'fan_f': 0.5},
+    Variation.WAVES_PARAM: {'waves_freq_x': 0.5, 'waves_freq_y': 0.3,
+                            'waves_amp_x': 0.8, 'waves_amp_y': 0.6},
+    Variation.POPCORN_PARAM: {'popcorn_cx': 0.3, 'popcorn_cy': 0.5},
+    Variation.RINGS_PARAM: {'rings_c': 0.4},
+    Variation.FAN_PARAM: {'fan_c': 0.3, 'fan_f': 0.5},
+    Variation.WAVES2: {'waves2_scalex': 0.05, 'waves2_scaley': 0.05,
+                       'waves2_freqx': 7.0, 'waves2_freqy': 13.0},
     Variation.JULIAN: {'julian_power': 4.0, 'julian_dist': 1.0},
     Variation.JULIASCOPE: {'julian_power': 4.0, 'julian_dist': 1.0},
     Variation.SPLITS: {'splits_x': 0.5, 'splits_y': 0.3},
@@ -78,6 +86,7 @@ class TestTransformGoldenMasters:
     def test_variation_matches_golden(self, var_idx, transform_golden):
         params = PARAM_FIXTURES.get(var_idx, {})
         cpu_mod._current_var_params = params
+        affine = TEST_AFFINE if var_idx in AFFINE_VARIATIONS else None
 
         for px, py in TEST_POINTS:
             key = f'v{var_idx}_{px}_{py}'
@@ -86,7 +95,7 @@ class TestTransformGoldenMasters:
 
             if var_idx in RANDOM_VARIATIONS:
                 np.random.seed(42)
-            rx, ry = apply_variation_cpu(var_idx, px, py, 1.0)
+            rx, ry = apply_variation_cpu(var_idx, px, py, 1.0, affine)
             expected = transform_golden[key]
 
             np.testing.assert_allclose(

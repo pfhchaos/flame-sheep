@@ -42,11 +42,21 @@ MAX_ACTIVE_VARS = 8  # max active variations per transform (for GPU loop)
 
 @dataclass
 class Transform:
-    """One IFS function: affine transform + variation blend + color."""
+    """One IFS function: affine transform + variation blend + color.
+
+    Full pipeline per transform:
+        pre_variations → affine → variations → post_affine
+
+    Pre-variations and post-affine are optional (None = identity/skip).
+    """
     # Affine coefficients: x' = a*x + b*y + c, y' = d*x + e*y + f
     affine: np.ndarray = field(default_factory=lambda: np.array([1,0,0,0,1,0], dtype=np.float32))
+    # Post-affine: applied after variations (None = identity)
+    post_affine: np.ndarray | None = None
     # Variation weights — how much of each variation to blend
     variations: np.ndarray = field(default_factory=lambda: np.zeros(NUM_VARIATIONS, dtype=np.float32))
+    # Pre-affine variation weights (None = no pre-variations)
+    pre_variations: np.ndarray | None = None
     # Color index blended during chaos game
     color: float = 0.0
     # Probability weight for this transform being chosen
@@ -89,6 +99,9 @@ class Transform:
 class Genome:
     """Complete flame fractal parameter set."""
     transforms: list[Transform] = field(default_factory=list)
+    # Final xform: always applied after the selected transform, not weight-selected.
+    # None = no final xform (most genomes). 44% of Electric Sheep use one.
+    final_xform: Transform | None = None
     palette: np.ndarray = field(default_factory=lambda: np.zeros((256, 3), dtype=np.float32))
     zoom: float = 1.0
     rotation: float = 0.0
@@ -131,16 +144,29 @@ class Genome:
             tidx = int(np.searchsorted(cumw, r))
             tidx = min(tidx, len(self.transforms) - 1)
             tr   = self.transforms[tidx]
-            a, b, c, d, e, f = tr.affine
-            nx = a*x + b*y + c
-            ny = d*x + e*y + f
+            nx, ny = x, y
 
-            # Apply dominant variation (highest weight) — approximates GPU behavior
-            # without reimplementing all 30 variations in Python
+            # 1. Pre-variations (before affine)
+            if tr.pre_variations is not None:
+                best_pre = int(np.argmax(tr.pre_variations))
+                wp = float(tr.pre_variations[best_pre])
+                if wp > 0.0:
+                    nx, ny = _apply_variation_cpu(best_pre, nx, ny, wp, tr.affine)
+
+            # 2. Affine
+            a, b, c, d, e, f = tr.affine
+            nx, ny = a*nx + b*ny + c, d*nx + e*ny + f
+
+            # 3. Variations (dominant only for speed)
             best_var = int(np.argmax(tr.variations))
             w = float(tr.variations[best_var])
             if w > 0.0:
-                nx, ny = _apply_variation_cpu(best_var, nx, ny, w)
+                nx, ny = _apply_variation_cpu(best_var, nx, ny, w, tr.affine)
+
+            # 4. Post-affine
+            if tr.post_affine is not None:
+                pa, pb, pc_, pd, pe, pf = tr.post_affine
+                nx, ny = pa*nx + pb*ny + pc_, pd*nx + pe*ny + pf
 
             x, y = nx, ny
 
@@ -302,13 +328,10 @@ class Genome:
         """
         cos_a = np.cos(angle)
         sin_a = np.sin(angle)
-        result = Genome()
-        result.transforms = []
-        for tr in self.transforms:
-            rt = Transform()
-            a, b, c, d, e, f = tr.affine
-            # R @ [[a,b,c],[d,e,f]] — full 2x3 premultiply
-            rt.affine = np.array([
+
+        def _rotate_affine_coeffs(aff):
+            a, b, c, d, e, f = aff
+            return np.array([
                 cos_a * a - sin_a * d,
                 cos_a * b - sin_a * e,
                 cos_a * c - sin_a * f,
@@ -316,58 +339,112 @@ class Genome:
                 sin_a * b + cos_a * e,
                 sin_a * c + cos_a * f,
             ], dtype=np.float32)
+
+        def _rotate_transform(tr):
+            rt = Transform()
+            rt.affine = _rotate_affine_coeffs(tr.affine)
+            if tr.post_affine is not None:
+                rt.post_affine = _rotate_affine_coeffs(tr.post_affine)
             rt.variations = tr.variations.copy()
+            if tr.pre_variations is not None:
+                rt.pre_variations = tr.pre_variations.copy()
             rt.color = tr.color
             rt.weight = tr.weight
             rt.var_params = dict(tr.var_params)
-            result.transforms.append(rt)
+            return rt
+
+        result = Genome()
+        result.transforms = [_rotate_transform(tr) for tr in self.transforms]
+        if self.final_xform is not None:
+            result.final_xform = _rotate_transform(self.final_xform)
         result.palette = self.palette.copy()
         result.zoom = self.zoom
         result.rotation = self.rotation
         result.center = self.center.copy()
         return result
 
-    def to_gpu_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    @staticmethod
+    def _pack_variations(tr: 'Transform', var_array: np.ndarray,
+                         variations: np.ndarray) -> None:
+        """Pack active variations from a weight array into a GPU slot row."""
+        active_indices = np.where(variations > 1e-6)[0]
+        for j, var_idx in enumerate(active_indices[:MAX_ACTIVE_VARS]):
+            base = j * SLOT_SIZE
+            var_array[base + 0] = float(var_idx)
+            var_array[base + 1] = variations[var_idx]
+            spec = VAR_PARAMS_SPEC.get(int(var_idx), [])
+            for k, param_name in enumerate(spec[:MAX_PARAMS_PER_VAR]):
+                var_array[base + 2 + k] = tr.var_params.get(param_name, 0.0)
+
+    def to_gpu_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray,
+                                     np.ndarray, np.ndarray, np.ndarray, bool]:
         """
         Pack genome into flat arrays for GPU upload.
 
+        All buffers have MAX_TRANSFORMS+1 slots — slot MAX_TRANSFORMS is for
+        the final xform (identity/empty when absent).
+
         Returns:
-            affines:     (MAX_TRANSFORMS, 6) float32
-            active_vars: (MAX_TRANSFORMS, MAX_ACTIVE_VARS * SLOT_SIZE) float32
-                         Each slot is (var_index, weight, p0..p5). Index < 0 = unused.
-                         Params packed per active variation, no global slot table.
-            colors:      (MAX_TRANSFORMS,) float32 [color index per transform]
-            weights:     (MAX_TRANSFORMS,) float32 [normalized probabilities]
+            affines:         (MAX_TRANSFORMS+1, 6) float32
+            active_vars:     (MAX_TRANSFORMS+1, MAX_ACTIVE_VARS*SLOT_SIZE) float32
+            colors:          (MAX_TRANSFORMS+1,) float32
+            weights:         (MAX_TRANSFORMS,) float32 [normalized, no final xform]
+            post_affines:    (MAX_TRANSFORMS+1, 6) float32 — identity when unused
+            pre_active_vars: (MAX_TRANSFORMS+1, MAX_ACTIVE_VARS*SLOT_SIZE) float32
+            has_final_xform: bool
         """
         n = len(self.transforms)
-        affines     = np.zeros((MAX_TRANSFORMS, 6), dtype=np.float32)
-        active_vars = np.full((MAX_TRANSFORMS, MAX_ACTIVE_VARS * SLOT_SIZE),
+        n_slots = MAX_TRANSFORMS + 1  # +1 for final xform
+
+        affines     = np.zeros((n_slots, 6), dtype=np.float32)
+        active_vars = np.full((n_slots, MAX_ACTIVE_VARS * SLOT_SIZE),
                               -1.0, dtype=np.float32)
-        colors      = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
+        colors      = np.zeros(n_slots, dtype=np.float32)
         weights     = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
+
+        # Post-affines default to identity
+        IDENTITY = np.array([1, 0, 0, 0, 1, 0], dtype=np.float32)
+        post_affines = np.tile(IDENTITY, (n_slots, 1))
+
+        # Pre-variations default to empty (all -1)
+        pre_active_vars = np.full((n_slots, MAX_ACTIVE_VARS * SLOT_SIZE),
+                                  -1.0, dtype=np.float32)
 
         for i, tr in enumerate(self.transforms[:MAX_TRANSFORMS]):
             affines[i] = tr.affine
             colors[i]  = tr.color
             weights[i] = tr.weight
 
-            # Find active variations and pack with their params
-            active_indices = np.where(tr.variations > 1e-6)[0]
-            for j, var_idx in enumerate(active_indices[:MAX_ACTIVE_VARS]):
-                base = j * SLOT_SIZE
-                active_vars[i, base + 0] = float(var_idx)
-                active_vars[i, base + 1] = tr.variations[var_idx]
-                # Pack params in spec order
-                spec = VAR_PARAMS_SPEC.get(int(var_idx), [])
-                for k, param_name in enumerate(spec[:MAX_PARAMS_PER_VAR]):
-                    active_vars[i, base + 2 + k] = tr.var_params.get(param_name, 0.0)
+            # Main variations
+            self._pack_variations(tr, active_vars[i], tr.variations)
+
+            # Post-affine (identity if None)
+            if tr.post_affine is not None:
+                post_affines[i] = tr.post_affine
+
+            # Pre-variations (empty if None)
+            if tr.pre_variations is not None:
+                self._pack_variations(tr, pre_active_vars[i], tr.pre_variations)
 
         # normalize weights to probabilities
         w_sum = weights[:n].sum()
         if w_sum > 0:
             weights[:n] /= w_sum
 
-        return affines, active_vars, colors, weights
+        # Final xform goes in slot MAX_TRANSFORMS
+        has_final = self.final_xform is not None
+        if has_final:
+            ft = self.final_xform
+            fidx = MAX_TRANSFORMS
+            affines[fidx] = ft.affine
+            colors[fidx] = ft.color
+            self._pack_variations(ft, active_vars[fidx], ft.variations)
+            if ft.post_affine is not None:
+                post_affines[fidx] = ft.post_affine
+            if ft.pre_variations is not None:
+                self._pack_variations(ft, pre_active_vars[fidx], ft.pre_variations)
+
+        return affines, active_vars, colors, weights, post_affines, pre_active_vars, has_final
 
 
     def aesthetic_score(self, renderer: FlameRenderer | None = None, n_test: int = 5000) -> dict[str, float]:
@@ -425,11 +502,36 @@ class Genome:
             r = rng.random()
             tidx = min(int(np.searchsorted(cumw, r)), len(self.transforms) - 1)
             tr = self.transforms[tidx]
-            a, b, cc, d, e, f = tr.affine
-            nx = a * x + b * y + cc
-            ny = d * x + e * y + f
+            nx, ny = x, y
 
-            nx, ny = apply_variations_cpu(tr.variations, nx, ny)
+            # 1. Pre-variations
+            if tr.pre_variations is not None:
+                nx, ny = apply_variations_cpu(tr.pre_variations, nx, ny, tr.affine)
+
+            # 2. Affine
+            a, b, cc, d, e, f = tr.affine
+            nx, ny = a * nx + b * ny + cc, d * nx + e * ny + f
+
+            # 3. Variations
+            nx, ny = apply_variations_cpu(tr.variations, nx, ny, tr.affine)
+
+            # 4. Post-affine
+            if tr.post_affine is not None:
+                pa, pb, pc_, pd, pe, pf = tr.post_affine
+                nx, ny = pa * nx + pb * ny + pc_, pd * nx + pe * ny + pf
+
+            # 5. Final xform
+            if self.final_xform is not None:
+                ft = self.final_xform
+                if ft.pre_variations is not None:
+                    nx, ny = apply_variations_cpu(ft.pre_variations, nx, ny, ft.affine)
+                fa, fb, fc, fd, fe, ff = ft.affine
+                nx, ny = fa * nx + fb * ny + fc, fd * nx + fe * ny + ff
+                nx, ny = apply_variations_cpu(ft.variations, nx, ny, ft.affine)
+                if ft.post_affine is not None:
+                    fpa, fpb, fpc, fpd, fpe, fpf = ft.post_affine
+                    nx, ny = fpa * nx + fpb * ny + fpc, fpd * nx + fpe * ny + fpf
+                c = (c + ft.color) * 0.5
 
             x, y = nx, ny
             c = (c + tr.color) * 0.5

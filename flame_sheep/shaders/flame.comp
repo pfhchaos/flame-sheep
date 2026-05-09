@@ -60,29 +60,41 @@ layout(std430, binding = 1) buffer Walkers {
 #define MAX_TRANSFORMS 6
 #define MAX_ACTIVE_VARS 8   // max variations per transform (for tight loop)
 
+// All buffers have MAX_TRANSFORMS+1 slots — slot MAX_TRANSFORMS is for final xform.
+
 // Affines: [a,b,c,d,e,f] per transform, flat — index as [tidx*6 + coeff]
 layout(std430, binding = 2) readonly buffer Affines {
-    float u_affines[];   // length = MAX_TRANSFORMS * 6
+    float u_affines[];   // length = (MAX_TRANSFORMS+1) * 6
 };
 
 // Active variations with inline params:
-// Each slot = (var_idx, weight, p0, p1, p2, p3, p4, p5)
+// Each slot = (var_idx, weight, p0, p1, p2, p3, p4, p5, p6, p7)
 // var_idx < 0 marks end of active variations for this transform
 #define SLOT_SIZE 10
 #define PARAM_OFFSET 2
 
 layout(std430, binding = 3) readonly buffer ActiveVariations {
-    float u_active_vars[];  // length = MAX_TRANSFORMS * MAX_ACTIVE_VARS * SLOT_SIZE
+    float u_active_vars[];  // length = (MAX_TRANSFORMS+1) * MAX_ACTIVE_VARS * SLOT_SIZE
 };
 
 // Color index per transform (0..1)
 layout(std430, binding = 4) readonly buffer Colors {
-    float u_colors[];
+    float u_colors[];    // length = MAX_TRANSFORMS+1
 };
 
-// Probability weights (pre-normalized on CPU)
+// Probability weights (pre-normalized on CPU, only MAX_TRANSFORMS entries)
 layout(std430, binding = 5) readonly buffer Weights {
     float u_weights[];
+};
+
+// Post-affines: applied after variations. Identity [1,0,0,0,1,0] when unused.
+layout(std430, binding = 9) readonly buffer PostAffines {
+    float u_post_affines[];  // length = (MAX_TRANSFORMS+1) * 6
+};
+
+// Pre-variations: applied before main affine. All slots -1 when unused.
+layout(std430, binding = 10) readonly buffer PreVariations {
+    float u_pre_active_vars[];  // length = (MAX_TRANSFORMS+1) * MAX_ACTIVE_VARS * SLOT_SIZE
 };
 
 uniform int   u_n_transforms;
@@ -93,6 +105,7 @@ uniform vec2  u_center;
 uniform int   u_width;
 uniform int   u_height;
 uniform int   u_iterations;   // chaos game steps per invocation
+uniform int   u_has_final_xform;  // 0 or 1
 
 // Color scaling factor for uint accumulator
 #define COLOR_SCALE 1000000u
@@ -149,17 +162,39 @@ void main() {
         // 1. Pick a transform
         int tidx = pick_transform(rng_float());
 
-        // 2. Apply affine transform
+        // 2. Pre-variations (empty slots = loop breaks immediately)
+        vec2 pre = apply_pre_variations(vec2(px, py), tidx);
+
+        // 3. Apply affine transform
         //    x' = a*x + b*y + c
         //    y' = d*x + e*y + f
         int abase = tidx * 6;
-        float nx = u_affines[abase+0]*px + u_affines[abase+1]*py + u_affines[abase+2];
-        float ny = u_affines[abase+3]*px + u_affines[abase+4]*py + u_affines[abase+5];
+        float nx = u_affines[abase+0]*pre.x + u_affines[abase+1]*pre.y + u_affines[abase+2];
+        float ny = u_affines[abase+3]*pre.x + u_affines[abase+4]*pre.y + u_affines[abase+5];
 
-        // 3. Apply variation functions
+        // 4. Apply variation functions
         vec2 warped = apply_variations(vec2(nx, ny), tidx);
-        px = warped.x;
-        py = warped.y;
+
+        // 5. Post-affine (identity = same point out)
+        int pbase = tidx * 6;
+        px = u_post_affines[pbase+0]*warped.x + u_post_affines[pbase+1]*warped.y + u_post_affines[pbase+2];
+        py = u_post_affines[pbase+3]*warped.x + u_post_affines[pbase+4]*warped.y + u_post_affines[pbase+5];
+
+        // 6. Final xform (one branch — needed for color blend)
+        if (u_has_final_xform != 0) {
+            int ftidx = MAX_TRANSFORMS;
+            // Same 4-stage pipeline
+            vec2 fp = apply_pre_variations(vec2(px, py), ftidx);
+            int fabase = ftidx * 6;
+            float fnx = u_affines[fabase+0]*fp.x + u_affines[fabase+1]*fp.y + u_affines[fabase+2];
+            float fny = u_affines[fabase+3]*fp.x + u_affines[fabase+4]*fp.y + u_affines[fabase+5];
+            vec2 fwarped = apply_variations(vec2(fnx, fny), ftidx);
+            int fpbase = ftidx * 6;
+            px = u_post_affines[fpbase+0]*fwarped.x + u_post_affines[fpbase+1]*fwarped.y + u_post_affines[fpbase+2];
+            py = u_post_affines[fpbase+3]*fwarped.x + u_post_affines[fpbase+4]*fwarped.y + u_post_affines[fpbase+5];
+            // Blend color toward final xform's color
+            pc = (pc + u_colors[ftidx]) * 0.5;
+        }
 
         // Respawn walker if it escaped to infinity
         if (isinf(px) || isinf(py) || isnan(px) || isnan(py) ||
@@ -170,7 +205,7 @@ void main() {
             continue;  // skip plotting this iteration (fuse)
         }
 
-        // 4. Blend color toward this transform's color
+        // 7. Blend color toward this transform's color
         pc = (pc + u_colors[tidx]) * 0.5;
 
         // 5. Plot — skip first 20 iterations (fuse, not on attractor yet)
