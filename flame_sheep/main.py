@@ -624,9 +624,9 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
     # Per-monitor perspective skew (degrees, positive = angled right)
     _monitor_skew = {
-        'DP-3': -30.0,  # left monitor, angled inward
+        'DP-3': -11.0,  # left monitor, angled inward ~11°
         'DP-2': 0.0,    # center, facing viewer
-        'DP-4': 30.0,   # right monitor, angled inward
+        'DP-4': 11.0,   # right monitor, angled inward ~11°
     }
     renderer.temporal_decay = 0.0  # image-space temporal off (using histogram decay instead)
 
