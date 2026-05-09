@@ -328,6 +328,13 @@ class FlameSheepApp(mglw.WindowConfig):
 # Override in config.toml [monitors] section or just use the default.
 DEFAULT_MONITOR_SIZE = 27.0  # fallback — works for most monitors
 
+# Per-monitor overrides when EDID doesn't report physical size
+_MONITOR_DIAG_INCHES = {
+    'DP-2': 43.0,   # ASUS ROG Strix XG438Q — 43" 4K center
+    'DP-3': 24.0,   # Samsung S24A600 — 24" 1440p left (portrait)
+    'DP-4': 24.0,   # Samsung S24A600 — 24" 1440p right (portrait)
+}
+
 
 def _get_output_layout() -> dict[str, dict]:
     """
@@ -439,7 +446,8 @@ def _get_output_layout() -> dict[str, dict]:
             ppi = diag_px / (diag_mm / 25.4) if diag_mm > 0 else 96.0
         else:
             diag_px = math.sqrt(w**2 + h**2)
-            ppi = diag_px / DEFAULT_MONITOR_SIZE
+            diag_inches = _MONITOR_DIAG_INCHES.get(name, DEFAULT_MONITOR_SIZE)
+            ppi = diag_px / diag_inches
             phys_w_mm = w / ppi * 25.4
             phys_h_mm = h / ppi * 25.4
 
@@ -481,7 +489,8 @@ def _swaymsg_fallback(wl_result: dict[str, dict]) -> dict[str, dict]:
                 native_w = mode.get('width', r['width'])
                 native_h = mode.get('height', r['height'])
                 diag_px = math.sqrt(native_w**2 + native_h**2)
-                ppi = diag_px / DEFAULT_MONITOR_SIZE
+                diag_inches = _MONITOR_DIAG_INCHES.get(name, DEFAULT_MONITOR_SIZE)
+                ppi = diag_px / diag_inches
                 phys_w_mm = r['width'] / ppi * 25.4
                 phys_h_mm = r['height'] / ppi * 25.4
             result[name] = {
