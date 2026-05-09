@@ -290,20 +290,31 @@ class TestZoomAxisUnit:
 class TestBrightnessAxisUnit:
 
     def test_silence_returns_floor(self):
-        axis = BrightnessAxis(role=_default_role, floor=0.7, ceiling=12.0)
+        axis = BrightnessAxis(role=_default_role)
         axis.tick(_audio(rms=0.0), 1/60, 0.0)
-        assert axis.brightness == 0.7
+        assert axis.brightness == axis.floor
 
     def test_loud_returns_ceiling(self):
-        axis = BrightnessAxis(role=_default_role, floor=0.7, ceiling=12.0, rms_scale=0.01)
-        axis.tick(_audio(harmonic_rms=1.0), 1/60, 0.0)
-        assert axis.brightness == pytest.approx(12.0)
+        axis = BrightnessAxis(role=_default_role)
+        # Well above any rms_scale + noise_floor
+        axis.tick(_audio(harmonic_rms=10.0), 1/60, 0.0)
+        assert axis.brightness == pytest.approx(axis.ceiling)
 
     def test_mid_rms_between_floor_and_ceiling(self):
-        axis = BrightnessAxis(role=_default_role, floor=0.7, ceiling=12.0,
-                              rms_scale=0.23, noise_floor=0.05)
-        axis.tick(_audio(harmonic_rms=0.15), 1/60, 0.0)
-        assert 0.7 < axis.brightness < 12.0
+        axis = BrightnessAxis(role=_default_role)
+        mid = axis.noise_floor + (axis.rms_scale - axis.noise_floor) * 0.5
+        axis.tick(_audio(harmonic_rms=mid), 1/60, 0.0)
+        assert axis.floor < axis.brightness < axis.ceiling
+
+    def test_below_noise_floor_returns_floor(self):
+        axis = BrightnessAxis(role=_default_role)
+        axis.tick(_audio(harmonic_rms=axis.noise_floor * 0.5), 1/60, 0.0)
+        assert axis.brightness == axis.floor
+
+    def test_above_rms_scale_caps_at_ceiling(self):
+        axis = BrightnessAxis(role=_default_role)
+        axis.tick(_audio(harmonic_rms=axis.rms_scale * 5), 1/60, 0.0)
+        assert axis.brightness == pytest.approx(axis.ceiling)
 
 
 # -------------------------------------------------------------------
@@ -313,14 +324,30 @@ class TestBrightnessAxisUnit:
 class TestDetailAxisUnit:
 
     def test_silence_returns_min(self):
-        axis = DetailAxis(role=_default_role, min_iters=100, max_iters=500)
+        axis = DetailAxis(role=_default_role)
         axis.tick(_audio(rms=0.0), 1/60, 0.0)
-        assert axis.iterations == 100
+        assert axis.iterations == axis.min_iters
 
     def test_loud_returns_max(self):
-        axis = DetailAxis(role=_default_role, min_iters=100, max_iters=500, rms_scale=0.01)
-        axis.tick(_audio(harmonic_rms=1.0), 1/60, 0.0)
-        assert axis.iterations == 500
+        axis = DetailAxis(role=_default_role)
+        axis.tick(_audio(harmonic_rms=10.0), 1/60, 0.0)
+        assert axis.iterations == axis.max_iters
+
+    def test_mid_rms_between_min_and_max(self):
+        axis = DetailAxis(role=_default_role)
+        mid = 0.05 + (axis.rms_scale - 0.05) * 0.5
+        axis.tick(_audio(harmonic_rms=mid), 1/60, 0.0)
+        assert axis.min_iters < axis.iterations < axis.max_iters
+
+    def test_below_floor_returns_min(self):
+        axis = DetailAxis(role=_default_role)
+        axis.tick(_audio(harmonic_rms=0.02), 1/60, 0.0)
+        assert axis.iterations == axis.min_iters
+
+    def test_above_scale_caps_at_max(self):
+        axis = DetailAxis(role=_default_role)
+        axis.tick(_audio(harmonic_rms=axis.rms_scale * 5), 1/60, 0.0)
+        assert axis.iterations == axis.max_iters
 
 
 # -------------------------------------------------------------------
