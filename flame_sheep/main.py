@@ -303,6 +303,7 @@ class FlameSheepApp(mglw.WindowConfig):
         self._renderer.clear_histogram(decay=0.3)
         self._renderer.dispatch_chaos_game(iterations=frame.iterations)
         self.ctx.memory_barrier()
+        self._renderer.reduce_histogram_max()
         w, h = self.window_size
         self._renderer.render_tonemap(self._viewport, w, h, brightness=frame.brightness)
 
@@ -618,6 +619,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     ctx = session.create_moderngl_context()
     renderer = FlameRenderer(ctx, canvas_w, canvas_h)
     renderer.blur_radius = blur_radius
+    renderer.temporal_decay = 0.0  # image-space temporal off (using histogram decay instead)
+    _comparison_mode = False
 
     # --- library + evolution state ---
     from .storage import Library
@@ -905,14 +908,20 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             renderer.clear_histogram(decay=0.3)
             renderer.dispatch_chaos_game(iterations=frame.iterations)
             ctx.memory_barrier()
+            renderer.reduce_histogram_max()
             _watchdog_last = time.perf_counter()
 
             # Tonemap pass — only swap surfaces the compositor is ready for
             for name, surf in ready.items():
                 if not session.make_current(surf):
                     continue  # this surface is dead, skip it
-                renderer.render_tonemap(viewports[name], surf.width, surf.height,
-                                       brightness=frame.brightness)
+                if _comparison_mode and surf.width >= 3000:
+                    # Comparison only on the big monitor
+                    renderer.render_comparison_v2(viewports[name], surf.width, surf.height,
+                                                  brightness=frame.brightness, dt=frame_time)
+                else:
+                    renderer.render_tonemap(viewports[name], surf.width, surf.height,
+                                           brightness=frame.brightness, dt=frame_time)
                 if not session.swap(surf):
                     break  # wayland connection lost
                 _watchdog_last = time.perf_counter()
@@ -975,12 +984,12 @@ def _run_variation_benchmark() -> None:
         """Returns ms/frame for a genome at 500 iterations."""
         renderer.upload_genome(g)
         for _ in range(n_warmup):
-            renderer.clear_histogram()
+            renderer.clear_histogram(decay=0.3)
             renderer.dispatch_chaos_game(iterations=500)
             ctx.finish()
         t0 = time.perf_counter()
         for _ in range(n_frames):
-            renderer.clear_histogram()
+            renderer.clear_histogram(decay=0.3)
             renderer.dispatch_chaos_game(iterations=500)
             ctx.finish()
         return (time.perf_counter() - t0) / n_frames * 1000
