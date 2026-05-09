@@ -619,6 +619,13 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     ctx = session.create_moderngl_context()
     renderer = FlameRenderer(ctx, canvas_w, canvas_h)
     renderer.blur_radius = blur_radius
+
+    # Per-monitor perspective skew (degrees, positive = angled right)
+    _monitor_skew = {
+        'DP-3': -30.0,  # left monitor, angled inward
+        'DP-2': 0.0,    # center, facing viewer
+        'DP-4': 30.0,   # right monitor, angled inward
+    }
     renderer.temporal_decay = 0.0  # image-space temporal off (using histogram decay instead)
 
     _blur_comparison = False
@@ -916,6 +923,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             for name, surf in ready.items():
                 if not session.make_current(surf):
                     continue  # this surface is dead, skip it
+                renderer.set_skew(_monitor_skew.get(name, 0.0))
                 if _blur_comparison and surf.width >= 3000:
                     renderer.render_blur_comparison(viewports[name], surf.width, surf.height,
                                                     brightness=frame.brightness,
