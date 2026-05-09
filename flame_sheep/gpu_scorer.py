@@ -105,6 +105,13 @@ def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
         renderer.dispatch_chaos_game(iterations=N_ITERS)
         renderer.ctx.memory_barrier()
 
+    # Snapshot static render with consistent gradient (palette scored separately)
+    scores_extra = {}
+    _gray_palette = np.tile(np.linspace(0, 1, 256, dtype=np.float32), (3, 1)).T.copy()
+    renderer.upload_palette(_gray_palette)
+    scores_extra['render_static'] = renderer.snapshot_png()
+    renderer.upload_palette(genome.palette)
+
     # Read back raw data
     hit_counts, color_accs = renderer.histogram_data()
     transform_hits = renderer.transform_hits_data()
@@ -140,6 +147,15 @@ def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
     if swept_steps > 0:
         swept_hits, swept_colors = _swept_histogram(
             genome, renderer, n_steps=swept_steps)
+
+        # Snapshot swept render with grayscale palette (color is meaningless
+        # in swept — averaged across rotation angles)
+        _gray_palette = np.tile(np.linspace(0, 1, 256, dtype=np.float32), (3, 1)).T.copy()
+        renderer.upload_palette(_gray_palette)
+        scores_extra['render_swept'] = renderer.snapshot_png()
+        # Restore genome palette
+        renderer.upload_palette(genome.palette)
+
         swept_hit_grid = swept_hits.astype(np.float64)
 
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -156,6 +172,7 @@ def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
         scores['centroid_offset_y'] = swept_scores['centroid_offset_y']
         scores['balance'] = swept_scores['balance']
 
+    scores.update(scores_extra)
     return scores
 
 
@@ -180,6 +197,7 @@ def _update_genome(conn: sqlite3.Connection, gid: int,
                cluster_detail=?,
                tf_coverage=?, tf_n_clusters=?, tf_avg_purity=?,
                tf_symmetry_best=?, tf_balance=?, tf_separation=?,
+               render_static=?, render_swept=?,
                score_version=?
            WHERE id=?''',
         (scores['coverage'], scores['entropy'],
@@ -206,6 +224,8 @@ def _update_genome(conn: sqlite3.Connection, gid: int,
          scores.get('tf_symmetry_best'),
          scores.get('tf_balance'),
          scores.get('tf_separation'),
+         scores.get('render_static'),
+         scores.get('render_swept'),
          SCORE_VERSION,
          gid),
     )

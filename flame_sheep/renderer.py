@@ -423,6 +423,49 @@ class FlameRenderer:
 
         self.ctx.disable(moderngl.BLEND)
 
+    def snapshot_png(self, brightness: float = 6.0) -> bytes:
+        """Tonemap the current histogram to an RGBA PNG and return as bytes.
+
+        Uses a temporary FBO — does not affect screen output.
+        """
+        import io
+        from PIL import Image
+
+        w, h = self.canvas_w, self.canvas_h
+        fbo_tex = self.ctx.texture((w, h), components=4, dtype='f1')
+        fbo = self.ctx.framebuffer(color_attachments=[fbo_tex])
+        fbo.use()
+        self.ctx.viewport = (0, 0, w, h)
+
+        viewport = Viewport(0, 0, w, h)
+        self.palette_tex.use(location=0)
+
+        p = self.tonemap_program
+        p['u_palette']       = 0
+        p['u_width']         = w
+        p['u_height']        = h
+        p['u_viewport_x']    = 0
+        p['u_viewport_y']    = 0
+        p['u_viewport_w']    = w
+        p['u_viewport_h']    = h
+        p['u_surface_w']     = w
+        p['u_surface_h']     = h
+        p['u_brightness']    = brightness
+        p['u_accum_frames']  = 1.0 / (1.0 - self._decay) if self._decay > 0 else 1.0
+
+        self.quad_vao.render(moderngl.TRIANGLES)
+
+        data = fbo.read(components=4)
+        img = np.frombuffer(data, dtype=np.uint8).reshape(h, w, 4)
+        img = img[::-1].copy()  # flip Y (OpenGL origin is bottom-left)
+
+        fbo.release()
+        fbo_tex.release()
+
+        buf = io.BytesIO()
+        Image.fromarray(img, 'RGBA').save(buf, format='PNG', optimize=True)
+        return buf.getvalue()
+
     def histogram_centroid_ndc(self) -> tuple[float, float] | None:
         """Compute the hit-weighted centroid from the coarse histogram.
 
