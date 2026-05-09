@@ -242,3 +242,38 @@ class BackgroundGpuRenderer:
             if self._process.is_alive():
                 self._process.kill()
             self._process = None
+
+
+def main():
+    """CLI entry point: render all unscored genomes.
+
+    Run when wallpaper is NOT running — two GPU processes on Arc
+    will crash the desktop.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description='GPU genome renderer')
+    parser.add_argument('--all', action='store_true',
+                        help='Re-render all genomes')
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s %(levelname)s %(message)s',
+                        datefmt='%H:%M:%S')
+    logging.getLogger('PIL').setLevel(logging.WARNING)
+
+    from .storage import _db_path
+    stop = multiprocessing.Event()
+    db = str(_db_path())
+
+    if args.all:
+        conn = sqlite3.connect(db)
+        conn.execute('UPDATE genomes SET render_version = 0')
+        conn.commit()
+        conn.close()
+
+    _render_main(db, stop)
+
+
+if __name__ == '__main__':
+    main()
