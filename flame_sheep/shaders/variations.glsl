@@ -192,7 +192,8 @@ vec2 var_julian(vec2 p, Polar pc, int slot) {
     float cn = dist / power * 0.5;
     float t_rand = floor(abs_n * rng_float());
     float a = (pc.phi + 6.28318530 * t_rand) / power;
-    float ri = pow(max(pc.r_val, 1e-6), cn);
+    // flam3 uses pow(r², cn) = pow(sumsq, cn), NOT pow(r, cn)
+    float ri = pow(max(pc.r_sq, 1e-6), cn);
     return ri * vec2(cos(a), sin(a));
 }
 
@@ -205,7 +206,8 @@ vec2 var_juliascope(vec2 p, Polar pc, int slot) {
     float ang = pc.phi;
     if (rng_next() % 2u == 0u) ang = -ang;
     float a = (ang + 6.28318530 * t_rand) / power;
-    float ri = pow(max(pc.r_val, 1e-6), cn);
+    // flam3 uses pow(r², cn), not pow(r, cn)
+    float ri = pow(max(pc.r_sq, 1e-6), cn);
     return ri * vec2(cos(a), sin(a));
 }
 
@@ -976,7 +978,8 @@ vec2 var_wedge_julia(vec2 p, Polar pc, int slot) {
     float a = (pc.phi + 6.28318530 * t_rnd) / power;
     float c = floor((count * a + 3.14159265) / 3.14159265 * 0.5);
     a = a * cf + c * ang;
-    float ri = pow(max(pc.r_val, 1e-6), cn);
+    // flam3 uses pow(r², cn), not pow(r, cn)
+    float ri = pow(max(pc.r_sq, 1e-6), cn);
     return ri * vec2(cos(a), sin(a));
 }
 

@@ -390,7 +390,8 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float,
         t_rand = np.floor(abs_n * _rand())
         phi_val = np.arctan2(y, x)  # standard atan2 for phi
         a = (phi_val + 2*np.pi * t_rand) / power
-        ri = max(r, 1e-10) ** cn
+        # flam3 uses pow(r², cn) = pow(sumsq, cn), NOT pow(r, cn)
+        ri = max(x*x + y*y, 1e-10) ** cn
         return w*ri*np.cos(a), w*ri*np.sin(a)
     elif var_idx == 33: # juliascope
         power = _current_var_params.get('julian_power', 2.0)
@@ -402,7 +403,8 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float,
         if _rand_int_mod(2) == 0:
             phi_val = -phi_val
         a = (phi_val + 2*np.pi * t_rand) / power
-        ri = max(r, 1e-10) ** cn
+        # flam3 uses pow(r², cn), not pow(r, cn)
+        ri = max(x*x + y*y, 1e-10) ** cn
         return w*ri*np.cos(a), w*ri*np.sin(a)
     elif var_idx == 42: # icon — complex polynomial with n-fold rotational symmetry
         n = _current_var_params.get('icon_degree', 4.0)
@@ -781,6 +783,7 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float,
         a = (np.arctan2(y, x) + 2.0 * np.pi * t_rnd) / power
         c = np.floor((count * a + np.pi) / np.pi * 0.5)
         a = a * cf + c * ang
+        # flam3 uses pow(r², cn) via sumsq — already using x*x+y*y here
         ri = max(x*x + y*y, 1e-10) ** cn
         return w * ri * np.cos(a), w * ri * np.sin(a)
     elif var_idx == 95: # wedge
