@@ -633,9 +633,11 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float,
     elif var_idx == 73: # fan_param — same formula as fan, explicit params
         c = _current_var_params.get('fan_c', 0.5)
         f = _current_var_params.get('fan_f', 0.5)
-        t = np.pi * c*c + 1e-6
-        th2 = th - t if ((th + f) % (2*t)) > t else th + t
-        return w*r*np.cos(th2), w*r*np.sin(th2)
+        dx = np.pi * c*c + 1e-6
+        dx2 = 0.5 * dx
+        a = th
+        a += -dx2 if (np.fmod(a + f, dx) > dx2) else dx2
+        return w*r*np.cos(a), w*r*np.sin(a)
     elif var_idx == 74: # waves2 — different formula: x + scalex*sin(y*freqx)
         sx = _current_var_params.get('waves2_scalex', 0.05)
         sy = _current_var_params.get('waves2_scaley', 0.05)
