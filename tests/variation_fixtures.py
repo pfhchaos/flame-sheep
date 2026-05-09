@@ -78,9 +78,123 @@ _ANGLE_SECTORS = [
     (0.9, 0.5), (-0.5, 0.9), (0.3, -1.0), (-0.8, -0.5),
 ]
 
+# Safe generic points — no conditionals, no singularities, all quadrants
+_SAFE = [
+    (1.0, 0.5), (-0.3, 0.7), (0.5, -0.5), (2.0, 1.0),
+    (-1.0, -1.0), (0.1, 0.1), (0.8, -0.2), (-0.5, 0.3),
+    (1.5, -0.8), (0.3, 1.2), (-0.7, -0.4), (0.95, 0.05),
+]
+
 VAR_POINTS: dict[int, list[tuple[float, float]]] = {
+    # --- Simple variations (no conditionals, no singularities) ---
+    Variation.LINEAR:       _SAFE,
+    Variation.SINUSOIDAL:   _SAFE,
+    Variation.SWIRL:        _SAFE,
+    Variation.HORSESHOE:    _SAFE,
+    Variation.HANDKERCHIEF: _SAFE,
+    Variation.HEART:        _SAFE,
+    Variation.DISK:         _SAFE,
+    Variation.DIAMOND:      _SAFE,
+    Variation.EX:           _SAFE,
+    Variation.POWER:        _SAFE,
+    Variation.COSINE:       _SAFE,
+    Variation.BUBBLE:       _SAFE,
+    Variation.CYLINDER:     _SAFE,
+    Variation.CLOVERLEAF:   _SAFE,
+    Variation.WAVES3:       _SAFE,
+    Variation.DISC2:        _SAFE,
+    Variation.AUGER:        _SAFE,
+    Variation.LAYERED_SPIRAL: _SAFE,
+    Variation.RIPPLE:       _SAFE,
+    Variation.WAVES_PARAM:  _SAFE,
+    Variation.POPCORN_PARAM: _SAFE,
+    Variation.WAVES2:       _SAFE,
+    Variation.CURVE:        _SAFE,
+    Variation.ESCHER:       _SAFE,
+    Variation.POLAR2:       _SAFE,
+    Variation.POPCORN2:     _SAFE,
+    Variation.FLUX:         _SAFE,
+
+    # --- Simple but need r>0 (avoid origin) ---
+    Variation.POLAR:        _SAFE,
+    Variation.EXPONENTIAL:  _SAFE,
+    Variation.PDJ:          _SAFE,
+    Variation.BLOB:         _SAFE,
+    Variation.WAVES:        _SAFE,  # affine-reading, safe points fine
+    Variation.POPCORN:      _SAFE,
+    Variation.RINGS_PARAM:  _SAFE,
+
+    # --- Conditional: negative x/y ---
+    Variation.BENT:         _SAFE + [(-1.0, 1.0), (1.0, -1.0), (-0.5, -0.5)],
+    Variation.BENT2:        _SAFE + [(-1.0, 1.0), (1.0, -1.0), (-0.5, -0.5)],
+    Variation.SPLITS:       _SAFE + [(-1.0, 1.0), (1.0, -1.0)],
+    Variation.SEPARATION:   _SAFE + [(-1.0, 1.0), (1.0, -1.0), (0.0, 0.5), (0.5, 0.0)],
+
+    # --- Tangent/cross: avoid singularities at π/2 ---
+    Variation.TANGENT:      _SAFE,
+    Variation.CROSS:        _SAFE + [(0.3, 0.31), (-0.5, 0.49)],  # avoid x²=y²
+
+    # --- RNG variations (use _RNG_COVERAGE for branch diversity) ---
+    Variation.BLUR:         _RNG_COVERAGE,
+    Variation.GAUSSIAN_BLUR: _RNG_COVERAGE,
+    Variation.RADIAL_BLUR:  _RNG_COVERAGE,
+    Variation.NOISE:        _RNG_COVERAGE,
+    Variation.PIE:          _RNG_COVERAGE,
+    Variation.ARCH:         _RNG_COVERAGE,
+    Variation.PARABOLA:     _RNG_COVERAGE,
+    Variation.RAYS:         _RNG_COVERAGE,
+    Variation.CONIC:        _RNG_COVERAGE,
+    Variation.SQUARE:       _RNG_COVERAGE,
+    Variation.TWINTRIAN:    _RNG_COVERAGE,
+    Variation.SUPER_SHAPE:  _RNG_COVERAGE,
+    Variation.WEDGE_JULIA:  _RNG_COVERAGE,
+
+    # --- Complex trig (z = x+iy) — avoid large y (cosh/sinh overflow) ---
+    Variation.SIN_FUNC:     _SAFE,
+    Variation.COS_FUNC:     _SAFE,
+    Variation.TAN_FUNC:     _SAFE,
+    Variation.SEC_FUNC:     _SAFE,
+    Variation.CSC_FUNC:     _SAFE,
+    Variation.COT_FUNC:     _SAFE,
+    Variation.SINH_FUNC:    _SAFE,
+    Variation.COSH_FUNC:    _SAFE,
+    Variation.TANH_FUNC:    _SAFE,
+    Variation.SECH_FUNC:    _SAFE,
+    Variation.CSCH_FUNC:    _SAFE,
+    Variation.COTH_FUNC:    _SAFE,
+    Variation.EXP_FUNC:     _SAFE,
+    Variation.LOG_FUNC:     _SAFE,
+    Variation.SECANT_FUNC:  _SAFE,
+    Variation.SECANT2:      _SAFE,
+
+    # --- Elliptic/edisc — need special near-origin handling ---
+    Variation.ELLIPTIC:     _SAFE + _NEAR_ZERO,
+    Variation.EDISC:        _SAFE + _NEAR_ZERO,
+
+    # --- Perspective — no singularity at these points ---
+    Variation.PERSPECTIVE:  _SAFE,
+
+    # --- Oscilloscope — conditional on y threshold ---
+    Variation.OSCILLOSCOPE: _SAFE + [(0.1, 0.5), (0.1, 2.0)],  # inside/outside threshold
+
+    # --- Modulus — three-way conditional ---
+    Variation.MODULUS_FUNC: _SAFE + _GRID_BOUNDARY,
+
+    # --- Bipolar — angle wrapping ---
+    Variation.BIPOLAR:      _SAFE,
+
+    # --- Wedge variations ---
+    Variation.WEDGE:        _SAFE + _ANGLE_SECTORS,
+    Variation.WEDGE_SPH:    _SAFE + _ANGLE_SECTORS,
+
+    # --- Lazysusan — inside vs outside radius ---
+    Variation.LAZYSUSAN:    _SAFE + _UNIT_CIRCLE,
+
+    # --- Icon (uses RNG internally) ---
+    Variation.ICON:         _RNG_COVERAGE,
+
     # --- r → 0 singularity group ---
-    Variation.SPHERICAL:    BASE_POINTS + _NEAR_ZERO,
+    Variation.SPHERICAL:    _SAFE + _NEAR_ZERO,
     Variation.SPIRAL:       BASE_POINTS + _NEAR_ZERO,
     Variation.FISHEYE:      BASE_POINTS + _NEAR_ZERO,
     Variation.EYEFISH:      BASE_POINTS + _NEAR_ZERO,
