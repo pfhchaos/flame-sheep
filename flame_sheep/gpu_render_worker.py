@@ -29,15 +29,19 @@ COLOR_SCALE = 1_000_000.0
 
 def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
     """Entry point for the GPU render subprocess."""
-    logging.basicConfig(level=logging.DEBUG,
+    logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(name)s %(levelname)s %(message)s',
                         datefmt='%H:%M:%S')
+    logging.getLogger('PIL').setLevel(logging.WARNING)
     log = logging.getLogger('flame_sheep.gpu_render_worker')
 
     try:
         os.nice(19)
     except OSError:
         pass
+
+    # Let wallpaper start up before competing for GPU
+    time.sleep(10)
 
     from .config import cfg
 

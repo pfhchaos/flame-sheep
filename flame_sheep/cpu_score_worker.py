@@ -99,9 +99,10 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
 
 def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
     """Entry point for the CPU score subprocess."""
-    logging.basicConfig(level=logging.DEBUG,
+    logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(name)s %(levelname)s %(message)s',
                         datefmt='%H:%M:%S')
+    logging.getLogger('PIL').setLevel(logging.WARNING)
     log = logging.getLogger('flame_sheep.cpu_score_worker')
 
     try:
