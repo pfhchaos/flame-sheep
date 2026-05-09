@@ -98,15 +98,32 @@ def _auto_zoom(genome) -> None:
 
 def render_genome(genome, renderer, ctx,
                   n_frames: int = DEFAULT_FRAMES,
-                  swept_steps: int = DEFAULT_SWEPT_STEPS) -> tuple[bytes, bytes]:
+                  swept_steps: int = DEFAULT_SWEPT_STEPS,
+                  output_size: int | None = None,
+                  use_de: bool = False) -> tuple[bytes, bytes]:
     """Render a genome to static + swept PNG bytes."""
+    import io
+    from PIL import Image
     from flame_sheep.renderer import N_ITERS
+
+    def _snapshot(use_de_pass: bool) -> bytes:
+        if use_de_pass:
+            png = renderer.snapshot_de_png(brightness=8.0, max_radius=9, curve=0.5)
+        else:
+            png = renderer.snapshot_png(brightness=8.0)
+        # Downsample if rendering at higher res than output
+        if output_size and output_size < renderer.canvas_w:
+            img = Image.open(io.BytesIO(png))
+            img = img.resize((output_size, output_size), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format='PNG', optimize=True)
+            return buf.getvalue()
+        return png
 
     # --- Static render ---
     renderer.upload_genome(genome)
     renderer.reset_walkers()
 
-    # Zero audio input
     from flame_sheep_audio import N_BINS
     renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
 
@@ -115,11 +132,7 @@ def render_genome(genome, renderer, ctx,
         renderer.dispatch_chaos_game(iterations=N_ITERS)
         ctx.memory_barrier()
 
-    # Use the self-normalizing tonemap with consistent brightness.
-    # The flam3 tonemap needs further calibration (k1/k2 don't translate
-    # directly because our histogram stores hit counts, not pre-scaled RGB).
-    # For CNN training, consistency matters more than matching flam3 exactly.
-    static_png = renderer.snapshot_png(brightness=8.0)
+    static_png = _snapshot(use_de)
 
     # --- Swept render (rotation-accumulated) ---
     renderer.upload_genome(genome)
@@ -135,7 +148,7 @@ def render_genome(genome, renderer, ctx,
         ctx.memory_barrier()
     renderer.set_rotation(base_rotation)
 
-    swept_png = renderer.snapshot_png(brightness=8.0)
+    swept_png = _snapshot(use_de)
 
     return static_png, swept_png
 
@@ -148,7 +161,9 @@ def main():
                         default=str(Path.home() / '.local/share/flame-sheep/esheep.db'),
                         help='Electric Sheep database path')
     parser.add_argument('--size', type=int, default=DEFAULT_SIZE,
-                        help=f'Render size in pixels (default: {DEFAULT_SIZE})')
+                        help=f'Output size in pixels (default: {DEFAULT_SIZE})')
+    parser.add_argument('--supersample', type=int, default=1,
+                        help='Oversample factor (render at size*N, downsample) (default: 1)')
     parser.add_argument('--frames', type=int, default=DEFAULT_FRAMES,
                         help=f'Frames to accumulate for static render (default: {DEFAULT_FRAMES})')
     parser.add_argument('--swept-steps', type=int, default=DEFAULT_SWEPT_STEPS,
@@ -159,6 +174,8 @@ def main():
                         help='Only render a specific generation')
     parser.add_argument('--limit', type=int, default=None,
                         help='Maximum number of genomes to render')
+    parser.add_argument('--de', action='store_true',
+                        help='Apply density estimation before tonemapping')
     parser.add_argument('--resume', action='store_true',
                         help='Skip genomes that already have rendered images')
     args = parser.parse_args()
@@ -199,8 +216,9 @@ def main():
         log.info('Nothing to render')
         return
 
-    # Create renderer
-    ctx, renderer = create_renderer(args.size)
+    # Create renderer at oversampled resolution
+    render_size = args.size * args.supersample
+    ctx, renderer = create_renderer(render_size)
 
     # Open manifest
     manifest_path = output_dir / 'manifest.csv'
@@ -226,6 +244,8 @@ def main():
                 genome, renderer, ctx,
                 n_frames=args.frames,
                 swept_steps=args.swept_steps,
+                output_size=args.size,
+                use_de=args.de,
             )
 
             static_path.write_bytes(static_png)
