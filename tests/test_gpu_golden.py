@@ -128,6 +128,13 @@ VAR_POINTS: dict[int, list[tuple[float, float]]] = {
     Variation.LISSAJOUS:    _RNG_COVERAGE,
 
     # --- Division hazard group ---
+    # --- Nudged away from float precision boundaries ---
+    # SPLIT: cos(x*xsize*π) = 0 at x=3.0,xsize=0.5 → sign ambiguous in f32 vs f64
+    Variation.SPLIT:        [(x + 0.01 if abs(x) == 3.0 else x, y) for x, y in BASE_POINTS],
+    # FOCI: division by ~0 when exp(x)+exp(-x) ≈ cos(y) near origin
+    Variation.FOCI:         [(x, y) for x, y in BASE_POINTS
+                             if not (abs(x) < 0.15 and abs(y) < 0.15)],
+
     Variation.RINGS:        BASE_POINTS + _NEAR_ZERO,
     Variation.RINGS2:       BASE_POINTS + _NEAR_ZERO,
     Variation.RINGS3:       BASE_POINTS + _NEAR_ZERO,
@@ -474,7 +481,13 @@ VAR_PARAM_SETS: dict[int, dict[str, dict]] = {
 RANDOM_VARIATIONS = {Variation.JULIA, Variation.SATTRACTOR, Variation.WALLPAPER,
                      Variation.FRIEZE, Variation.JULIAN, Variation.JULIASCOPE,
                      Variation.CPOW, Variation.BOARDERS, Variation.FLOWER,
-                     Variation.BLADE, Variation.LISSAJOUS, Variation.EPISPIRAL}
+                     Variation.BLADE, Variation.LISSAJOUS, Variation.EPISPIRAL,
+                     # batch 2 RNG variations
+                     Variation.BLUR, Variation.GAUSSIAN_BLUR, Variation.RADIAL_BLUR,
+                     Variation.SUPER_SHAPE, Variation.NOISE, Variation.PIE,
+                     Variation.ARCH, Variation.PARABOLA, Variation.RAYS,
+                     Variation.CONIC, Variation.SQUARE, Variation.TWINTRIAN,
+                     Variation.WEDGE_JULIA}
 
 # Variation names for readable output
 VAR_NAMES: dict[int, str] = {}
