@@ -159,21 +159,32 @@ class FlameRenderer:
         self.audio_tex = self.ctx.texture((N_BINS, 1), components=1, dtype='f4')
         self.audio_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
 
-        # Genome SSBOs (binding=2,3,4,5)
-        affines_data     = np.zeros((MAX_TRANSFORMS, 6), dtype=np.float32)
-        # Packed active variations: (index, weight, p0..p5) per slot
-        active_vars_data = np.zeros((MAX_TRANSFORMS, MAX_ACTIVE_VARS * SLOT_SIZE),
-                                     dtype=np.float32)
-        colors_data      = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
+        # Genome SSBOs — all have MAX_TRANSFORMS+1 slots (+1 for final xform)
+        n_slots = MAX_TRANSFORMS + 1
+        IDENTITY = np.array([1, 0, 0, 0, 1, 0], dtype=np.float32)
+
+        affines_data     = np.zeros((n_slots, 6), dtype=np.float32)
+        active_vars_data = np.full((n_slots, MAX_ACTIVE_VARS * SLOT_SIZE),
+                                    -1.0, dtype=np.float32)
+        colors_data      = np.zeros(n_slots, dtype=np.float32)
         weights_data     = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
-        self.affines_buf     = self.ctx.buffer(affines_data.tobytes())
-        self.active_vars_buf = self.ctx.buffer(active_vars_data.tobytes())
-        self.colors_buf      = self.ctx.buffer(colors_data.tobytes())
-        self.weights_buf     = self.ctx.buffer(weights_data.tobytes())
+        post_affines_data = np.tile(IDENTITY, (n_slots, 1))
+        pre_vars_data     = np.full((n_slots, MAX_ACTIVE_VARS * SLOT_SIZE),
+                                     -1.0, dtype=np.float32)
+
+        self.affines_buf      = self.ctx.buffer(affines_data.tobytes())
+        self.active_vars_buf  = self.ctx.buffer(active_vars_data.tobytes())
+        self.colors_buf       = self.ctx.buffer(colors_data.tobytes())
+        self.weights_buf      = self.ctx.buffer(weights_data.tobytes())
+        self.post_affines_buf = self.ctx.buffer(post_affines_data.tobytes())
+        self.pre_vars_buf     = self.ctx.buffer(pre_vars_data.tobytes())
+
         self.affines_buf.bind_to_storage_buffer(2)
         self.active_vars_buf.bind_to_storage_buffer(3)
         self.colors_buf.bind_to_storage_buffer(4)
         self.weights_buf.bind_to_storage_buffer(5)
+        self.post_affines_buf.bind_to_storage_buffer(9)
+        self.pre_vars_buf.bind_to_storage_buffer(10)
 
         # Walker state SSBO (binding=1)
         walker_data = np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(np.float32)
@@ -232,11 +243,14 @@ class FlameRenderer:
     # ------------------------------------------------------------------
 
     def upload_genome(self, genome: Genome) -> None:
-        affines, active_vars, colors, weights = genome.to_gpu_arrays()
+        (affines, active_vars, colors, weights,
+         post_affines, pre_active_vars, has_final) = genome.to_gpu_arrays()
         self.affines_buf.write(affines.tobytes())
         self.active_vars_buf.write(active_vars.tobytes())
         self.colors_buf.write(colors.tobytes())
         self.weights_buf.write(weights.tobytes())
+        self.post_affines_buf.write(post_affines.tobytes())
+        self.pre_vars_buf.write(pre_active_vars.tobytes())
 
         cs = self.compute_shader
         import math
@@ -247,6 +261,7 @@ class FlameRenderer:
         cs['u_center']       = tuple(genome.center)
         cs['u_width']        = self.canvas_w
         cs['u_height']       = self.canvas_h
+        cs['u_has_final_xform'] = 1 if has_final else 0
 
         self.palette_tex.write(genome.palette.tobytes())
 
@@ -759,6 +774,9 @@ class FlameRenderer:
         fbo = self.ctx.framebuffer(color_attachments=[fbo_tex])
         fbo.use()
         self.ctx.viewport = (0, 0, w, h)
+
+        # Compute max hit count for tonemap normalization
+        self.reduce_histogram_max()
 
         viewport = Viewport(0, 0, w, h)
         self.palette_tex.use(location=0)

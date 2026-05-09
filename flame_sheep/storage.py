@@ -156,29 +156,131 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
     conn.commit()
 
+    # Variation reindex migration: move parameterized waves/popcorn/rings/fan
+    # from indices 15/17/21/22 to 70/71/72/73.  The originals now read from
+    # the affine at render time.
+    _migrate_variation_reindex(conn)
+
+
+def _migrate_variation_reindex(conn: sqlite3.Connection) -> None:
+    """One-time migration: shift parameterized variation weights to new indices.
+
+    Old layout: idx 15=waves(param), 17=popcorn(param), 21=rings(param), 22=fan(param)
+    New layout: idx 15=waves(affine), 17=popcorn(affine), 21=rings(affine), 22=fan(affine)
+                idx 70=waves_param, 71=popcorn_param, 72=rings_param, 73=fan_param
+    """
+    # Check if migration already done — look for a marker in the metadata
+    existing_tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if 'metadata' not in existing_tables:
+        conn.execute('CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)')
+        conn.commit()
+
+    row = conn.execute(
+        "SELECT value FROM metadata WHERE key='variation_reindex_v1'").fetchone()
+    if row is not None:
+        return  # already migrated
+
+    # Count genomes to migrate
+    rows = conn.execute('SELECT id, params FROM genomes').fetchall()
+    if not rows:
+        conn.execute(
+            "INSERT INTO metadata (key, value) VALUES ('variation_reindex_v1', 'done')")
+        conn.commit()
+        return
+
+    # Index mapping: old → new
+    moves = {15: 70, 17: 71, 21: 72, 22: 73}
+    migrated = 0
+
+    for genome_id, params_json in rows:
+        data = json.loads(params_json)
+        changed = False
+        for td in data['transforms']:
+            variations = td['variations']
+            # Pad to new size if needed
+            while len(variations) < 75:
+                variations.append(0.0)
+            # Move weights from old indices to new
+            for old_idx, new_idx in moves.items():
+                if variations[old_idx] > 1e-6:
+                    variations[new_idx] = variations[old_idx]
+                    variations[old_idx] = 0.0
+                    changed = True
+            td['variations'] = variations
+        if changed:
+            migrated += 1
+            new_json = json.dumps(data, separators=(',', ':'))
+            conn.execute('UPDATE genomes SET params=?, score_version=0 WHERE id=?',
+                         (new_json, genome_id))
+
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('variation_reindex_v1', 'done')")
+    conn.commit()
+
+    if migrated:
+        import sys
+        print(f'[storage] Migrated {migrated}/{len(rows)} genomes '
+              f'(variation reindex v1)', file=sys.stderr)
+
 
 # ------------------------------------------------------------------
 # Genome serialization
 # ------------------------------------------------------------------
 
+def _transform_to_dict(tr: Transform) -> dict:
+    """Serialize a Transform to a JSON-compatible dict."""
+    d = {
+        'affine': tr.affine.tolist(),
+        'variations': tr.variations.tolist(),
+        'color': tr.color,
+        'weight': tr.weight,
+        'var_params': tr.var_params,
+    }
+    if tr.post_affine is not None:
+        d['post_affine'] = tr.post_affine.tolist()
+    if tr.pre_variations is not None:
+        d['pre_variations'] = tr.pre_variations.tolist()
+    return d
+
+
+def _transform_from_dict(td: dict) -> Transform:
+    """Deserialize a Transform from a JSON dict."""
+    tr = Transform()
+    tr.affine = np.array(td['affine'], dtype=np.float32)
+    # Backwards compat: old genomes have shorter variation arrays
+    raw_vars = np.array(td['variations'], dtype=np.float32)
+    if len(raw_vars) < NUM_VARIATIONS:
+        tr.variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
+        tr.variations[:len(raw_vars)] = raw_vars
+    else:
+        tr.variations = raw_vars
+    tr.color = td['color']
+    tr.weight = td['weight']
+    tr.var_params = td.get('var_params', {})
+    if 'post_affine' in td:
+        tr.post_affine = np.array(td['post_affine'], dtype=np.float32)
+    if 'pre_variations' in td:
+        raw_pre = np.array(td['pre_variations'], dtype=np.float32)
+        if len(raw_pre) < NUM_VARIATIONS:
+            tr.pre_variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
+            tr.pre_variations[:len(raw_pre)] = raw_pre
+        else:
+            tr.pre_variations = raw_pre
+    return tr
+
+
 def _genome_to_json(g: Genome) -> str:
     """Serialize a Genome to a JSON string."""
     data = {
-        'transforms': [
-            {
-                'affine': tr.affine.tolist(),
-                'variations': tr.variations.tolist(),
-                'color': tr.color,
-                'weight': tr.weight,
-                'var_params': tr.var_params,
-            }
-            for tr in g.transforms
-        ],
+        'transforms': [_transform_to_dict(tr) for tr in g.transforms],
         'palette': g.palette.tolist(),
         'zoom': g.zoom,
         'rotation': g.rotation,
         'center': g.center.tolist(),
     }
+    if g.final_xform is not None:
+        data['final_xform'] = _transform_to_dict(g.final_xform)
     return json.dumps(data, separators=(',', ':'))
 
 
@@ -186,21 +288,9 @@ def _genome_from_json(s: str) -> Genome:
     """Deserialize a Genome from a JSON string."""
     data = json.loads(s)
     g = Genome()
-    g.transforms = []
-    for td in data['transforms']:
-        tr = Transform()
-        tr.affine = np.array(td['affine'], dtype=np.float32)
-        # Backwards compat: old genomes have 30-element variation arrays
-        raw_vars = np.array(td['variations'], dtype=np.float32)
-        if len(raw_vars) < NUM_VARIATIONS:
-            tr.variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
-            tr.variations[:len(raw_vars)] = raw_vars
-        else:
-            tr.variations = raw_vars
-        tr.color = td['color']
-        tr.weight = td['weight']
-        tr.var_params = td.get('var_params', {})
-        g.transforms.append(tr)
+    g.transforms = [_transform_from_dict(td) for td in data['transforms']]
+    if 'final_xform' in data:
+        g.final_xform = _transform_from_dict(data['final_xform'])
     g.palette = np.array(data['palette'], dtype=np.float32)
     g.zoom = data['zoom']
     g.rotation = data['rotation']
@@ -264,7 +354,7 @@ def _grid_centroids(genome: Genome, grid: int, n_test: int,
         best_var = int(np.argmax(tr.variations))
         w = float(tr.variations[best_var])
         if w > 0.0:
-            nx, ny = _apply_variation_cpu(best_var, nx, ny, w)
+            nx, ny = _apply_variation_cpu(best_var, nx, ny, w, tr.affine)
 
         x, y = nx, ny
 

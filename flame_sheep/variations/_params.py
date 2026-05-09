@@ -36,7 +36,12 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
 
     Returns an empty dict for non-parametric variations.
     """
-    if var_idx == Variation.WAVES:
+    # WAVES/POPCORN/RINGS/FAN (15/17/21/22) read from the affine — no params
+    if var_idx in (Variation.WAVES, Variation.POPCORN,
+                   Variation.RINGS, Variation.FAN):
+        return {}
+
+    elif var_idx == Variation.WAVES_PARAM:
         return {
             'waves_freq_x': float(rng.uniform(-2.5, 2.5)),
             'waves_freq_y': float(rng.uniform(-2.5, 2.5)),
@@ -44,21 +49,29 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
             'waves_amp_y': float(rng.uniform(-2.5, 2.5)),
         }
 
-    elif var_idx == Variation.POPCORN:
+    elif var_idx == Variation.POPCORN_PARAM:
         return {
             'popcorn_cx': float(rng.uniform(-2.5, 2.5)),
             'popcorn_cy': float(rng.uniform(-2.5, 2.5)),
         }
 
-    elif var_idx == Variation.RINGS:
+    elif var_idx == Variation.RINGS_PARAM:
         return {
             'rings_c': float(rng.uniform(-2.5, 2.5)),
         }
 
-    elif var_idx == Variation.FAN:
+    elif var_idx == Variation.FAN_PARAM:
         return {
             'fan_c': float(rng.uniform(-2.5, 2.5)),
             'fan_f': float(rng.uniform(-2.5, 2.5)),
+        }
+
+    elif var_idx == Variation.WAVES2:
+        return {
+            'waves2_scalex': float(rng.uniform(-0.2, 0.2)),
+            'waves2_scaley': float(rng.uniform(-0.2, 0.2)),
+            'waves2_freqx': float(rng.uniform(1.0, 15.0)),
+            'waves2_freqy': float(rng.uniform(1.0, 15.0)),
         }
 
     elif var_idx in (Variation.JULIAN, Variation.JULIASCOPE):
@@ -332,6 +345,84 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
             'ripple_fixd': float(rng.choice([0.0, 1.0])),
         }
 
+    elif var_idx == Variation.RADIAL_BLUR:
+        return {'radial_blur_angle': float(rng.uniform(-1.0, 1.0))}
+    elif var_idx == Variation.PERSPECTIVE:
+        return {'perspective_angle': float(rng.uniform(0.1, 1.2)),
+                'perspective_dist': float(rng.uniform(0.5, 3.0))}
+    elif var_idx == Variation.SUPER_SHAPE:
+        return {'super_shape_rnd': float(rng.uniform(0.0, 1.0)),
+                'super_shape_m': float(rng.integers(1, 12)),
+                'super_shape_n1': float(rng.uniform(0.5, 5.0)),
+                'super_shape_n2': float(rng.uniform(0.5, 5.0)),
+                'super_shape_n3': float(rng.uniform(0.5, 5.0)),
+                'super_shape_holes': float(rng.uniform(-1.0, 1.0))}
+    elif var_idx == Variation.PIE:
+        return {'pie_slices': float(rng.integers(3, 12)),
+                'pie_rotation': float(rng.uniform(-1.0, 1.0)),
+                'pie_thickness': float(rng.uniform(0.1, 0.9))}
+    elif var_idx == Variation.PARABOLA:
+        return {'parabola_height': float(rng.uniform(0.2, 2.0)),
+                'parabola_width': float(rng.uniform(0.2, 2.0))}
+    elif var_idx == Variation.CONIC:
+        return {'conic_eccentricity': float(rng.uniform(0.1, 2.0)),
+                'conic_holes': float(rng.uniform(-1.0, 1.0))}
+    elif var_idx == Variation.ESCHER:
+        return {'escher_beta': float(rng.uniform(-2.0, 2.0))}
+    elif var_idx == Variation.OSCILLOSCOPE:
+        return {'osc_separation': float(rng.uniform(0.5, 2.0)),
+                'osc_frequency': float(rng.uniform(1.0, 5.0)),
+                'osc_amplitude': float(rng.uniform(0.5, 2.0)),
+                'osc_damping': float(rng.uniform(0.0, 1.0))}
+    elif var_idx == Variation.CURVE:
+        return {'curve_xamp': float(rng.uniform(-1.0, 1.0)),
+                'curve_yamp': float(rng.uniform(-1.0, 1.0)),
+                'curve_xlength': float(rng.uniform(0.5, 3.0)),
+                'curve_ylength': float(rng.uniform(0.5, 3.0))}
+    elif var_idx == Variation.WEDGE_JULIA:
+        return {'wedge_julia_angle': float(rng.uniform(-0.5, 0.5)),
+                'wedge_julia_count': float(rng.integers(1, 6)),
+                'wedge_julia_power': float(rng.integers(2, 8)),
+                'wedge_julia_dist': float(rng.uniform(0.5, 2.0))}
+    elif var_idx == Variation.WEDGE:
+        return {'wedge_angle': float(rng.uniform(-0.5, 0.5)),
+                'wedge_hole': float(rng.uniform(-0.5, 0.5)),
+                'wedge_count': float(rng.integers(1, 6)),
+                'wedge_swirl': float(rng.uniform(-1.0, 1.0))}
+    elif var_idx == Variation.WEDGE_SPH:
+        return {'wedge_sph_angle': float(rng.uniform(-0.5, 0.5)),
+                'wedge_sph_hole': float(rng.uniform(-0.5, 0.5)),
+                'wedge_sph_count': float(rng.integers(1, 6)),
+                'wedge_sph_swirl': float(rng.uniform(-1.0, 1.0))}
+    elif var_idx == Variation.LAZYSUSAN:
+        return {'lazysusan_x': float(rng.uniform(-1.0, 1.0)),
+                'lazysusan_y': float(rng.uniform(-1.0, 1.0)),
+                'lazysusan_spin': float(rng.uniform(-2.0, 2.0)),
+                'lazysusan_space': float(rng.uniform(-1.0, 1.0)),
+                'lazysusan_twist': float(rng.uniform(-2.0, 2.0))}
+    elif var_idx == Variation.MODULUS_FUNC:
+        return {'modulus_x': float(rng.uniform(0.5, 2.0)),
+                'modulus_y': float(rng.uniform(0.5, 2.0))}
+    elif var_idx == Variation.BENT2:
+        return {'bent2_x': float(rng.uniform(-2.0, 2.0)),
+                'bent2_y': float(rng.uniform(-2.0, 2.0))}
+    elif var_idx == Variation.BIPOLAR:
+        return {'bipolar_shift': float(rng.uniform(-1.0, 1.0))}
+    elif var_idx == Variation.FLUX:
+        return {'flux_spread': float(rng.uniform(-1.0, 1.0))}
+    elif var_idx == Variation.SPLIT:
+        return {'split_xsize': float(rng.uniform(-2.0, 2.0)),
+                'split_ysize': float(rng.uniform(-2.0, 2.0))}
+    elif var_idx == Variation.SEPARATION:
+        return {'separation_x': float(rng.uniform(0.1, 1.0)),
+                'separation_y': float(rng.uniform(0.1, 1.0)),
+                'separation_xinside': float(rng.uniform(0.0, 1.0)),
+                'separation_yinside': float(rng.uniform(0.0, 1.0))}
+    elif var_idx == Variation.POPCORN2:
+        return {'popcorn2_x': float(rng.uniform(-0.5, 0.5)),
+                'popcorn2_y': float(rng.uniform(-0.5, 0.5)),
+                'popcorn2_c': float(rng.uniform(1.0, 5.0))}
+
     return {}
 
 
@@ -393,6 +484,42 @@ _PARAM_RANGES: dict[str, tuple[float, float]] = {
     'ripple_amp': (0.01, 0.5), 'ripple_cx': (-0.5, 0.5),
     'ripple_cy': (-0.5, 0.5), 'ripple_phase': (0.0, 6.28),
     'ripple_scale': (0.5, 2.0), 'ripple_fixd': (0.0, 1.0),
+    # waves2
+    'waves2_scalex': (-0.2, 0.2), 'waves2_scaley': (-0.2, 0.2),
+    'waves2_freqx': (1.0, 15.0), 'waves2_freqy': (1.0, 15.0),
+    # batch 2
+    'radial_blur_angle': (-1.0, 1.0),
+    'perspective_angle': (0.1, 1.2), 'perspective_dist': (0.5, 3.0),
+    'super_shape_rnd': (0.0, 1.0), 'super_shape_m': (1.0, 11.0),
+    'super_shape_n1': (0.5, 5.0), 'super_shape_n2': (0.5, 5.0),
+    'super_shape_n3': (0.5, 5.0), 'super_shape_holes': (-1.0, 1.0),
+    'pie_slices': (3.0, 11.0), 'pie_rotation': (-1.0, 1.0),
+    'pie_thickness': (0.1, 0.9),
+    'parabola_height': (0.2, 2.0), 'parabola_width': (0.2, 2.0),
+    'conic_eccentricity': (0.1, 2.0), 'conic_holes': (-1.0, 1.0),
+    'escher_beta': (-2.0, 2.0),
+    'osc_separation': (0.5, 2.0), 'osc_frequency': (1.0, 5.0),
+    'osc_amplitude': (0.5, 2.0), 'osc_damping': (0.0, 1.0),
+    'curve_xamp': (-1.0, 1.0), 'curve_yamp': (-1.0, 1.0),
+    'curve_xlength': (0.5, 3.0), 'curve_ylength': (0.5, 3.0),
+    'wedge_julia_angle': (-0.5, 0.5), 'wedge_julia_count': (1.0, 5.0),
+    'wedge_julia_power': (2.0, 7.0), 'wedge_julia_dist': (0.5, 2.0),
+    'wedge_angle': (-0.5, 0.5), 'wedge_hole': (-0.5, 0.5),
+    'wedge_count': (1.0, 5.0), 'wedge_swirl': (-1.0, 1.0),
+    'wedge_sph_angle': (-0.5, 0.5), 'wedge_sph_hole': (-0.5, 0.5),
+    'wedge_sph_count': (1.0, 5.0), 'wedge_sph_swirl': (-1.0, 1.0),
+    'lazysusan_x': (-1.0, 1.0), 'lazysusan_y': (-1.0, 1.0),
+    'lazysusan_spin': (-2.0, 2.0), 'lazysusan_space': (-1.0, 1.0),
+    'lazysusan_twist': (-2.0, 2.0),
+    'modulus_x': (0.5, 2.0), 'modulus_y': (0.5, 2.0),
+    'bent2_x': (-2.0, 2.0), 'bent2_y': (-2.0, 2.0),
+    'bipolar_shift': (-1.0, 1.0),
+    'flux_spread': (-1.0, 1.0),
+    'split_xsize': (-2.0, 2.0), 'split_ysize': (-2.0, 2.0),
+    'separation_x': (0.1, 1.0), 'separation_y': (0.1, 1.0),
+    'separation_xinside': (0.0, 1.0), 'separation_yinside': (0.0, 1.0),
+    'popcorn2_x': (-0.5, 0.5), 'popcorn2_y': (-0.5, 0.5),
+    'popcorn2_c': (1.0, 5.0),
 }
 
 # Integer params that should be rounded after jitter
@@ -401,6 +528,9 @@ _INTEGER_PARAMS = {
     'wallpaper_group', 'frieze_group', 'cpow_power', 'ngon_sides',
     'flower_petals', 'collide_num',
     'liss_a', 'liss_b',
+    'super_shape_m', 'pie_slices',
+    'wedge_julia_count', 'wedge_julia_power',
+    'wedge_count', 'wedge_sph_count',
 }
 
 

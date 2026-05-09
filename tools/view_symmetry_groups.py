@@ -77,7 +77,7 @@ def render_histogram(genome: Genome, grid_size: int = 256,
         a, b, c, d, e, f = tr.affine
         nx = a * x + b * y + c
         ny = d * x + e * y + f
-        nx, ny = apply_variations_cpu(tr.variations, nx, ny)
+        nx, ny = apply_variations_cpu(tr.variations, nx, ny, tr.affine)
         x, y = nx, ny
         if not (np.isfinite(x) and np.isfinite(y)):
             break

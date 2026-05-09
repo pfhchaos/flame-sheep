@@ -64,7 +64,7 @@ class TestRandomVarParams:
 
     def test_parametric_returns_params(self):
         rng = np.random.default_rng(42)
-        params = random_var_params(Variation.WAVES, rng)
+        params = random_var_params(Variation.WAVES_PARAM, rng)
         assert 'waves_freq_x' in params
         assert 'waves_freq_y' in params
         assert 'waves_amp_x' in params
@@ -100,7 +100,7 @@ class TestJitterVarParams:
 
     def test_jitter_changes_values(self):
         rng = np.random.default_rng(42)
-        original = random_var_params(Variation.WAVES, rng)
+        original = random_var_params(Variation.WAVES_PARAM, rng)
         jittered = jitter_var_params(original, np.random.default_rng(99))
         assert jittered != original
         assert set(jittered.keys()) == set(original.keys())

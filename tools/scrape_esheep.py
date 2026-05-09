@@ -69,11 +69,15 @@ def _ensure_db(db: sqlite3.Connection) -> None:
 
 
 def _parse_index_page(html: str) -> list[tuple[int, int]]:
-    """Parse a best/page index and return [(sheep_id, rating), ...]."""
+    """Parse a best/page index and return [(sheep_id, rating), ...].
+
+    Handles two HTML formats:
+    - Newer (gen 242+): <a href="...sheep/ID/view.html">...<font>RATING</font>
+    - Older (gen 198-): <td>RATING</td><td><a href="...sheep/ID/view.html">
+    """
     results = []
-    # HTML structure per entry:
-    #   <a href="../../sheep/52506/view.html"><img ...></a><br>
-    #   <font size="-2">192</font>
+
+    # Format 1: newer — rating in <font> after sheep link
     for match in re.finditer(
         r'/sheep/(\d+)/view\.html"[^>]*>.*?<font[^>]*>\s*(\d+)\s*</font>',
         html, re.DOTALL
@@ -82,12 +86,26 @@ def _parse_index_page(html: str) -> list[tuple[int, int]]:
         rating = int(match.group(2))
         results.append((sheep_id, rating))
 
-    if not results:
-        # Fallback: pair up IDs and ratings found separately
-        ids = re.findall(r'/sheep/(\d+)/view\.html', html)
-        ratings = re.findall(r'<font[^>]*>\s*(\d+)\s*</font>', html)
-        if len(ids) == len(ratings):
-            results = [(int(i), int(r)) for i, r in zip(ids, ratings)]
+    if results:
+        return results
+
+    # Format 2: older — rating in <td> before sheep link
+    for match in re.finditer(
+        r'<td>\s*(\d+)\s*</td>\s*<td>\s*<a\s+href="[^"]*?/sheep/(\d+)/view\.html"',
+        html, re.DOTALL
+    ):
+        rating = int(match.group(1))
+        sheep_id = int(match.group(2))
+        results.append((sheep_id, rating))
+
+    if results:
+        return results
+
+    # Fallback: pair up IDs and ratings found separately
+    ids = re.findall(r'/sheep/(\d+)/view\.html', html)
+    ratings = re.findall(r'<font[^>]*>\s*(\d+)\s*</font>', html)
+    if len(ids) == len(ratings):
+        results = [(int(i), int(r)) for i, r in zip(ids, ratings)]
 
     return results
 

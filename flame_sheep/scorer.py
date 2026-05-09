@@ -147,7 +147,7 @@ def _score_genome(params_json: str) -> dict[str, float]:
         nx = a * x + b * y + cc
         ny = d * x + e * y + f
 
-        nx, ny = apply_variations_cpu(tr.variations, nx, ny)
+        nx, ny = apply_variations_cpu(tr.variations, nx, ny, tr.affine)
 
         x, y = nx, ny
         c = (c + tr.color) * 0.5
