@@ -243,7 +243,7 @@ VAR_POINTS: dict[int, list[tuple[float, float]]] = {
     Variation.RINGS3:       BASE_POINTS + _NEAR_ZERO,
     Variation.CURL:         BASE_POINTS + _NEAR_ZERO,
     Variation.NGON:         BASE_POINTS + _NEAR_ZERO,
-    Variation.EPISPIRAL:    BASE_POINTS + _NEAR_ZERO,
+    Variation.EPISPIRAL:    BASE_POINTS + _NEAR_ZERO + _ANGLE_SECTORS,
     Variation.HYPERTILE:    BASE_POINTS + _NEAR_ZERO,
     Variation.MOBIUS:        BASE_POINTS + _NEAR_ZERO,
 
@@ -482,6 +482,15 @@ def _build_param_sets():
                                            'super_shape_n1': 1.0, 'super_shape_n2': 1.0,
                                            'super_shape_n3': 1.0, 'super_shape_holes': 0.5}},
         Variation.POPCORN2: {'strong': {'popcorn2_x': 0.5, 'popcorn2_y': 0.5, 'popcorn2_c': 1.0}},
+        # JWildfire-only extra param configs
+        Variation.HEX_MODULUS: {'small': {'hex_size': 0.3}},
+        Variation.RINGS3: {'tight': {'rings3_val': 0.1, 'rings3_n': 8.0}},
+        Variation.EPISPIRAL: {'zero_thick': {'epispiral_n': 3.0, 'epispiral_thickness': 0.0,
+                                             'epispiral_holes': 0.5}},
+        Variation.RIPPLE: {'centered': {'ripple_freq': 3.0, 'ripple_vel': 1.0,
+                                        'ripple_amp': 0.3, 'ripple_cx': 0.5,
+                                        'ripple_cy': -0.3, 'ripple_phase': 1.0,
+                                        'ripple_scale': 0.5, 'ripple_fixd': 1.0}},
     }
     for var_idx, extras in _extras.items():
         if var_idx in VAR_PARAM_SETS:
