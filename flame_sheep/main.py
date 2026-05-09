@@ -536,7 +536,8 @@ def _ensure_singleton() -> None:
 def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                    blur_radius: float = 1.0,
                    log_features: bool = False, log_file: str | None = None,
-                   spectrum_engine: str = 'octave_bank') -> None:
+                   spectrum_engine: str = 'octave_bank',
+                   test_pattern: bool = False) -> None:
     """
     Wallpaper mode — one continuous flame fractal image across all monitors.
     """
@@ -630,7 +631,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     renderer.temporal_decay = 0.0  # image-space temporal off (using histogram decay instead)
 
     _blur_comparison = False
-    _test_pattern = args.test_pattern if hasattr(args, 'test_pattern') else False
+    _test_pattern = test_pattern
 
     # --- library + evolution state ---
     from .storage import Library
@@ -1311,7 +1312,8 @@ def main() -> None:
             audio_device = cfg.audio_device
         _run_wallpaper(audio_device, args.test_audio, blur_radius=args.blur_radius,
                        log_features=args.log_features, log_file=args.log_file,
-                       spectrum_engine=args.spectrum_engine)
+                       spectrum_engine=args.spectrum_engine,
+                       test_pattern=args.test_pattern)
         return
 
     # Strip our flags from sys.argv so moderngl-window's arg parser
