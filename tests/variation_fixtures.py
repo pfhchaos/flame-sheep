@@ -482,6 +482,17 @@ def _build_param_sets():
                                            'super_shape_n1': 1.0, 'super_shape_n2': 1.0,
                                            'super_shape_n3': 1.0, 'super_shape_holes': 0.5}},
         Variation.POPCORN2: {'strong': {'popcorn2_x': 0.5, 'popcorn2_y': 0.5, 'popcorn2_c': 1.0}},
+        # flam3 variations needing extra param coverage
+        Variation.MOBIUS: {'near_pole': {'mobius_re_a': 1.0, 'mobius_re_b': 0.0,
+                                         'mobius_re_c': 0.0, 'mobius_re_d': 1.0,
+                                         'mobius_im_a': 0.0, 'mobius_im_b': 0.0,
+                                         'mobius_im_c': 0.0, 'mobius_im_d': 0.0}},  # identity
+        Variation.WEDGE: {'high_count': {'wedge_angle': 0.5, 'wedge_hole': 0.2,
+                                         'wedge_count': 4.0, 'wedge_swirl': 0.0}},
+        Variation.WEDGE_SPH: {'high_count': {'wedge_sph_angle': 0.5, 'wedge_sph_hole': 0.2,
+                                             'wedge_sph_count': 4.0, 'wedge_sph_swirl': 0.0}},
+        Variation.CURVE: {'tight': {'curve_xamp': 1.0, 'curve_yamp': 1.0,
+                                    'curve_xlength': 0.1, 'curve_ylength': 0.1}},
         # JWildfire-only extra param configs
         Variation.HEX_MODULUS: {'small': {'hex_size': 0.3}},
         Variation.RINGS3: {'tight': {'rings3_val': 0.1, 'rings3_n': 8.0}},
