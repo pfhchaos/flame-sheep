@@ -369,6 +369,105 @@ VAR_PARAM_SETS: dict[int, dict[str, dict]] = {
         'strong': {'waves2_scalex': 0.2, 'waves2_scaley': 0.2,
                    'waves2_freqx': 3.0, 'waves2_freqy': 5.0},
     },
+    # --- batch 2: non-parametric (no params needed) ---
+    Variation.BLUR:           {'default': {}},
+    Variation.GAUSSIAN_BLUR:  {'default': {}},
+    Variation.NOISE:          {'default': {}},
+    Variation.SECANT2:        {'default': {}},
+    Variation.ARCH:           {'default': {}},
+    Variation.RAYS:           {'default': {}},
+    Variation.ELLIPTIC:       {'default': {}},
+    Variation.EDISC:          {'default': {}},
+    Variation.SQUARE:         {'default': {}},
+    Variation.TWINTRIAN:      {'default': {}},
+    Variation.POLAR2:         {'default': {}},
+    Variation.FOCI:           {'default': {}},
+    Variation.SECANT_FUNC:    {'default': {}},
+    Variation.SIN_FUNC:       {'default': {}},
+    Variation.COS_FUNC:       {'default': {}},
+    Variation.TAN_FUNC:       {'default': {}},
+    Variation.SEC_FUNC:       {'default': {}},
+    Variation.CSC_FUNC:       {'default': {}},
+    Variation.COT_FUNC:       {'default': {}},
+    Variation.SINH_FUNC:      {'default': {}},
+    Variation.COSH_FUNC:      {'default': {}},
+    Variation.TANH_FUNC:      {'default': {}},
+    Variation.SECH_FUNC:      {'default': {}},
+    Variation.CSCH_FUNC:      {'default': {}},
+    Variation.COTH_FUNC:      {'default': {}},
+    Variation.EXP_FUNC:       {'default': {}},
+    Variation.LOG_FUNC:       {'default': {}},
+    # --- batch 2: parametric ---
+    Variation.RADIAL_BLUR: {
+        'default': {'radial_blur_angle': 0.5},
+    },
+    Variation.PERSPECTIVE: {
+        'default': {'perspective_angle': 0.8, 'perspective_dist': 2.0},
+    },
+    Variation.SUPER_SHAPE: {
+        'default': {'super_shape_rnd': 0.3, 'super_shape_m': 4.0,
+                    'super_shape_n1': 2.0, 'super_shape_n2': 2.0,
+                    'super_shape_n3': 2.0, 'super_shape_holes': 0.0},
+    },
+    Variation.PIE: {
+        'default': {'pie_slices': 6.0, 'pie_rotation': 0.0, 'pie_thickness': 0.5},
+    },
+    Variation.PARABOLA: {
+        'default': {'parabola_height': 1.0, 'parabola_width': 1.0},
+    },
+    Variation.CONIC: {
+        'default': {'conic_eccentricity': 1.0, 'conic_holes': 0.0},
+    },
+    Variation.ESCHER: {
+        'default': {'escher_beta': 0.3},
+    },
+    Variation.OSCILLOSCOPE: {
+        'default': {'osc_separation': 1.0, 'osc_frequency': 3.14159,
+                    'osc_amplitude': 1.0, 'osc_damping': 0.1},
+    },
+    Variation.CURVE: {
+        'default': {'curve_xamp': 0.5, 'curve_yamp': 0.3,
+                    'curve_xlength': 1.0, 'curve_ylength': 1.0},
+    },
+    Variation.WEDGE_JULIA: {
+        'default': {'wedge_julia_angle': 0.3, 'wedge_julia_count': 2.0,
+                    'wedge_julia_power': 4.0, 'wedge_julia_dist': 1.0},
+    },
+    Variation.WEDGE: {
+        'default': {'wedge_angle': 0.3, 'wedge_hole': 0.0,
+                    'wedge_count': 2.0, 'wedge_swirl': 0.5},
+    },
+    Variation.WEDGE_SPH: {
+        'default': {'wedge_sph_angle': 0.3, 'wedge_sph_hole': 0.0,
+                    'wedge_sph_count': 2.0, 'wedge_sph_swirl': 0.5},
+    },
+    Variation.LAZYSUSAN: {
+        'default': {'lazysusan_x': 0.1, 'lazysusan_y': 0.1,
+                    'lazysusan_spin': 0.5, 'lazysusan_space': 0.2,
+                    'lazysusan_twist': 0.3},
+    },
+    Variation.MODULUS_FUNC: {
+        'default': {'modulus_x': 0.5, 'modulus_y': 0.5},
+    },
+    Variation.BENT2: {
+        'default': {'bent2_x': 1.5, 'bent2_y': -0.5},
+    },
+    Variation.BIPOLAR: {
+        'default': {'bipolar_shift': 0.3},
+    },
+    Variation.FLUX: {
+        'default': {'flux_spread': 0.5},
+    },
+    Variation.SPLIT: {
+        'default': {'split_xsize': 0.5, 'split_ysize': 0.5},
+    },
+    Variation.SEPARATION: {
+        'default': {'separation_x': 0.5, 'separation_y': 0.5,
+                    'separation_xinside': 0.2, 'separation_yinside': 0.3},
+    },
+    Variation.POPCORN2: {
+        'default': {'popcorn2_x': 0.1, 'popcorn2_y': 0.1, 'popcorn2_c': 3.0},
+    },
 }
 
 # Variations that use RNG — need deterministic seeding to match GPU
