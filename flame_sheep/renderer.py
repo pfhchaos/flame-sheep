@@ -394,7 +394,7 @@ class FlameRenderer:
             p['u_viewport_h']    = viewport.h
             p['u_surface_w']     = surface_w
             p['u_surface_h']     = surface_h
-            p['u_brightness']    = brightness
+            p['u_gamma']         = brightness
 
             self.quad_vao.render(moderngl.TRIANGLES)
         else:
@@ -415,7 +415,7 @@ class FlameRenderer:
             p['u_viewport_h']    = viewport.h
             p['u_surface_w']     = surface_w
             p['u_surface_h']     = surface_h
-            p['u_brightness']    = brightness
+            p['u_gamma']         = brightness
 
             self.quad_vao.render(moderngl.TRIANGLES)
 
@@ -569,7 +569,7 @@ class FlameRenderer:
         p['u_viewport_h']    = viewport.h
         p['u_surface_w']     = surface_w
         p['u_surface_h']     = surface_h
-        p['u_brightness']    = brightness
+        p['u_gamma']         = brightness
         self.quad_vao.render(moderngl.TRIANGLES)
 
         # Step 2: gaussian blur current → gauss_fbo (reuse blur FBOs for temp)
@@ -633,7 +633,7 @@ class FlameRenderer:
         p['u_viewport_h']    = viewport.h
         p['u_surface_w']     = surface_w
         p['u_surface_h']     = surface_h
-        p['u_brightness']    = brightness
+        p['u_gamma']         = brightness
         self.quad_vao.render(moderngl.TRIANGLES)
 
         n_strips = len(radii)
@@ -773,7 +773,7 @@ class FlameRenderer:
         p['u_viewport_h']    = h
         p['u_surface_w']     = w
         p['u_surface_h']     = h
-        p['u_brightness']    = brightness
+        p['u_gamma']         = brightness
 
         self.quad_vao.render(moderngl.TRIANGLES)
 

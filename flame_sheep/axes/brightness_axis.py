@@ -27,22 +27,35 @@ class BrightnessAxis:
     RMS so sustained tonal energy drives brightness while transients decay.
     """
 
-    def __init__(self, role: RoleMapper, floor: float = 0.7, ceiling: float = 12.0,
-                 rms_scale: float = 0.23, noise_floor: float = 0.05) -> None:
+    def __init__(
+        self,
+        role: RoleMapper,
+        floor: float = 2.5,         # gamma when quiet (ghostly)
+        ceiling: float = 1.2,       # gamma when loud (vivid)
+        rms_scale: float = 0.23,
+        noise_floor: float = 0.05,
+    ) -> None:
         self.enabled = True
         self._role = role
-        self.floor = floor
-        self.ceiling = ceiling
+        self.floor = floor          # high gamma = dim
+        self.ceiling = ceiling      # low gamma = bright
         self.rms_scale = rms_scale
         self.noise_floor = noise_floor
-        self.brightness = floor
+        self.gamma = floor
         self._envelope = AsymmetricEnvelope(attack=0.1, release=2.0, hop_time=HOP_TIME)
+
+    @property
+    def brightness(self) -> float:
+        """For backward compat — returns gamma value."""
+        return self.gamma
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
         raw = self._envelope.update(audio.centroid_rms)
         energy = max(raw - self.noise_floor, 0.0)
-        t = min(energy / self.rms_scale, 1.0) ** 2.0
-        self.brightness = self.floor + t * (self.ceiling - self.floor)
+        scale_range = max(self.rms_scale - self.noise_floor, 0.01)
+        t = min(energy / scale_range, 1.0) ** 2.0
+        # Interpolate from high gamma (quiet/ghostly) to low gamma (loud/vivid)
+        self.gamma = self.floor + t * (self.ceiling - self.floor)
 
     def contribute(self, frame: FlameSheepCore.FrameState) -> None:
-        frame.brightness = self.brightness
+        frame.brightness = self.gamma
