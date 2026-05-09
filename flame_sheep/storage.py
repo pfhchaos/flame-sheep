@@ -128,14 +128,26 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                  'cl_cluster_count', 'cl_dominance', 'cl_balance',
                  'cluster_detail',
                  'tf_coverage', 'tf_n_clusters', 'tf_avg_purity',
-                 'tf_symmetry_best', 'tf_balance', 'tf_separation'):
+                 'tf_symmetry_best', 'tf_balance', 'tf_separation',
+                 # Experimental metrics (throw at wall)
+                 'sw_rotational', 'sw_coverage',
+                 'freq_high_ratio', 'freq_peak_scale',
+                 'lacunarity',
+                 'radial_slope', 'radial_r2',
+                 'compactness',
+                 'bbox_aspect',
+                 'filament_count',
+                 'contrast_ratio',
+                 'angular_uniformity'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} REAL')
-    for col in ('render_static', 'render_swept'):
+    for col in ('render_static', 'render_swept',
+                'hist_static', 'hist_swept', 'hist_transform'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} BLOB')
-    if 'score_version' not in existing:
-        conn.execute('ALTER TABLE genomes ADD COLUMN score_version INTEGER DEFAULT 0')
+    for col in ('score_version', 'render_version'):
+        if col not in existing:
+            conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} INTEGER DEFAULT 0')
 
     # Add loop_type column if it doesn't exist
     loop_cols = {r[1] for r in conn.execute('PRAGMA table_info(loops)').fetchall()}

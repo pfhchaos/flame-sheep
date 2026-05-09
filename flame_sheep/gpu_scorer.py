@@ -105,12 +105,22 @@ def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
         renderer.dispatch_chaos_game(iterations=N_ITERS)
         renderer.ctx.memory_barrier()
 
-    # Snapshot static render with consistent gradient (palette scored separately)
+    # Snapshot static render with rainbow palette (genome doesn't own a palette)
     scores_extra = {}
-    _gray_palette = np.tile(np.linspace(0, 1, 256, dtype=np.float32), (3, 1)).T.copy()
-    renderer.upload_palette(_gray_palette)
+    _hues = np.linspace(0, 1, 256, endpoint=False)
+    _rainbow = np.zeros((256, 3), dtype=np.float32)
+    for i, h in enumerate(_hues):
+        c = 1.0
+        x = c * (1 - abs((h * 6) % 2 - 1))
+        hi = int(h * 6) % 6
+        if hi == 0:   _rainbow[i] = [c, x, 0]
+        elif hi == 1: _rainbow[i] = [x, c, 0]
+        elif hi == 2: _rainbow[i] = [0, c, x]
+        elif hi == 3: _rainbow[i] = [0, x, c]
+        elif hi == 4: _rainbow[i] = [x, 0, c]
+        else:         _rainbow[i] = [c, 0, x]
+    renderer.upload_palette(_rainbow)
     scores_extra['render_static'] = renderer.snapshot_png()
-    renderer.upload_palette(genome.palette)
 
     # Read back raw data
     hit_counts, color_accs = renderer.histogram_data()
