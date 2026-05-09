@@ -685,12 +685,15 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             _evolving = False
         threading.Thread(target=_wait_evolve, daemon=True).start()
 
-    # --- background symmetry scoring ---
-    from .scorer import BackgroundScorer
+    # --- background rendering + scoring ---
+    from .gpu_render_worker import BackgroundGpuRenderer
+    from .cpu_score_worker import BackgroundCpuScorer
     from .storage import _db_path
-    scorer = BackgroundScorer(db_path=str(_db_path()))
+    gpu_renderer = BackgroundGpuRenderer(db_path=str(_db_path()))
+    cpu_scorer = BackgroundCpuScorer(db_path=str(_db_path()))
     if lib is not None:
-        scorer.start()
+        gpu_renderer.start()
+        cpu_scorer.start()
 
     # --- Register command handlers on orchestrator ---
     quit_requested = False
@@ -932,7 +935,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         log.debug(f'[render] exiting render loop (quit_requested={quit_requested})')
         if feature_logger:
             feature_logger.close()
-        scorer.stop()
+        gpu_renderer.stop()
+        cpu_scorer.stop()
         orch.stop()
         session.destroy()
 

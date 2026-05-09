@@ -64,6 +64,12 @@ DEFAULTS = {
         'subdivision': 'high',
         'energy': 'subbass',
     },
+    'scoring': {
+        'store_histograms': False,  # dev-only: store raw histogram blobs in DB
+        'render_sleep': 2.0,        # seconds between genomes in GPU render worker
+        'render_size': 512,         # render resolution for scoring
+        'store_cluster_detail': False,
+    },
     'debug': {
         'panels': ['header', 'timeline', 'spectrum', 'band_metrics', 'break'],
         'timeline_seconds': 8.0,

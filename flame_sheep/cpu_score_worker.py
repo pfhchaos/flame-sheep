@@ -1,0 +1,234 @@
+"""Background CPU scorer — computes metrics from rendered images.
+
+Picks up genomes that have been rendered (render_version current) but
+not yet scored (score_version outdated). Reads PNG blobs from the DB,
+runs image-based and experimental metrics, stores numeric scores.
+
+Runs as a daemon subprocess. Load-aware (nice 19, pauses on high load).
+"""
+
+from __future__ import annotations
+
+import io
+import logging
+import multiprocessing
+import os
+import sqlite3
+import zlib
+
+import numpy as np
+from PIL import Image
+
+log = logging.getLogger(__name__)
+
+SCORE_VERSION = 7  # v7: image-based + experimental metrics
+
+
+def _score_genome(render_static: bytes, render_swept: bytes | None,
+                  hist_static: bytes | None = None,
+                  hist_transform: bytes | None = None,
+                  render_size: int = 512,
+                  ) -> dict[str, float]:
+    """Compute all metrics from stored blobs."""
+    from .image_scorer import score_from_image
+    from .experimental_metrics import score_all
+
+    scores: dict[str, float] = {}
+
+    # Load static image
+    static_img = np.array(Image.open(io.BytesIO(render_static)))
+
+    # Image-based scoring (existing)
+    scores.update(score_from_image(static_img))
+
+    # Load swept image if available
+    swept_img = None
+    if render_swept:
+        swept_img = np.array(Image.open(io.BytesIO(render_swept)))
+
+    # Experimental metrics
+    scores.update(score_all(static_img, swept_img))
+
+    # Histogram-based scoring (if blobs stored)
+    if hist_static is not None:
+        from .genome import _score_from_histogram, _score_symmetry
+
+        raw = zlib.decompress(hist_static)
+        n_pixels = render_size * render_size
+        hit_grid = np.frombuffer(raw, dtype=np.uint32, count=n_pixels
+                                 ).reshape(render_size, render_size).astype(np.float64)
+        color_grid_raw = np.frombuffer(raw, dtype=np.uint32, offset=n_pixels * 4,
+                                       count=n_pixels
+                                       ).reshape(render_size, render_size)
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            color_grid = np.where(
+                hit_grid > 0,
+                color_grid_raw.astype(np.float64) / (hit_grid * 1_000_000.0),
+                0.0,
+            )
+
+        hist_scores = _score_from_histogram(hit_grid, color_grid)
+        sym_scores = _score_symmetry(hit_grid)
+        # Prefix to avoid collision with image-based scores
+        for k, v in hist_scores.items():
+            scores.setdefault(k, v)
+        scores.update(sym_scores)
+
+        # Cluster scoring
+        from .cluster_scorer import score_from_clusters
+        cl_scores = score_from_clusters(hit_grid, color_grid)
+        scores.update(cl_scores)
+
+    # Transform-based clustering (if stored)
+    if hist_static is not None and hist_transform is not None:
+        from .cluster_scorer import score_from_transform_hits
+
+        tf_raw = zlib.decompress(hist_transform)
+        # Determine n_transforms from blob size
+        n_total = len(tf_raw) // 4  # uint32
+        n_transforms = n_total // (render_size * render_size)
+        transform_hits = np.frombuffer(tf_raw, dtype=np.uint32
+                                       ).reshape(render_size, render_size, n_transforms)
+        tf_scores = score_from_transform_hits(hit_grid, transform_hits)
+        scores.update(tf_scores)
+
+    scores.setdefault('detail_sensitivity', 0.0)
+    return scores
+
+
+def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
+    """Entry point for the CPU score subprocess."""
+    logging.basicConfig(level=logging.DEBUG,
+                        format='%(asctime)s %(name)s %(levelname)s %(message)s',
+                        datefmt='%H:%M:%S')
+    log = logging.getLogger('flame_sheep.cpu_score_worker')
+
+    try:
+        os.nice(19)
+    except OSError:
+        pass
+
+    from .gpu_render_worker import RENDER_VERSION
+    from .storage import _ensure_schema
+
+    conn = sqlite3.connect(db_path)
+    conn.execute('PRAGMA busy_timeout=5000')
+    _ensure_schema(conn)
+
+    log.info('CPU score worker started')
+
+    try:
+        while not stop_event.is_set():
+            if os.getloadavg()[0] > BackgroundCpuScorer.LOAD_THRESHOLD:
+                stop_event.wait(BackgroundCpuScorer.LOAD_CHECK_INTERVAL)
+                continue
+
+            row = conn.execute(
+                '''SELECT id, render_static, render_swept,
+                          hist_static, hist_transform
+                   FROM genomes
+                   WHERE render_version >= ?
+                     AND (score_version IS NULL OR score_version < ?)
+                     AND render_static IS NOT NULL
+                   LIMIT 1''',
+                (RENDER_VERSION, SCORE_VERSION),
+            ).fetchone()
+
+            if row is None:
+                stop_event.wait(BackgroundCpuScorer.IDLE_CHECK_INTERVAL)
+                continue
+
+            gid = row[0]
+            render_static = row[1]
+            render_swept = row[2]
+            hist_static = row[3]
+            hist_transform = row[4]
+
+            try:
+                scores = _score_genome(render_static, render_swept,
+                                       hist_static, hist_transform)
+
+                # Build SET clause dynamically from available scores
+                score_cols = [
+                    'coverage', 'entropy', 'color_entropy', 'balance',
+                    'complexity', 'edge_sharpness', 'contour_coherence',
+                    'symmetry_max', 'rotational', 'reflective', 'radial',
+                    'periodic', 'fractal_dim', 'self_similarity',
+                    'detail_sensitivity',
+                    'img_coverage', 'img_structural_edges',
+                    'img_euclidean_edges', 'img_color_edges',
+                    'img_color_regions', 'img_color_coherence',
+                    'img_color_variety',
+                    'cl_coverage', 'cl_edge_sharpness', 'cl_symmetry_best',
+                    'cl_cluster_count', 'cl_dominance', 'cl_balance',
+                    'tf_coverage', 'tf_n_clusters', 'tf_avg_purity',
+                    'tf_symmetry_best', 'tf_balance', 'tf_separation',
+                    # Experimental
+                    'sw_rotational', 'sw_coverage',
+                    'freq_high_ratio', 'freq_peak_scale',
+                    'lacunarity', 'radial_slope', 'radial_r2',
+                    'compactness', 'bbox_aspect', 'filament_count',
+                    'contrast_ratio', 'angular_uniformity',
+                ]
+
+                set_parts = []
+                values = []
+                for col in score_cols:
+                    if col in scores:
+                        set_parts.append(f'{col}=?')
+                        values.append(scores[col])
+
+                set_parts.append('score_version=?')
+                values.append(SCORE_VERSION)
+                values.append(gid)
+
+                sql = f'UPDATE genomes SET {", ".join(set_parts)} WHERE id=?'
+                conn.execute(sql, values)
+                conn.commit()
+
+                log.debug(f'genome #{gid}  '
+                          f'img_cov={scores.get("img_coverage", 0):.3f}  '
+                          f'filaments={scores.get("filament_count", 0):.0f}  '
+                          f'sw_rot={scores.get("sw_rotational", 0):.3f}')
+
+            except Exception:
+                log.exception(f'failed to score genome #{gid}')
+                conn.execute(
+                    'UPDATE genomes SET score_version=? WHERE id=?',
+                    (SCORE_VERSION, gid),
+                )
+                conn.commit()
+
+    finally:
+        conn.close()
+
+
+class BackgroundCpuScorer:
+    """Load-aware background process that scores rendered genomes."""
+
+    LOAD_THRESHOLD = 6.0
+    LOAD_CHECK_INTERVAL = 10.0
+    IDLE_CHECK_INTERVAL = 10.0
+
+    def __init__(self, db_path: str):
+        self._db_path = db_path
+        self._process: multiprocessing.Process | None = None
+        self._stop = multiprocessing.Event()
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._process = multiprocessing.Process(
+            target=_score_main,
+            args=(self._db_path, self._stop),
+            daemon=True, name='cpu-scorer')
+        self._process.start()
+        log.info('CPU score worker started (pid=%d)', self._process.pid)
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._process is not None:
+            self._process.join(timeout=5.0)
+            if self._process.is_alive():
+                self._process.kill()
+            self._process = None
