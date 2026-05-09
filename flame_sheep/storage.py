@@ -131,6 +131,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                  'tf_symmetry_best', 'tf_balance', 'tf_separation'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} REAL')
+    for col in ('render_static', 'render_swept'):
+        if col not in existing:
+            conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} BLOB')
     if 'score_version' not in existing:
         conn.execute('ALTER TABLE genomes ADD COLUMN score_version INTEGER DEFAULT 0')
 
