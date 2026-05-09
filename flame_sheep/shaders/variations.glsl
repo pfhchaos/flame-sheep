@@ -796,9 +796,12 @@ vec2 var_rings_param(vec2 p, Polar pc, int slot) {
 vec2 var_fan_param(vec2 p, Polar pc, int slot) {
     float c = u_active_vars[slot + PARAM_OFFSET + 0];
     float f = u_active_vars[slot + PARAM_OFFSET + 1];
-    float t = 3.14159265 * c * c + 1e-6;
-    float th2 = (mod(pc.theta + f, 2.0*t) > t) ? pc.theta - t : pc.theta + t;
-    return pc.r_val * vec2(cos(th2), sin(th2));
+    float dx = 3.14159265 * c * c + 1e-6;
+    float dx2 = 0.5 * dx;
+    float a = pc.theta;
+    float fmod_val = (a + f) - dx * trunc((a + f) / dx);
+    a += (fmod_val > dx2) ? -dx2 : dx2;
+    return pc.r_val * vec2(cos(a), sin(a));
 }
 
 vec2 var_waves2(vec2 p, Polar pc, int slot) {
