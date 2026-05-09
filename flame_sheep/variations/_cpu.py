@@ -377,12 +377,10 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float,
         if abs(cy) < 1e-6:
             return w*x, w*10.0  # clamp
         return w*np.sin(x)/max(abs(cy), 1e-6), w*np.tan(y)
-    elif var_idx == 35: # cross — 1/(x²-y²)², blows up on diagonals
-        d = x*x - y*y
-        if abs(d) < 1e-6:
-            return w*x, w*y
-        s = 1.0 / (d*d + 1e-6)
-        return w*s*x, w*s*y
+    elif var_idx == 35: # cross — flam3: w * sqrt(1/(s²+eps)) * (x, y)
+        s = x*x - y*y
+        ri = w * np.sqrt(1.0 / (s*s + 1e-10))
+        return ri*x, ri*y
     elif var_idx == 32: # julian
         power = _current_var_params.get('julian_power', 2.0)
         dist = _current_var_params.get('julian_dist', 1.0)
@@ -506,13 +504,22 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float,
         else:
             a = np.arctan2(y, x) + out / denom
         return w*rr*np.cos(a), w*rr*np.sin(a)
-    elif var_idx == 58: # disc2
-        twist = _current_var_params.get('disc2_twist', 1.0)
-        ca = _current_var_params.get('disc2_cosadd', 0.0)
-        sa = _current_var_params.get('disc2_sinadd', 0.0)
-        t = twist * (x + y)
-        rv = np.arctan2(y, x) / np.pi
-        return w*(np.sin(t) + ca)*rv, w*(np.cos(t) + sa)*rv
+    elif var_idx == 58: # disc2 — flam3 precalc: timespi=rot*π, cosadd=cos(twist)-1, sinadd=sin(twist)
+        rot = _current_var_params.get('disc2_rot', 1.0)
+        twist = _current_var_params.get('disc2_twist', 0.5)
+        timespi = rot * np.pi
+        add = twist
+        sinadd = np.sin(add)
+        cosadd = np.cos(add) - 1.0
+        if add > 2*np.pi:
+            k = 1.0 + add - 2*np.pi
+            cosadd *= k; sinadd *= k
+        elif add < -2*np.pi:
+            k = 1.0 + add + 2*np.pi
+            cosadd *= k; sinadd *= k
+        t = timespi * (x + y)
+        rv = w * np.arctan2(x, y) / np.pi  # precalc_atan = atan2(tx,ty)
+        return (np.sin(t) + cosadd)*rv, (np.cos(t) + sinadd)*rv
     elif var_idx == 59: # flower
         holes = _current_var_params.get('flower_holes', 0.5)
         petals = _current_var_params.get('flower_petals', 6.0)

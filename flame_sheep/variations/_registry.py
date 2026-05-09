@@ -213,7 +213,7 @@ VAR_PARAMS_SPEC = {
     Variation.HYPERTILE:    ['hypertile_re', 'hypertile_im'],
     Variation.CELL:         ['cell_size'],
     Variation.WHORL:        ['whorl_inside', 'whorl_outside'],
-    Variation.DISC2:        ['disc2_twist', 'disc2_cosadd', 'disc2_sinadd'],
+    Variation.DISC2:        ['disc2_rot', 'disc2_twist'],
     Variation.FLOWER:       ['flower_holes', 'flower_petals'],
     Variation.COLLIDEOSCOPE: ['collide_a', 'collide_num'],
     Variation.AUGER:        ['auger_freq', 'auger_weight', 'auger_sym', 'auger_scale'],

@@ -217,9 +217,10 @@ vec2 var_tangent(vec2 p, Polar pc) {
 }
 
 vec2 var_cross(vec2 p, Polar pc) {
-    float d = p.x * p.x - p.y * p.y;
-    float s = 1.0 / max(d * d, 1e-6);
-    return s * p;
+    // flam3: r = sqrt(1 / (s² + EPS))
+    float s = p.x * p.x - p.y * p.y;
+    float r = sqrt(1.0 / (s * s + 1e-10));
+    return r * p;
 }
 
 vec2 var_butterfly(vec2 p, Polar pc) {
@@ -594,12 +595,22 @@ vec2 var_whorl(vec2 p, Polar pc, int slot) {
 }
 
 vec2 var_disc2(vec2 p, Polar pc, int slot) {
-    // Disc2 — parameterized disc mapping
-    float twist   = u_active_vars[slot + PARAM_OFFSET + 0];
-    float cosadd  = u_active_vars[slot + PARAM_OFFSET + 1];
-    float sinadd  = u_active_vars[slot + PARAM_OFFSET + 2];
-    float t = twist * (p.x + p.y);
-    float r_val = pc.phi / 3.14159265;
+    // Disc2 — flam3 precalc: timespi = rot*π, cosadd = cos(twist)-1
+    float rot   = u_active_vars[slot + PARAM_OFFSET + 0];
+    float twist = u_active_vars[slot + PARAM_OFFSET + 1];
+    float timespi = rot * 3.14159265;
+    float sinadd = sin(twist);
+    float cosadd = cos(twist) - 1.0;
+    if (twist > 6.28318530) {
+        float k = 1.0 + twist - 6.28318530;
+        cosadd *= k; sinadd *= k;
+    } else if (twist < -6.28318530) {
+        float k = 1.0 + twist + 6.28318530;
+        cosadd *= k; sinadd *= k;
+    }
+    float t = timespi * (p.x + p.y);
+    // flam3 uses precalc_atan = atan2(tx,ty) = atan(x,y)
+    float r_val = pc.theta / 3.14159265;
     return vec2((sin(t) + cosadd) * r_val,
                 (cos(t) + sinadd) * r_val);
 }
