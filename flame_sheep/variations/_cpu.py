@@ -285,10 +285,11 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float,
         a = np.arctan2(y, x)  # phi (standard atan2)
         rr = r * (np.sin(2.0*a) + 0.25*np.sin(6.0*a))
         return w*rr*np.cos(a), w*rr*np.sin(a)
-    elif var_idx == 36: # butterfly
-        w_factor = 1.3029400
-        ri = max(r, 1e-6)
-        return w*w_factor*y*(2.0*x/ri), w*w_factor*ri
+    elif var_idx == 36: # butterfly — flam3/JWildfire formula
+        wx = w * 1.3029400317411197908970256609023
+        y2 = y * 2.0
+        ri = wx * np.sqrt(abs(y * x) / (1e-10 + x*x + y2*y2))
+        return ri * x, ri * y2
     elif var_idx == 37: # curl
         c1 = _current_var_params.get('curl_c1', 0.5)
         c2 = _current_var_params.get('curl_c2', 0.0)

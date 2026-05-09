@@ -223,8 +223,11 @@ vec2 var_cross(vec2 p, Polar pc) {
 }
 
 vec2 var_butterfly(vec2 p, Polar pc) {
-    float w = 1.3029400;
-    return w * vec2(p.y * (2.0 * p.x / max(pc.r_val, 1e-6)), pc.r_val);
+    // flam3: wx * sqrt(|y*x| / (eps + x² + (2y)²))
+    float wx = 1.3029400317;
+    float y2 = p.y * 2.0;
+    float r = wx * sqrt(abs(p.y * p.x) / (1e-10 + p.x * p.x + y2 * y2));
+    return vec2(r * p.x, r * y2);
 }
 
 vec2 var_curl(vec2 p, Polar pc, int slot) {
