@@ -26,13 +26,26 @@ from flame_sheep.symmetry import symmetry_scores
 
 GOLDEN_DIR = Path(__file__).resolve().parent.parent / 'tests' / 'golden'
 
-# Fixed test points for transform verification
+# Fixed test points for transform verification.
+# Chosen to exercise conditional branches in variations:
+#   - All four quadrants (bent, bent2, separation sign checks)
+#   - Inside and outside unit circle (loonie, whorl, flipcircle)
+#   - Near grid boundaries (rectangles, cell, modulus, checks)
+#   - Near origin (spherical, spiral, scry singularities)
+#   - Large radius (exponential blowup guards)
 TEST_POINTS = [
-    (1.0, 0.5),
-    (0.0, 0.0),
-    (-0.3, 0.7),
-    (0.5, -0.5),
-    (2.0, 1.0),
+    ( 1.0,   0.5),    # Q1, r>1
+    ( 0.0,   0.0),    # origin — degenerate/EPS guards
+    (-0.3,   0.7),    # Q2
+    ( 0.5,  -0.5),    # Q4, r≈0.71 (inside unit circle)
+    ( 2.0,   1.0),    # Q1, large r
+    (-0.8,  -0.4),    # Q3 (both negative — bent/bent2 branch)
+    ( 0.05,  0.03),   # near origin but nonzero (singularity probes)
+    ( 0.95,  0.31),   # r≈1.0 from inside (loonie/whorl boundary)
+    ( 1.05,  0.31),   # r≈1.0 from outside
+    ( 0.49,  0.49),   # grid boundary (floor transitions)
+    ( 0.51,  0.51),   # grid boundary other side
+    (-1.5,   0.8),    # Q2, large negative x
 ]
 
 # Fixed affine for affine-reading variations (15/17/21/22)
@@ -68,29 +81,94 @@ PARAM_FIXTURES = {
     Variation.SATTRACTOR: {'sat_m': 6.0},
     Variation.WALLPAPER: {'wallpaper_group': 0.0},
     Variation.FRIEZE: {'frieze_group': 0.0},
+    # batch 2 parametric variations
+    Variation.RADIAL_BLUR: {'radial_blur_angle': 0.5},
+    Variation.PERSPECTIVE: {'perspective_angle': 0.8, 'perspective_dist': 2.0},
+    Variation.SUPER_SHAPE: {'super_shape_rnd': 0.3, 'super_shape_m': 4.0,
+                            'super_shape_n1': 2.0, 'super_shape_n2': 2.0,
+                            'super_shape_n3': 2.0, 'super_shape_holes': 0.0},
+    Variation.PIE: {'pie_slices': 6.0, 'pie_rotation': 0.0, 'pie_thickness': 0.5},
+    Variation.PARABOLA: {'parabola_height': 1.0, 'parabola_width': 1.0},
+    Variation.CONIC: {'conic_eccentricity': 1.0, 'conic_holes': 0.0},
+    Variation.ESCHER: {'escher_beta': 0.3},
+    Variation.OSCILLOSCOPE: {'osc_separation': 1.0, 'osc_frequency': 3.14159,
+                             'osc_amplitude': 1.0, 'osc_damping': 0.1},
+    Variation.CURVE: {'curve_xamp': 0.5, 'curve_yamp': 0.3,
+                      'curve_xlength': 1.0, 'curve_ylength': 1.0},
+    Variation.WEDGE_JULIA: {'wedge_julia_angle': 0.3, 'wedge_julia_count': 2.0,
+                            'wedge_julia_power': 4.0, 'wedge_julia_dist': 1.0},
+    Variation.WEDGE: {'wedge_angle': 0.3, 'wedge_hole': 0.0,
+                      'wedge_count': 2.0, 'wedge_swirl': 0.5},
+    Variation.WEDGE_SPH: {'wedge_sph_angle': 0.3, 'wedge_sph_hole': 0.0,
+                          'wedge_sph_count': 2.0, 'wedge_sph_swirl': 0.5},
+    Variation.LAZYSUSAN: {'lazysusan_x': 0.1, 'lazysusan_y': 0.1,
+                          'lazysusan_spin': 0.5, 'lazysusan_space': 0.2,
+                          'lazysusan_twist': 0.3},
+    Variation.MODULUS_FUNC: {'modulus_x': 0.5, 'modulus_y': 0.5},
+    Variation.BENT2: {'bent2_x': 1.5, 'bent2_y': -0.5},
+    Variation.BIPOLAR: {'bipolar_shift': 0.3},
+    Variation.FLUX: {'flux_spread': 0.5},
+    Variation.SPLIT: {'split_xsize': 0.5, 'split_ysize': 0.5},
+    Variation.SEPARATION: {'separation_x': 0.5, 'separation_y': 0.5,
+                           'separation_xinside': 0.2, 'separation_yinside': 0.3},
+    Variation.POPCORN2: {'popcorn2_x': 0.1, 'popcorn2_y': 0.1, 'popcorn2_c': 3.0},
 }
 
-# Variations that use randomness internally (sattractor, wallpaper, frieze)
-# — set a fixed seed for determinism
+# Variations that use randomness internally
 RANDOM_VARIATIONS = {Variation.JULIA, Variation.SATTRACTOR, Variation.WALLPAPER,
                      Variation.FRIEZE, Variation.JULIAN, Variation.JULIASCOPE,
-                     Variation.ICON, Variation.CPOW}
+                     Variation.ICON, Variation.CPOW,
+                     # batch 2 RNG variations
+                     Variation.BLUR, Variation.GAUSSIAN_BLUR, Variation.RADIAL_BLUR,
+                     Variation.NOISE, Variation.PIE, Variation.ARCH, Variation.PARABOLA,
+                     Variation.RAYS, Variation.CONIC, Variation.SQUARE,
+                     Variation.TWINTRIAN, Variation.SUPER_SHAPE,
+                     Variation.WEDGE_JULIA, Variation.BLADE, Variation.FLOWER,
+                     Variation.LISSAJOUS, Variation.EPISPIRAL, Variation.BOARDERS}
+
+
+def _get_var_points():
+    """Import per-variation test point sets from test_gpu_golden.py."""
+    try:
+        # Import the point sets used by the GPU golden tests
+        import sys
+        test_dir = str(Path(__file__).resolve().parent.parent / 'tests')
+        if test_dir not in sys.path:
+            sys.path.insert(0, test_dir)
+        from test_gpu_golden import VAR_POINTS, BASE_POINTS
+        return VAR_POINTS, BASE_POINTS
+    except ImportError:
+        return {}, TEST_POINTS
 
 
 def generate_transform_golden():
-    """Generate golden master for all CPU variations."""
+    """Generate golden master for all CPU variations.
+
+    Uses per-variation test points from test_gpu_golden.py where available,
+    plus the generic TEST_POINTS as baseline. This ensures golden masters
+    cover the same edge cases used for GPU/CPU comparison.
+    """
+    VAR_POINTS, BASE_POINTS = _get_var_points()
+
     data = {}
     for var_idx in range(NUM_VARIATIONS):
-        # Set params for parametric variations
         params = PARAM_FIXTURES.get(var_idx, {})
         cpu_mod._current_var_params = params
-
-        # Affine-reading variations need a test affine
         affine = TEST_AFFINE if var_idx in AFFINE_VARIATIONS else None
 
-        for px, py in TEST_POINTS:
+        # Use variation-specific points if available, plus generic
+        points = list(TEST_POINTS)
+        if var_idx in VAR_POINTS:
+            # Add variation-specific points, deduplicating
+            existing = set(points)
+            for pt in VAR_POINTS[var_idx]:
+                if pt not in existing:
+                    points.append(pt)
+                    existing.add(pt)
+
+        for px, py in points:
             if var_idx in RANDOM_VARIATIONS:
-                np.random.seed(42)  # deterministic for random-branch variations
+                np.random.seed(42)
             rx, ry = apply_variation_cpu(var_idx, px, py, 1.0, affine)
             key = f'v{var_idx}_{px}_{py}'
             data[key] = np.array([rx, ry], dtype=np.float64)
