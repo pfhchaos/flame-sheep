@@ -122,6 +122,10 @@ class FlameRenderer:
         self.reduce_max_shader = self.ctx.compute_shader(
             (SHADER_DIR / 'reduce_max.comp').read_text()
         )
+        self.tonemap_flam3_program = self.ctx.program(
+            vertex_shader   = (SHADER_DIR / 'tonemap.vert').read_text(),
+            fragment_shader = (SHADER_DIR / 'tonemap_flam3.frag').read_text(),
+        )
 
     def _create_resources(self) -> None:
         w, h = self.canvas_w, self.canvas_h
@@ -263,6 +267,7 @@ class FlameRenderer:
         cs['u_height']       = self.canvas_h
         cs['u_has_final_xform'] = 1 if has_final else 0
 
+        self._last_zoom = genome.zoom
         self.palette_tex.write(genome.palette.tobytes())
 
     def set_skew(self, angle_deg: float = 0.0) -> None:
@@ -798,6 +803,81 @@ class FlameRenderer:
         data = fbo.read(components=4)
         img = np.frombuffer(data, dtype=np.uint8).reshape(h, w, 4)
         img = img[::-1].copy()  # flip Y (OpenGL origin is bottom-left)
+
+        fbo.release()
+        fbo_tex.release()
+
+        buf = io.BytesIO()
+        Image.fromarray(img, 'RGBA').save(buf, format='PNG', optimize=True)
+        return buf.getvalue()
+
+    def snapshot_flam3_png(self, brightness: float = 4.0, gamma: float = 4.0,
+                           vibrancy: float = 1.0, contrast: float = 1.0,
+                           sample_density: float = 1.0,
+                           highlight_power: float = -1.0) -> bytes:
+        """Tonemap using flam3-accurate pipeline and return as PNG bytes.
+
+        Uses absolute brightness scaling (k1/k2) and pow(density, 1/gamma)
+        gamma correction, matching flam3's rendering math.
+
+        Args:
+            brightness: flam3 brightness parameter (typically 2-100)
+            gamma: flam3 gamma parameter (typically 1-5)
+            vibrancy: color saturation blend (0=grayscale, 1=full color)
+            contrast: flam3 contrast parameter (typically 1.0)
+            sample_density: total samples per pixel (for k2 normalization)
+            highlight_power: hue preservation power (-1 = disabled)
+        """
+        import io
+        from PIL import Image
+
+        w, h = self.canvas_w, self.canvas_h
+
+        # Compute k1 and k2 matching flam3's rect.c
+        # k1 = contrast * brightness * PREFILTER_WHITE * 268 / 256
+        # k2 = oversample² * nbatches / (contrast * area * WHITE_LEVEL * sample_density * sumfilt)
+        #
+        # area = image_w * image_h / (ppux * ppuy) — world-space area of viewport
+        # For us: viewport spans (-1/zoom, 1/zoom) in each axis, so:
+        #   world_area = (2/zoom)² = 4/zoom²
+        # ppux = ppuy = zoom * w/2, so area = w*h / (zoom*w/2)² = 4/zoom²
+        # oversample=1, nbatches=1, sumfilt=1 for our simple case
+        k1 = contrast * brightness * 255.0 * 268.0 / 256.0
+        area = 4.0 / max(self._last_zoom ** 2, 1e-10) if hasattr(self, '_last_zoom') else 4.0
+        k2 = 1.0 / max(contrast * area * 255.0 * max(sample_density, 0.01), 1e-10)
+
+        fbo_tex = self.ctx.texture((w, h), components=4, dtype='f1')
+        fbo = self.ctx.framebuffer(color_attachments=[fbo_tex])
+        fbo.use()
+        self.ctx.viewport = (0, 0, w, h)
+
+        self.palette_tex.use(location=0)
+
+        p = self.tonemap_flam3_program
+        p['u_palette']       = 0
+        p['u_width']         = w
+        p['u_height']        = h
+        p['u_viewport_x']    = 0
+        p['u_viewport_y']    = 0
+        p['u_viewport_w']    = w
+        p['u_viewport_h']    = h
+        p['u_surface_w']     = w
+        p['u_surface_h']     = h
+        p['u_k1']            = float(k1)
+        p['u_k2']            = float(k2)
+        p['u_gamma']         = 1.0 / max(gamma, 0.01)  # pre-invert for shader
+        p['u_vibrancy']      = float(vibrancy)
+        # These may be optimized out by the compiler
+        if 'u_lin_thresh' in p:
+            p['u_lin_thresh']    = 0.01
+        if 'u_highlight_power' in p:
+            p['u_highlight_power'] = float(highlight_power)
+
+        self.quad_vao.render(moderngl.TRIANGLES)
+
+        data = fbo.read(components=4)
+        img = np.frombuffer(data, dtype=np.uint8).reshape(h, w, 4)
+        img = img[::-1].copy()
 
         fbo.release()
         fbo_tex.release()
