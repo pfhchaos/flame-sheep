@@ -110,16 +110,20 @@ def render_genome(genome, renderer, ctx,
     from flame_sheep_audio import N_BINS
     renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
 
+    renderer.clear_histogram()
     for _ in range(n_frames):
-        renderer.clear_histogram()
         renderer.dispatch_chaos_game(iterations=N_ITERS)
         ctx.memory_barrier()
 
-    # Our tonemap uses pow(alpha, 1/brightness) — higher = brighter.
-    # flam3 uses pow(density, gamma) where gamma ~4 darkens.
-    # For training images, use a fixed high value to reveal structure.
-    brightness = 8.0
-    static_png = renderer.snapshot_png(brightness=brightness)
+    # Use flam3-accurate tonemapping with the sheep's own parameters
+    flam3_brightness = getattr(genome, '_flam3_brightness', 4.0)
+    flam3_gamma = getattr(genome, '_flam3_gamma', 4.0)
+    # sample_density: total samples accumulated per pixel
+    total_samples = 65536 * N_ITERS * n_frames  # walkers * iters * frames
+    sample_density = total_samples / (renderer.canvas_w * renderer.canvas_h)
+    static_png = renderer.snapshot_flam3_png(
+        brightness=flam3_brightness, gamma=flam3_gamma,
+        sample_density=sample_density)
 
     # --- Swept render (rotation-accumulated) ---
     renderer.upload_genome(genome)
@@ -135,7 +139,9 @@ def render_genome(genome, renderer, ctx,
         ctx.memory_barrier()
     renderer.set_rotation(base_rotation)
 
-    swept_png = renderer.snapshot_png(brightness=brightness)
+    swept_png = renderer.snapshot_flam3_png(
+        brightness=flam3_brightness, gamma=flam3_gamma,
+        sample_density=sample_density)
 
     return static_png, swept_png
 
