@@ -64,11 +64,14 @@ void main() {
     bool on_bottom_edge = float(u_viewport_y + u_viewport_h) - cy < 3.0;
     bool on_edge = on_left_edge || on_right_edge || on_top_edge || on_bottom_edge;
 
-    // Background color — subtle quadrant tint
-    vec3 bg = vec3(0.05);
-    bg.r += nx * 0.08;          // red increases left to right
-    bg.b += (1.0 - nx) * 0.08;  // blue increases right to left
-    bg.g += ny * 0.05;          // green increases top to bottom
+    // Background color — obvious per-third tinting
+    vec3 bg;
+    if (nx < 0.333)
+        bg = vec3(0.15, 0.0, 0.0);    // left third: RED
+    else if (nx < 0.666)
+        bg = vec3(0.0, 0.12, 0.0);    // center third: GREEN
+    else
+        bg = vec3(0.0, 0.0, 0.15);    // right third: BLUE
 
     // Compose
     vec3 color = bg;
