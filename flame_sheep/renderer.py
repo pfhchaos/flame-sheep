@@ -126,6 +126,8 @@ class FlameRenderer:
             vertex_shader   = (SHADER_DIR / 'tonemap.vert').read_text(),
             fragment_shader = (SHADER_DIR / 'test_pattern.frag').read_text(),
         )
+        # Deferred — VAO created after quad_vbo exists
+        self._test_pattern_vao = None
         self.de_shader = self.ctx.compute_shader(
             (SHADER_DIR / 'density_estimation.comp').read_text()
         )
@@ -420,6 +422,12 @@ class FlameRenderer:
         Uses the same vertex shader (with skew) as the tonemap, so
         perspective correction and viewport slicing are identical.
         """
+        if self._test_pattern_vao is None:
+            self._test_pattern_vao = self.ctx.vertex_array(
+                self.test_pattern_program,
+                [(self.quad_vbo, '2f', 'in_pos')],
+            )
+
         _bind_default_framebuffer()
         self.ctx.viewport = (0, 0, surface_w, surface_h)
 
@@ -440,7 +448,7 @@ class FlameRenderer:
         if 'u_ppmm' in p:
             p['u_ppmm']   = getattr(self, '_ppmm', 1.0)
 
-        self.quad_vao.render(moderngl.TRIANGLES)
+        self._test_pattern_vao.render(moderngl.TRIANGLES)
 
     def set_ppmm(self, ppmm: float) -> None:
         """Set canvas pixels per millimeter (for test pattern physical grid)."""
