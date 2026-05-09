@@ -386,6 +386,7 @@ def _get_output_layout() -> dict[str, dict]:
             info['y'] = y
             info['phys_w_mm'] = phys_w
             info['phys_h_mm'] = phys_h
+            info['transform'] = transform
 
         def _on_mode(output, flags, width, height, refresh):
             if flags & 0x1:  # WL_OUTPUT_MODE_CURRENT
@@ -450,6 +451,12 @@ def _get_output_layout() -> dict[str, dict]:
             ppi = diag_px / diag_inches
             phys_w_mm = w / ppi * 25.4
             phys_h_mm = h / ppi * 25.4
+
+        # Account for rotation: swap physical w/h if transform is 90 or 270
+        transform = info.get('transform', 0)
+        if transform in (1, 3, 6, 7):  # 90°, 270°, flipped variants
+            phys_w_mm, phys_h_mm = phys_h_mm, phys_w_mm
+            w, h = h, w  # swap pixel dimensions to match physical
 
         result[name] = {
             'x': x, 'y': y,
