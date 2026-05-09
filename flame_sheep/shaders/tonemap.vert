@@ -35,7 +35,7 @@ void main() {
         // contribution during perspective division (pos/W).
         float t = in_pos.x * 0.5 + 0.5;  // 0 = left, 1 = right
         // W > 1 on the far side compresses, W < 1 on near side expands
-        float w = 1.0 - u_skew * (t - 0.5);
+        float w = 1.0 + u_skew * (t - 0.5);
 
         // Multiply UV by W so perspective division recovers correct UVs
         v_uv = v_uv * w;
