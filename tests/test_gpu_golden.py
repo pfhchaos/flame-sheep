@@ -31,6 +31,22 @@ from flame_sheep.variations._registry import VAR_PARAMS_SPEC, SLOT_SIZE
 from flame_sheep.genome import MAX_ACTIVE_VARS
 import flame_sheep.variations._cpu as cpu_mod
 
+# Import shared fixtures — these are the canonical source of truth.
+# The inline copies below are kept for backward compat but should match.
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent))
+from variation_fixtures import (
+    BASE_POINTS as _BASE_POINTS,
+    VAR_POINTS as _VAR_POINTS,
+    TEST_AFFINE as _TEST_AFFINE,
+    AFFINE_VARIATIONS as _AFFINE_VARIATIONS,
+    RANDOM_VARIATIONS as _RANDOM_VARIATIONS,
+    VAR_PARAM_SETS as _VAR_PARAM_SETS,
+)
+
+# Override inline copies with shared fixtures
+BASE_POINTS = _BASE_POINTS
+
 SHADER_DIR = Path(__file__).parent.parent / 'flame_sheep' / 'shaders'
 
 # ---------------------------------------------------------------------------
@@ -499,6 +515,13 @@ for _name in dir(Variation):
         VAR_NAMES[_val] = _name
 
 MAX_PARAMS_PER_VAR = SLOT_SIZE - 2
+
+# Override inline copies with shared fixtures
+VAR_POINTS = _VAR_POINTS
+TEST_AFFINE = _TEST_AFFINE
+AFFINE_VARIATIONS = _AFFINE_VARIATIONS
+RANDOM_VARIATIONS = _RANDOM_VARIATIONS
+VAR_PARAM_SETS = _VAR_PARAM_SETS
 
 # ---------------------------------------------------------------------------
 # Build parametrized test cases: (var_idx, param_set_name) pairs

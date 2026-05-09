@@ -24,6 +24,13 @@ from flame_sheep.variations._cpu import _current_var_params
 import flame_sheep.variations._cpu as cpu_mod
 from flame_sheep.symmetry import symmetry_scores
 
+# Add tests/ to path for shared fixtures
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tests'))
+from variation_fixtures import (
+    GOLDEN_POINTS, TEST_AFFINE, AFFINE_VARIATIONS, RANDOM_VARIATIONS,
+    PARAM_FIXTURES, VAR_POINTS as EXTRA_VAR_POINTS,
+)
+
 GOLDEN_DIR = Path(__file__).resolve().parent.parent / 'tests' / 'golden'
 
 # Fixed test points for transform verification.
@@ -127,29 +134,13 @@ RANDOM_VARIATIONS = {Variation.JULIA, Variation.SATTRACTOR, Variation.WALLPAPER,
                      Variation.LISSAJOUS, Variation.EPISPIRAL, Variation.BOARDERS}
 
 
-def _get_var_points():
-    """Import per-variation test point sets from test_gpu_golden.py."""
-    try:
-        # Import the point sets used by the GPU golden tests
-        import sys
-        test_dir = str(Path(__file__).resolve().parent.parent / 'tests')
-        if test_dir not in sys.path:
-            sys.path.insert(0, test_dir)
-        from test_gpu_golden import VAR_POINTS, BASE_POINTS
-        return VAR_POINTS, BASE_POINTS
-    except ImportError:
-        return {}, TEST_POINTS
-
-
 def generate_transform_golden():
     """Generate golden master for all CPU variations.
 
-    Uses per-variation test points from test_gpu_golden.py where available,
-    plus the generic TEST_POINTS as baseline. This ensures golden masters
+    Uses GOLDEN_POINTS as baseline plus per-variation edge case points
+    from variation_fixtures.VAR_POINTS. This ensures golden masters
     cover the same edge cases used for GPU/CPU comparison.
     """
-    VAR_POINTS, BASE_POINTS = _get_var_points()
-
     data = {}
     for var_idx in range(NUM_VARIATIONS):
         params = PARAM_FIXTURES.get(var_idx, {})
@@ -157,11 +148,10 @@ def generate_transform_golden():
         affine = TEST_AFFINE if var_idx in AFFINE_VARIATIONS else None
 
         # Use variation-specific points if available, plus generic
-        points = list(TEST_POINTS)
-        if var_idx in VAR_POINTS:
-            # Add variation-specific points, deduplicating
+        points = list(GOLDEN_POINTS)
+        if var_idx in EXTRA_VAR_POINTS:
             existing = set(points)
-            for pt in VAR_POINTS[var_idx]:
+            for pt in EXTRA_VAR_POINTS[var_idx]:
                 if pt not in existing:
                     points.append(pt)
                     existing.add(pt)
