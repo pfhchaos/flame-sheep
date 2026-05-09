@@ -17,10 +17,17 @@ from flame_sheep.variations import (
 import flame_sheep.variations._cpu as cpu_mod
 from flame_sheep.symmetry import symmetry_scores
 
+import sys
+sys.path.insert(0, str(Path(__file__).parent))
+from variation_fixtures import (
+    GOLDEN_POINTS as TEST_POINTS,
+    TEST_AFFINE, AFFINE_VARIATIONS, RANDOM_VARIATIONS, PARAM_FIXTURES,
+)
+
 GOLDEN_DIR = Path(__file__).parent / 'golden'
 
-# Same fixtures as the generator — must match exactly
-TEST_POINTS = [
+# Legacy — inline copies removed, now imported from variation_fixtures
+_UNUSED_TEST_POINTS = [
     ( 1.0,   0.5),
     ( 0.0,   0.0),
     (-0.3,   0.7),
