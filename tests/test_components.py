@@ -300,8 +300,9 @@ class TestBrightnessAxisUnit:
         assert axis.brightness == pytest.approx(12.0)
 
     def test_mid_rms_between_floor_and_ceiling(self):
-        axis = BrightnessAxis(role=_default_role, floor=0.7, ceiling=12.0, rms_scale=0.01)
-        axis.tick(_audio(harmonic_rms=0.005), 1/60, 0.0)
+        axis = BrightnessAxis(role=_default_role, floor=0.7, ceiling=12.0,
+                              rms_scale=0.23, noise_floor=0.05)
+        axis.tick(_audio(harmonic_rms=0.15), 1/60, 0.0)
         assert 0.7 < axis.brightness < 12.0
 
 

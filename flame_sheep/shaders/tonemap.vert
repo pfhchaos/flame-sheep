@@ -18,12 +18,29 @@ in vec2 in_pos;
 // Passed to fragment shader — interpolated automatically across the quad
 out vec2 v_uv;
 
+// Perspective correction for angled side monitors.
+// Skews UV sampling to simulate viewing the canvas from an angle.
+// skew_amount: 0 = head-on, positive = viewer is to the left,
+// negative = viewer is to the right.
+uniform float u_skew = 0.0;
+
 void main() {
-    // Pass position straight through to rasterizer.
-    // z=0 (flat), w=1 (no perspective divide needed).
     gl_Position = vec4(in_pos, 0.0, 1.0);
 
-    // Convert clip-space (-1..1) to UV (0..1)
-    // Same as: uv = (pos + 1) / 2
-    v_uv = in_pos * 0.5 + 0.5;
+    // Base UV
+    vec2 uv = in_pos * 0.5 + 0.5;
+
+    // Perspective foreshortening: the far edge (away from viewer)
+    // should sample a narrower slice of the canvas.
+    // u_skew controls which side is "far": positive = right side far.
+    // We compress the UV range on the far side.
+    if (u_skew != 0.0) {
+        // t goes 0..1 across the screen (left to right)
+        float t = uv.x;
+        // Perspective: far side compresses toward center
+        float perspective = 1.0 + u_skew * (t - 0.5);
+        uv.y = 0.5 + (uv.y - 0.5) / max(perspective, 0.1);
+    }
+
+    v_uv = uv;
 }

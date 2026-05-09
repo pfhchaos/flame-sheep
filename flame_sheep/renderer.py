@@ -199,6 +199,9 @@ class FlameRenderer:
         self._blur_fbos = {}
         self.blur_radius = 1.0  # adjustable blur strength
 
+        # Per-surface skew amount (0 = head-on)
+        self._skew = 0.0
+
         # Temporal blend — per-surface previous frame FBOs
         self._temporal_fbos: dict[tuple[int, int], tuple] = {}
         self.temporal_decay = 0.0  # per-second decay rate (0=off, 0.5=gentle, 0.9=heavy trails)
@@ -246,6 +249,16 @@ class FlameRenderer:
         cs['u_height']       = self.canvas_h
 
         self.palette_tex.write(genome.palette.tobytes())
+
+    def set_skew(self, angle_deg: float = 0.0) -> None:
+        """Set perspective skew for angled monitors.
+
+        angle_deg: physical angle of the monitor relative to viewer.
+        Positive = angled away on right, negative = angled away on left.
+        0 = facing viewer directly.
+        """
+        import math
+        self._skew = math.tan(math.radians(angle_deg)) * 0.5 if abs(angle_deg) > 0.1 else 0.0
 
     def set_rotation(self, angle: float) -> None:
         """Update only the rotation uniforms (no genome re-upload)."""
@@ -354,6 +367,12 @@ class FlameRenderer:
             # blend (output of mix → becomes new accum next frame)
             (accum_fbo, accum_tex), (current_fbo, current_tex), (blend_fbo, blend_tex) = \
                 self._get_temporal_fbos(surface_w, surface_h)
+
+        # Set skew for angled monitors
+        try:
+            self.tonemap_program['u_skew'] = self._skew
+        except KeyError:
+            pass  # uniform optimized out when always 0
 
         if self.blur_radius <= 0:
             # No spatial blur — tonemap directly
