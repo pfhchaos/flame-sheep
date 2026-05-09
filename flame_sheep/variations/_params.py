@@ -281,9 +281,8 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
 
     elif var_idx == Variation.DISC2:
         return {
-            'disc2_twist': float(rng.uniform(0.5, 3.0)),
-            'disc2_cosadd': float(rng.uniform(-0.5, 0.5)),
-            'disc2_sinadd': float(rng.uniform(-0.5, 0.5)),
+            'disc2_rot': float(rng.uniform(0.5, 3.0)),
+            'disc2_twist': float(rng.uniform(-1.0, 1.0)),
         }
 
     elif var_idx == Variation.FLOWER:
@@ -469,7 +468,7 @@ _PARAM_RANGES: dict[str, tuple[float, float]] = {
     'hypertile_re': (-0.8, 0.8), 'hypertile_im': (-0.8, 0.8),
     'cell_size': (0.5, 2.5),
     'whorl_inside': (-1.0, 1.0), 'whorl_outside': (-1.0, 1.0),
-    'disc2_twist': (0.5, 3.0), 'disc2_cosadd': (-0.5, 0.5), 'disc2_sinadd': (-0.5, 0.5),
+    'disc2_rot': (0.5, 3.0), 'disc2_twist': (-1.0, 1.0),
     'flower_holes': (0.0, 1.0), 'flower_petals': (3.0, 11.0),
     'collide_a': (0.0, 2.0), 'collide_num': (2.0, 9.0),
     'auger_freq': (1.0, 8.0), 'auger_weight': (0.1, 1.0),
