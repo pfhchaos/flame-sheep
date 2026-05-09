@@ -184,8 +184,18 @@ VAR_POINTS: dict[int, list[tuple[float, float]]] = {
     Variation.BIPOLAR:      _SAFE,
 
     # --- Wedge variations ---
-    Variation.WEDGE:        _SAFE + _ANGLE_SECTORS,
-    Variation.WEDGE_SPH:    _SAFE + _ANGLE_SECTORS,
+    # WEDGE/WEDGE_SPH: floor() at exact integer when count*atan2=k*pi
+    # (0.1,0.1) → atan2=π/4, with count=4 gives floor boundary
+    Variation.WEDGE:        [
+        (1.0, 0.5), (-0.3, 0.7), (0.5, -0.5), (2.0, 1.0),
+        (-1.0, -1.0), (0.12, 0.1), (0.8, -0.2), (-0.5, 0.3),
+        (1.5, -0.8), (0.3, 1.2), (-0.7, -0.4), (0.95, 0.05),
+    ] + _ANGLE_SECTORS,
+    Variation.WEDGE_SPH:    [
+        (1.0, 0.5), (-0.3, 0.7), (0.5, -0.5), (2.0, 1.0),
+        (-1.0, -1.0), (0.12, 0.1), (0.8, -0.2), (-0.5, 0.3),
+        (1.5, -0.8), (0.3, 1.2), (-0.7, -0.4), (0.95, 0.05),
+    ] + _ANGLE_SECTORS,
 
     # --- Lazysusan — inside vs outside radius ---
     Variation.LAZYSUSAN:    _SAFE + _UNIT_CIRCLE,

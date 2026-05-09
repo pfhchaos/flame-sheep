@@ -315,7 +315,7 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float,
         else:
             return w*x, w*(y + cy)
     elif var_idx == 40: # hex_modulus
-        size = _current_var_params.get('hex_modulus_size', 1.0)
+        size = _current_var_params.get('hex_size', 1.0)
         hsize = 0.86602540 / max(size, 1e-6)
         weight = 1.0 / 0.86602540
         hx = 0.57735027*x*hsize - y*hsize/3.0
