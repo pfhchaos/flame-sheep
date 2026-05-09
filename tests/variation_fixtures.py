@@ -133,13 +133,24 @@ VAR_POINTS: dict[int, list[tuple[float, float]]] = {
     Variation.HYPERTILE:    BASE_POINTS + _NEAR_ZERO,
     Variation.MOBIUS:        BASE_POINTS + _NEAR_ZERO,
 
-    # --- Float precision boundary avoidance ---
-    # SPLIT: cos(val*π) = 0 when val is half-integer → sign ambiguous f32 vs f64
-    # Nudge points where x*xsize or y*ysize could be half-integer for any test param set
-    Variation.SPLIT:        [(x + 0.013, y + 0.013) for x, y in BASE_POINTS],
-    # FOCI: near-singularity when exp(x)+exp(-x) ≈ cos(y) near origin
-    Variation.FOCI:         [(x, y) for x, y in BASE_POINTS
-                             if not (abs(x) < 0.15 and abs(y) < 0.15)],
+    # --- Points avoiding float precision boundaries ---
+    # SPLIT: cos(val*π)=0 at half-integers → f32/f64 sign ambiguity.
+    # Avoid x or y where x*xsize or y*ysize is half-integer for any test param.
+    # Test xsize values: 0.5, 2.0. Test ysize values: 0.5, 3.0.
+    # Bad y: ±0.5 (with ysize=3.0 → cos(1.5π)=0), ±1.0 (with ysize=0.5 → cos(0.5π)=0)
+    Variation.SPLIT:        [
+        (1.1, 0.4), (-0.3, 0.7), (0.6, -0.6), (2.0, 0.9),
+        (-1.1, -1.1), (0.1, 0.1), (0.8, -0.2), (-0.4, 0.3),
+        (1.4, -0.8), (0.3, 1.2), (-0.7, -0.4), (0.95, 0.05),
+        (1.05, 0.05), (0.6, 0.1), (1.7, -1.3), (0.37, 0.83),
+    ],
+    # FOCI: division-by-near-zero when exp(x)+exp(-x) ≈ cos(y) near origin
+    Variation.FOCI:         [
+        (1.0, 0.5), (-0.3, 0.7), (0.5, -0.5), (2.0, 1.0),
+        (-1.0, -1.0), (0.8, -0.2), (-0.5, 0.3),
+        (1.5, -0.8), (0.3, 1.2), (-0.7, -0.4),
+        (0.95, 0.05), (1.05, 0.05), (3.0, -2.0), (0.5, 0.0),
+    ],
 }
 
 # ---------------------------------------------------------------------------
