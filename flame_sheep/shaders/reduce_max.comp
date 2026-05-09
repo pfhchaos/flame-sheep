@@ -1,0 +1,42 @@
+#version 430 core
+// Parallel reduction to find max hit count in the histogram.
+// Output: single uint in the max_buf SSBO.
+// Run with ceil(n_pixels / 256) workgroups.
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly buffer Histogram {
+    uint histogram[];
+};
+
+layout(std430, binding = 8) buffer MaxBuf {
+    uint max_hits;
+};
+
+uniform int u_n_pixels;  // width * height (hit_count portion only)
+
+shared uint smax[256];
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint lid = gl_LocalInvocationID.x;
+
+    // Each thread loads one value (or 0 if out of bounds)
+    smax[lid] = (gid < uint(u_n_pixels)) ? histogram[gid] : 0u;
+
+    memoryBarrierShared();
+    barrier();
+
+    // Reduction in shared memory
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (lid < s) {
+            smax[lid] = max(smax[lid], smax[lid + s]);
+        }
+        memoryBarrierShared();
+        barrier();
+    }
+
+    // Thread 0 of each workgroup writes its local max via atomic
+    if (lid == 0u) {
+        atomicMax(max_hits, smax[0]);
+    }
+}

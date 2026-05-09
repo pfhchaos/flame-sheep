@@ -45,7 +45,11 @@ uniform int u_surface_h;      // actual EGL surface height (physical pixels)
 uniform float u_gamma     = 1.8;    // gamma correction (lower = brighter midtones)
 uniform float u_brightness= 6.0;    // overall brightness multiplier
 uniform float u_vibrancy  = 1.0;    // 0=desaturated, 1=full color
-uniform float u_accum_frames = 1.0; // effective accumulated frames (1/(1-decay))
+
+// Actual max hit count from GPU reduction pass (binding=8)
+layout(std430, binding = 8) readonly buffer MaxBuf {
+    uint max_hits;
+};
 
 void main() {
     // Convert UV to canvas pixel index.
@@ -84,18 +88,15 @@ void main() {
     //
     // alpha = log(hits) / log(max_hits)
     //
-    // We don't have max_hits as a uniform yet (TODO: compute it
-    // in a reduction pass or approximate). For now we use a
-    // reasonable approximation: clamp after scaling.
+    // max_hits comes from a GPU reduction pass (reduce_max.comp).
     // --------------------------------------------------------
 
-    // log(hits) normalized — the +1 avoids log(0)
+    // log-density normalization using actual max from GPU reduction pass
     float log_hits = log(float(hits) + 1.0);
-
-    // Approximate normalization: scale by expected max, adjusted for
-    // temporal accumulation (decay keeps a fraction of previous frames)
-    float expected_max_log = log(float(u_width * u_height) * 0.01 * u_accum_frames + 1.0);
-    float alpha = clamp(log_hits / expected_max_log * u_brightness, 0.0, 1.0);
+    float log_max = log(float(max_hits) + 1.0);
+    float alpha = (log_max > 0.0)
+        ? clamp(log_hits / log_max * u_brightness, 0.0, 1.0)
+        : 0.0;
 
     // Gamma correction — same as display gamma, makes it look right on screen
     alpha = pow(alpha, 1.0 / u_gamma);
