@@ -106,6 +106,7 @@ uniform int   u_width;
 uniform int   u_height;
 uniform int   u_iterations;   // chaos game steps per invocation
 uniform int   u_has_final_xform;  // 0 or 1
+uniform uint  u_rng_seed;    // changes each dispatch for different random sequences
 
 // Color scaling factor for uint accumulator
 #define COLOR_SCALE 1000000u
@@ -146,8 +147,8 @@ ivec2 world_to_pixel(vec2 p) {
 void main() {
     uint gid = gl_GlobalInvocationID.x;
 
-    // Seed RNG from invocation ID — each walker gets different randomness
-    rng_seed(gid * 1973u + 9277u);
+    // Seed RNG from invocation ID + frame seed — different randomness each dispatch
+    rng_seed(gid * 1973u + 9277u + u_rng_seed);
 
     // Load this walker's state from SSBO
     // Layout: [x0, y0, c0,  x1, y1, c1, ...]
