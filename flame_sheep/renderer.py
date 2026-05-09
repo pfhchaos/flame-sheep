@@ -592,6 +592,72 @@ class FlameRenderer:
         # because the comparison shader handles the blend per-strip.
         self.ctx.copy_framebuffer(accum_fbo, current_fbo)
 
+    def render_blur_comparison(self, viewport: Viewport, surface_w: int, surface_h: int,
+                               brightness: float = 6.0,
+                               radii: tuple[float, ...] = (0.0, 0.3, 0.6, 1.0)) -> None:
+        """Render vertical strips with different gaussian blur radii."""
+        # Tonemap to a shared FBO first
+        raw_tex = self.ctx.texture((surface_w, surface_h), components=4, dtype='f2')
+        raw_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        raw_fbo = self.ctx.framebuffer(color_attachments=[raw_tex])
+        raw_fbo.use()
+        self.ctx.viewport = (0, 0, surface_w, surface_h)
+
+        self.palette_tex.use(location=0)
+        p = self.tonemap_program
+        p['u_palette']       = 0
+        p['u_width']         = self.canvas_w
+        p['u_height']        = self.canvas_h
+        p['u_viewport_x']    = viewport.x
+        p['u_viewport_y']    = viewport.y
+        p['u_viewport_w']    = viewport.w
+        p['u_viewport_h']    = viewport.h
+        p['u_surface_w']     = surface_w
+        p['u_surface_h']     = surface_h
+        p['u_brightness']    = brightness
+        self.quad_vao.render(moderngl.TRIANGLES)
+
+        n_strips = len(radii)
+        strip_w = surface_w // n_strips
+
+        _bind_default_framebuffer()
+
+        for i, radius in enumerate(radii):
+            if radius <= 0:
+                # No blur — blit raw directly to strip
+                self.ctx.viewport = (i * strip_w, 0, strip_w, surface_h)
+                raw_tex.use(location=0)
+                bp = self.blur_program
+                bp['u_texture']   = 0
+                bp['u_direction'] = (0.0, 0.0)
+                bp['u_radius']    = 0.0
+                self.blur_vao.render(moderngl.TRIANGLES)
+            else:
+                # Blur into temp FBOs then blit to strip
+                fbo_a, tex_a, fbo_b, tex_b = self._get_blur_fbos(surface_w, surface_h)
+                bp = self.blur_program
+
+                # Horizontal blur
+                fbo_a.use()
+                self.ctx.viewport = (0, 0, surface_w, surface_h)
+                raw_tex.use(location=0)
+                bp['u_texture']   = 0
+                bp['u_direction'] = (1.0 / surface_w, 0.0)
+                bp['u_radius']    = radius
+                self.blur_vao.render(moderngl.TRIANGLES)
+
+                # Vertical blur → strip on screen
+                _bind_default_framebuffer()
+                self.ctx.viewport = (i * strip_w, 0, strip_w, surface_h)
+                tex_a.use(location=0)
+                bp['u_texture']   = 0
+                bp['u_direction'] = (0.0, 1.0 / surface_h)
+                bp['u_radius']    = radius
+                self.blur_vao.render(moderngl.TRIANGLES)
+
+        raw_tex.release()
+        raw_fbo.release()
+
     def draw_debug_circle(self, ndc_x: float, ndc_y: float,
                           surface_w: int, surface_h: int,
                           radius_px: float = 30.0,
