@@ -193,30 +193,30 @@ class TestToGpuArrays:
     def test_weights_sum_to_one(self):
         rng = np.random.default_rng(40)
         g = Genome.random(rng)
-        result = g.to_gpu_arrays()
-        weights = result[3]
+        gpu = g.to_gpu_arrays()
+        weights = gpu['weights']
         n = len(g.transforms)
         assert abs(weights[:n].sum() - 1.0) < 1e-5
 
     def test_affines_shape(self):
         rng = np.random.default_rng(41)
         g = Genome.random(rng)
-        affines = g.to_gpu_arrays()[0]
+        affines = g.to_gpu_arrays()['affines']
         assert affines.shape == (MAX_TRANSFORMS + 1, 6)
         assert affines.dtype == np.float32
 
     def test_variations_shape(self):
         rng = np.random.default_rng(42)
         g = Genome.random(rng)
-        active_vars = g.to_gpu_arrays()[1]
+        active_vars = g.to_gpu_arrays()['active_vars']
         assert active_vars.shape == (MAX_TRANSFORMS + 1, MAX_ACTIVE_VARS * SLOT_SIZE)
 
     def test_unused_transform_slots_zero(self):
         """Transforms beyond n_transforms should be zero (except final xform slot)."""
         rng = np.random.default_rng(43)
         g = Genome.random(rng, n_transforms=2)
-        result = g.to_gpu_arrays()
-        affines, weights = result[0], result[3]
+        gpu = g.to_gpu_arrays()
+        affines, weights = gpu['affines'], gpu['weights']
         # Slots 2..MAX_TRANSFORMS-1 should be zero (slot MAX_TRANSFORMS is final xform)
         assert np.all(affines[2:MAX_TRANSFORMS] == 0.0)
         assert np.all(weights[2:] == 0.0)
@@ -391,7 +391,7 @@ class TestGpuPacking:
         t.variations[Variation.CURL] = 0.7
         t.variations[Variation.SPLITS] = 0.3
         g.transforms = [t]
-        active_vars = g.to_gpu_arrays()[1]
+        active_vars = g.to_gpu_arrays()['active_vars']
         # First transform — two active vars at slot 0 and slot 1
         idx0 = int(active_vars[0, 0 * SLOT_SIZE])
         idx1 = int(active_vars[0, 1 * SLOT_SIZE])
@@ -407,7 +407,7 @@ class TestGpuPacking:
         t.variations[Variation.CURL] = 1.0
         t.var_params = {'curl_c1': 0.42, 'curl_c2': -0.77}
         g.transforms = [t]
-        active_vars = g.to_gpu_arrays()[1]
+        active_vars = g.to_gpu_arrays()['active_vars']
         # Curl is the only active variation, so it's at slot 0
         assert int(active_vars[0, 0]) == Variation.CURL
         assert abs(active_vars[0, 1] - 1.0) < 1e-6  # weight
@@ -421,7 +421,7 @@ class TestGpuPacking:
         t.variations = np.zeros(NUM_VARIATIONS, dtype=np.float32)
         t.variations[Variation.LINEAR] = 1.0
         g.transforms = [t]
-        active_vars = g.to_gpu_arrays()[1]
+        active_vars = g.to_gpu_arrays()['active_vars']
         # Slot 0 has LINEAR
         assert int(active_vars[0, 0]) == Variation.LINEAR
         # Slot 1 should be unused (index < 0)
@@ -439,7 +439,7 @@ class TestGpuPacking:
             'icon_gamma': 0.1, 'icon_omega': -0.2,
         }
         g.transforms = [t]
-        active_vars = g.to_gpu_arrays()[1]
+        active_vars = g.to_gpu_arrays()['active_vars']
         # Icon at slot 0, params at offsets 2-7
         assert int(active_vars[0, 0]) == Variation.ICON
         assert abs(active_vars[0, 2] - 5.0) < 1e-6   # degree
@@ -456,7 +456,7 @@ class TestGpuPacking:
         g.transforms[0].weight = 2.0
         g.transforms[1].weight = 3.0
         g.transforms[2].weight = 5.0
-        weights = g.to_gpu_arrays()[3]
+        weights = g.to_gpu_arrays()['weights']
         assert abs(weights[:3].sum() - 1.0) < 1e-6
 
 
