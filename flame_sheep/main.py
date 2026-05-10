@@ -323,17 +323,22 @@ class FlameSheepApp(mglw.WindowConfig):
 # Sway output layout — read once at startup
 # ---------------------------------------------------------------------------
 
-# Monitor physical specs: diagonal size in inches
-# Used to compute PPI for physical alignment across mixed-DPI displays.
-# Override in config.toml [monitors] section or just use the default.
-DEFAULT_MONITOR_SIZE = 27.0  # fallback — works for most monitors
-
-# Per-monitor overrides when EDID doesn't report physical size
-_MONITOR_DIAG_INCHES = {
-    'DP-2': 43.0,   # ASUS ROG Strix XG438Q — 43" 4K center
-    'DP-3': 24.0,   # Samsung S24A600 — 24" 1440p left (portrait)
-    'DP-4': 24.0,   # Samsung S24A600 — 24" 1440p right (portrait)
-}
+def _monitor_cfg(name: str, key: str, default=None):
+    """Read per-monitor config: [monitors.NAME].key or [monitors].default_*."""
+    mon = cfg.monitors if hasattr(cfg, 'monitors') else {}
+    # Check per-monitor override first
+    per = mon.get(name, {}) if isinstance(mon, dict) else getattr(mon, name, None)
+    if per is not None:
+        if isinstance(per, dict):
+            val = per.get(key)
+        else:
+            val = getattr(per, key, None)
+        if val is not None:
+            return val
+    # Fall back to default
+    if isinstance(mon, dict):
+        return mon.get(f'default_{key}', mon.get(key, default))
+    return getattr(mon, f'default_{key}', getattr(mon, key, default))
 
 
 def _get_output_layout() -> dict[str, dict]:
@@ -447,7 +452,7 @@ def _get_output_layout() -> dict[str, dict]:
             ppi = diag_px / (diag_mm / 25.4) if diag_mm > 0 else 96.0
         else:
             diag_px = math.sqrt(w**2 + h**2)
-            diag_inches = _MONITOR_DIAG_INCHES.get(name, DEFAULT_MONITOR_SIZE)
+            diag_inches = _monitor_cfg(name, 'diagonal', 27.0)
             ppi = diag_px / diag_inches
             phys_w_mm = w / ppi * 25.4
             phys_h_mm = h / ppi * 25.4
@@ -496,7 +501,7 @@ def _swaymsg_fallback(wl_result: dict[str, dict]) -> dict[str, dict]:
                 native_w = mode.get('width', r['width'])
                 native_h = mode.get('height', r['height'])
                 diag_px = math.sqrt(native_w**2 + native_h**2)
-                diag_inches = _MONITOR_DIAG_INCHES.get(name, DEFAULT_MONITOR_SIZE)
+                diag_inches = _monitor_cfg(name, 'diagonal', 27.0)
                 ppi = diag_px / diag_inches
                 phys_w_mm = r['width'] / ppi * 25.4
                 phys_h_mm = r['height'] / ppi * 25.4
@@ -610,12 +615,25 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
           f'-> render {canvas_w}x{canvas_h}px @ {canvas_ppmm:.2f} px/mm')
 
     # --- compute viewport for each output (in canvas pixels) ---
+    # Overscan expands the viewport vertically to cover trapezoid corners
+    # from perspective skew on angled monitors.
+    overscan = _monitor_cfg('__default__', 'overscan', 0.02)
+    from types import SimpleNamespace as _NS
+    if isinstance(overscan, _NS):
+        overscan = 0.02
+
     viewports: dict[str, Viewport] = {}
     for name, g in active.items():
         vx = int(phys_x[name] * canvas_ppmm)
         vy = int(phys_y[name] * canvas_ppmm)
         vw = int(g['phys_w_mm'] * canvas_ppmm)
         vh = int(g['phys_h_mm'] * canvas_ppmm)
+        # Apply overscan for skewed monitors
+        skew = _monitor_cfg(name, 'skew', 0.0)
+        if abs(skew) > 0.1:
+            ovh = int(vh * overscan)
+            vy -= ovh
+            vh += 2 * ovh
         viewports[name] = Viewport(vx, vy, vw, vh)
         log.info(f'{name}: viewport {vw}x{vh}+{vx},{vy} (canvas px)')
 
@@ -638,12 +656,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     renderer.blur_radius = blur_radius
     renderer.set_ppmm(canvas_ppmm)
 
-    # Per-monitor perspective skew (degrees, positive = angled right)
-    _monitor_skew = {
-        'DP-3': -11.0,  # left monitor, angled inward ~11°
-        'DP-2': 0.0,    # center, facing viewer
-        'DP-4': 11.0,   # right monitor, angled inward ~11°
-    }
+    # Per-monitor perspective skew from config
+    _monitor_skew = {name: _monitor_cfg(name, 'skew', 0.0) for name in viewports}
     renderer.temporal_decay = 0.0  # image-space temporal off (using histogram decay instead)
 
     _blur_comparison = False
