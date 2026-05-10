@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 log = logging.getLogger(__name__)
 
 DEFAULT_SIZE = 256
-DEFAULT_FRAMES = 30        # frames to accumulate for static render
+DEFAULT_FRAMES = 200       # frames to accumulate for static render
 DEFAULT_SWEPT_STEPS = 36   # 36 steps × 10° = full rotation
 
 
@@ -101,32 +101,37 @@ def render_genome(genome, renderer, ctx,
                   swept_steps: int = DEFAULT_SWEPT_STEPS,
                   output_size: int | None = None,
                   use_de: bool = False) -> tuple[bytes, bytes]:
-    """Render a genome to static + swept PNG bytes."""
+    """Render a genome to static (color) + swept (grayscale) PNG bytes.
+
+    Static: single-orientation render with full color palette.
+    Swept: rotation-accumulated render converted to grayscale —
+           shows structural quality independent of color.
+    """
     import io
     from PIL import Image
     from flame_sheep.renderer import N_ITERS
 
     gamma = getattr(genome, 'flam3_gamma', 4.0)
 
-    def _snapshot(use_de_pass: bool) -> bytes:
+    def _snapshot(use_de_pass: bool, grayscale: bool = False) -> bytes:
         if use_de_pass:
             png = renderer.snapshot_de_png(brightness=gamma, max_radius=9, curve=0.5)
         else:
             png = renderer.snapshot_png(brightness=gamma)
-        # Downsample if rendering at higher res than output
+        img = Image.open(io.BytesIO(png))
+        if grayscale:
+            img = img.convert('L')
         if output_size and output_size < renderer.canvas_w:
-            img = Image.open(io.BytesIO(png))
             img = img.resize((output_size, output_size), Image.LANCZOS)
-            buf = io.BytesIO()
-            img.save(buf, format='PNG', optimize=True)
-            return buf.getvalue()
-        return png
-
-    # --- Static render ---
-    renderer.upload_genome(genome)
-    renderer.reset_walkers()
+        buf = io.BytesIO()
+        img.save(buf, format='PNG', optimize=True)
+        return buf.getvalue()
 
     from flame_sheep_audio import N_BINS
+
+    # --- Static render (color) ---
+    renderer.upload_genome(genome)
+    renderer.reset_walkers()
     renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
 
     renderer.clear_histogram()
@@ -136,21 +141,24 @@ def render_genome(genome, renderer, ctx,
 
     static_png = _snapshot(use_de)
 
-    # --- Swept render (rotation-accumulated) ---
+    # --- Swept render (grayscale, rotation-accumulated) ---
     renderer.upload_genome(genome)
     renderer.reset_walkers()
     renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
     renderer.clear_histogram()
 
+    # Spread frames across rotation steps for even density
+    frames_per_step = max(1, n_frames // swept_steps)
     base_rotation = genome.rotation
     for i in range(swept_steps):
         angle = base_rotation + (2.0 * math.pi * i / swept_steps)
         renderer.set_rotation(angle)
-        renderer.dispatch_chaos_game(iterations=N_ITERS)
-        ctx.memory_barrier()
+        for _ in range(frames_per_step):
+            renderer.dispatch_chaos_game(iterations=N_ITERS)
+            ctx.memory_barrier()
     renderer.set_rotation(base_rotation)
 
-    swept_png = _snapshot(use_de)
+    swept_png = _snapshot(use_de, grayscale=True)
 
     return static_png, swept_png
 
