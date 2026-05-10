@@ -1,15 +1,15 @@
 #version 430 core
 
 // ============================================================
-// tonemap.vert — fullscreen quad vertex shader with perspective skew
+// tonemap.vert — fullscreen quad with perspective UV mapping
 // ============================================================
-// Trapezoidal distortion for angled side monitors:
-//   - Far side compressed vertically (narrower slice of canvas)
-//   - Near side expanded (wider slice)
-//   - Horizontal lines stay horizontal
-//   - Vertical lines converge toward the far edge
+// The quad always fills the screen (no clipping, no black corners).
+// The perspective skew is applied to UV coordinates only:
+//   - Far side of angled monitor samples a WIDER vertical slice of canvas
+//   - Near side samples a NARROWER slice
+//   - Horizontal lines remain horizontal
 //
-// This matches viewing a flat wall through an angled window.
+// The canvas must be rendered tall enough to cover the widest slice.
 // ============================================================
 
 in vec2 in_pos;
@@ -18,20 +18,19 @@ out vec2 v_uv;
 uniform float u_skew = 0.0;
 
 void main() {
-    v_uv = in_pos * 0.5 + 0.5;
+    gl_Position = vec4(in_pos, 0.0, 1.0);
 
-    if (u_skew == 0.0) {
-        gl_Position = vec4(in_pos, 0.0, 1.0);
-    } else {
-        // Scale Y based on X position — trapezoid.
-        // Expand the LARGER side so the quad overshoots the screen,
-        // ensuring the trapezoid fully covers the viewport.
-        float t = in_pos.x * 0.5 + 0.5;
+    vec2 uv = in_pos * 0.5 + 0.5;
+
+    if (u_skew != 0.0) {
+        // Scale V (vertical UV) based on horizontal position.
+        // Far side (higher W in viewing geometry) sees more wall = wider UV range.
+        // Near side sees less wall = narrower UV range.
+        float t = uv.x;  // 0..1 across screen
         float scale = 1.0 + u_skew * (t - 0.5);
-
-        // Expand Y on the near side (scale > 1), compress on far side (scale < 1)
-        float y_skewed = in_pos.y * scale;
-
-        gl_Position = vec4(in_pos.x, y_skewed, 0.0, 1.0);
+        // Scale UV.y around 0.5 (vertical center)
+        uv.y = 0.5 + (uv.y - 0.5) * scale;
     }
+
+    v_uv = uv;
 }
