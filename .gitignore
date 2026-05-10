@@ -8,3 +8,5 @@ dist/
 build/
 datasets/
 tests/audio_samples/
+tests/corpus/
+tools/corpus/

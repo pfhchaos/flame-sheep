@@ -12,7 +12,7 @@ import pytest
 
 from flame_sheep.main import FlameSheepCore
 from flame_sheep.orchestrator import Orchestrator
-from .conftest import FakeClock, trivial_genome
+from viz_helpers import FakeClock, trivial_genome
 
 
 @pytest.fixture

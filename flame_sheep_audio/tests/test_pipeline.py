@@ -14,8 +14,8 @@ from flame_sheep_audio import AudioProcessor, SAMPLE_RATE, FFT_SIZE, HOP_SIZE
 from flame_sheep_audio.source import FeedSource
 from flame_sheep_audio._types import BeatEvent
 
-from .synths import synth_kick, synth_vocal, synth_snare, synth_hihat, synth_808_kick
-from .conftest import make_processor, make_silence, make_sine, feed_audio
+from synths import synth_kick, synth_vocal, synth_snare, synth_hihat, synth_808_kick
+from audio_helpers import make_processor, make_silence, make_sine, feed_audio
 
 
 def _sustained_bass(duration_s: float, freq: float = 60.0,

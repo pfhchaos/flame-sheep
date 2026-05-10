@@ -24,7 +24,7 @@ from flame_sheep.axes.genome_axis import GenomeAxis
 from flame_sheep.role_mapper import RoleMapper
 from flame_sheep_audio.mode import ModeDetector, Mode
 
-from .conftest import trivial_genome
+from viz_helpers import trivial_genome
 
 _default_role = RoleMapper()  # uses default mapping: low→downbeat, mid→backbeat, etc.
 

@@ -32,7 +32,7 @@ from flame_sheep.variations._registry import VAR_PARAMS_SPEC, SLOT_SIZE
 from flame_sheep.genome import Genome, Transform, MAX_TRANSFORMS, MAX_ACTIVE_VARS
 import flame_sheep.variations._cpu as cpu_mod
 
-SHADER_DIR = Path(__file__).parent.parent / 'flame_sheep' / 'shaders'
+SHADER_DIR = Path(__file__).resolve().parent.parent.parent.parent / 'flame_sheep' / 'shaders'
 
 MAX_PARAMS = SLOT_SIZE - 2
 

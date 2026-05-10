@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from flame_sheep_audio import (
     AudioProcessor, SAMPLE_RATE, FFT_SIZE, N_BINS, FREQS,
 )
-from .conftest import make_processor
-from .synths import (
+from audio_helpers import make_processor
+from synths import (
     synth_kick, synth_snare, synth_hihat,
     synth_808_kick, synth_clap, synth_low_hihat,
     synth_vocal, synth_speech,

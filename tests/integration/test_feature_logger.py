@@ -11,7 +11,7 @@ import pytest
 from flame_sheep.orchestrator import Orchestrator, TimestampedEvent
 from flame_sheep.logger import AudioFeatureLogger
 from flame_sheep_audio._types import BeatEvent
-from .conftest import FakeClock
+from viz_helpers import FakeClock
 
 
 @pytest.fixture

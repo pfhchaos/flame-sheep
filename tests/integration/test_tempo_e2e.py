@@ -17,12 +17,12 @@ from flame_sheep_audio.source import FeedSource
 from flame_sheep_audio._spectrum import SpectrumEngine
 from flame_sheep_audio.tempo_acf import AutocorrelationTempoTracker
 from flame_sheep.tempo import TempoTracker
-from tests.synths import (
+from synths import (
     DrumPattern, PatternSpec, ALL_PATTERNS,
     FOUR_FOUR, FOUR_FOUR_FAST, WALTZ, HALF_TIME,
     TRAP, DNB_ELECTRONIC, REGGAETON, FOUR_ON_FLOOR_808,
 )
-from tests.conftest import make_processor
+from audio_helpers import make_processor
 
 
 # -------------------------------------------------------------------

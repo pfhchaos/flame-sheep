@@ -33,8 +33,6 @@ import flame_sheep.variations._cpu as cpu_mod
 
 # Import shared fixtures — these are the canonical source of truth.
 # The inline copies below are kept for backward compat but should match.
-import sys as _sys
-_sys.path.insert(0, str(Path(__file__).parent))
 from variation_fixtures import (
     BASE_POINTS as _BASE_POINTS,
     VAR_POINTS as _VAR_POINTS,
@@ -47,7 +45,7 @@ from variation_fixtures import (
 # Override inline copies with shared fixtures
 BASE_POINTS = _BASE_POINTS
 
-SHADER_DIR = Path(__file__).parent.parent / 'flame_sheep' / 'shaders'
+SHADER_DIR = Path(__file__).resolve().parent.parent.parent.parent / 'flame_sheep' / 'shaders'
 
 # ---------------------------------------------------------------------------
 # Base test points — good spread of quadrants, magnitudes, near-origin/unit circle
