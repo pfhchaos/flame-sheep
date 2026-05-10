@@ -192,9 +192,12 @@ class FlameRenderer:
         pre_vars_data     = np.full((n_slots, MAX_ACTIVE_VARS * SLOT_SIZE),
                                      -1.0, dtype=np.float32)
 
+        color_speeds_data = np.full(n_slots, 0.5, dtype=np.float32)
+
         self.affines_buf      = self.ctx.buffer(affines_data.tobytes())
         self.active_vars_buf  = self.ctx.buffer(active_vars_data.tobytes())
         self.colors_buf       = self.ctx.buffer(colors_data.tobytes())
+        self.color_speeds_buf = self.ctx.buffer(color_speeds_data.tobytes())
         self.weights_buf      = self.ctx.buffer(weights_data.tobytes())
         self.post_affines_buf = self.ctx.buffer(post_affines_data.tobytes())
         self.pre_vars_buf     = self.ctx.buffer(pre_vars_data.tobytes())
@@ -203,6 +206,7 @@ class FlameRenderer:
         self.active_vars_buf.bind_to_storage_buffer(3)
         self.colors_buf.bind_to_storage_buffer(4)
         self.weights_buf.bind_to_storage_buffer(5)
+        self.color_speeds_buf.bind_to_storage_buffer(6)
         self.post_affines_buf.bind_to_storage_buffer(9)
         self.pre_vars_buf.bind_to_storage_buffer(10)
 
@@ -272,14 +276,14 @@ class FlameRenderer:
     # ------------------------------------------------------------------
 
     def upload_genome(self, genome: Genome) -> None:
-        (affines, active_vars, colors, weights,
-         post_affines, pre_active_vars, has_final) = genome.to_gpu_arrays()
-        self.affines_buf.write(affines.tobytes())
-        self.active_vars_buf.write(active_vars.tobytes())
-        self.colors_buf.write(colors.tobytes())
-        self.weights_buf.write(weights.tobytes())
-        self.post_affines_buf.write(post_affines.tobytes())
-        self.pre_vars_buf.write(pre_active_vars.tobytes())
+        gpu = genome.to_gpu_arrays()
+        self.affines_buf.write(gpu['affines'].tobytes())
+        self.active_vars_buf.write(gpu['active_vars'].tobytes())
+        self.colors_buf.write(gpu['colors'].tobytes())
+        self.color_speeds_buf.write(gpu['color_speeds'].tobytes())
+        self.weights_buf.write(gpu['weights'].tobytes())
+        self.post_affines_buf.write(gpu['post_affines'].tobytes())
+        self.pre_vars_buf.write(gpu['pre_active_vars'].tobytes())
 
         cs = self.compute_shader
         import math
@@ -290,7 +294,7 @@ class FlameRenderer:
         cs['u_center']       = tuple(genome.center)
         cs['u_width']        = self.canvas_w
         cs['u_height']       = self.canvas_h
-        cs['u_has_final_xform'] = 1 if has_final else 0
+        cs['u_has_final_xform'] = 1 if gpu['has_final_xform'] else 0
 
         self._last_zoom = genome.zoom
         self.palette_tex.write(genome.palette.tobytes())
@@ -382,20 +386,19 @@ class FlameRenderer:
         """
         w, h = self.canvas_w, self.canvas_h
 
-        # Need max_hits for the shader
-        self.reduce_histogram_max()
-
         # Copy current histogram → DE input buffer
         data = self.histogram_buf.read()
         self._de_in_buf.write(data)
 
-        # Run DE shader
+        # Zero the output buffer (scatter accumulates from zero)
+        self._de_out_buf.write(b'\x00' * len(data))
+
+        # Run DE scatter shader
         de = self.de_shader
         de['u_width'] = w
         de['u_height'] = h
         de['u_max_radius'] = max_radius
         de['u_curve'] = float(curve)
-        de['u_min_density'] = float(min_density)
 
         groups_x = (w + 15) // 16
         groups_y = (h + 15) // 16
@@ -403,6 +406,8 @@ class FlameRenderer:
         self.ctx.memory_barrier()
 
         # Copy DE output → main histogram buffer
+        # FP_SCALE is baked into the values but the tonemap normalizes by
+        # max_hits anyway, so the scale cancels out — just copy directly.
         result = self._de_out_buf.read()
         self.histogram_buf.write(result)
 
@@ -874,10 +879,15 @@ class FlameRenderer:
             self._temporal_fbos[key] = fbos
         return self._temporal_fbos[key]
 
-    def snapshot_png(self, brightness: float = 6.0) -> bytes:
+    def snapshot_png(self, brightness: float = 6.0,
+                     linear_mode: bool = False) -> bytes:
         """Tonemap the current histogram to an RGBA PNG and return as bytes.
 
         Uses a temporary FBO — does not affect screen output.
+
+        Args:
+            brightness: gamma parameter for tone mapping
+            linear_mode: if True, skip log-density (for post-DE histograms)
         """
         import io
         from PIL import Image
@@ -905,6 +915,8 @@ class FlameRenderer:
         p['u_surface_w']     = w
         p['u_surface_h']     = h
         p['u_gamma']         = brightness
+        if 'u_linear_mode' in p:
+            p['u_linear_mode'] = 1 if linear_mode else 0
 
         self.quad_vao.render(moderngl.TRIANGLES)
 
@@ -924,8 +936,8 @@ class FlameRenderer:
         """Render with density estimation, then tonemap to PNG.
 
         Applies spatially-varying DE blur to the histogram before
-        tonemapping. Sparse regions get wide blurs revealing filament
-        structure; dense regions stay sharp.
+        tonemapping. Uses linear mode in tonemap since DE scatter
+        already applies log-density scaling.
         """
         self.apply_density_estimation(max_radius=max_radius, curve=curve)
         return self.snapshot_png(brightness=brightness)

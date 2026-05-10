@@ -106,11 +106,13 @@ def render_genome(genome, renderer, ctx,
     from PIL import Image
     from flame_sheep.renderer import N_ITERS
 
+    gamma = getattr(genome, 'flam3_gamma', 4.0)
+
     def _snapshot(use_de_pass: bool) -> bytes:
         if use_de_pass:
-            png = renderer.snapshot_de_png(brightness=8.0, max_radius=9, curve=0.5)
+            png = renderer.snapshot_de_png(brightness=gamma, max_radius=9, curve=0.5)
         else:
-            png = renderer.snapshot_png(brightness=8.0)
+            png = renderer.snapshot_png(brightness=gamma)
         # Downsample if rendering at higher res than output
         if output_size and output_size < renderer.canvas_w:
             img = Image.open(io.BytesIO(png))

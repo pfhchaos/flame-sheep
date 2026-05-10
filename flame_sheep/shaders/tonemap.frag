@@ -44,6 +44,7 @@ uniform int u_surface_h;      // actual EGL surface height (physical pixels)
 // Tone mapping parameters — tweak these to taste
 uniform float u_gamma;              // audio-driven gamma (lower = brighter/vivid, higher = ghostly)
 uniform float u_vibrancy  = 1.0;    // 0=desaturated, 1=full color
+uniform int u_linear_mode = 0;      // 1 = skip log (for post-DE data already in log domain)
 
 
 // Actual max hit count from GPU reduction pass (binding=8)
@@ -93,12 +94,21 @@ void main() {
     // max_hits comes from a GPU reduction pass (reduce_max.comp).
     // --------------------------------------------------------
 
-    // log-density normalization using actual max from GPU reduction pass
-    float log_hits = log(float(hits) + 1.0);
-    float log_max = log(float(max_hits) + 1.0);
-    float alpha = (log_max > 0.0)
-        ? clamp(log_hits / log_max, 0.0, 1.0)
-        : 0.0;
+    // Density normalization
+    float alpha;
+    if (u_linear_mode != 0) {
+        // Post-DE: values are already log-scaled, just normalize linearly
+        alpha = (max_hits > 0u)
+            ? clamp(float(hits) / float(max_hits), 0.0, 1.0)
+            : 0.0;
+    } else {
+        // Normal: log-density normalization using actual max from GPU reduction pass
+        float log_hits = log(float(hits) + 1.0);
+        float log_max = log(float(max_hits) + 1.0);
+        alpha = (log_max > 0.0)
+            ? clamp(log_hits / log_max, 0.0, 1.0)
+            : 0.0;
+    }
 
     // Gamma: controls how much of the density range is visible.
     // Low gamma (1.2) = vivid, filaments pop. High gamma (2.5) = ghostly.
@@ -108,10 +118,15 @@ void main() {
     // --------------------------------------------------------
     // Color lookup
     //
-    // Average color index for this pixel = color_acc / hits
-    // (both stored as uint, color_acc scaled by COLOR_SCALE)
+    // Normal mode: color_acc / (hits * COLOR_SCALE)
+    // Linear mode (post-DE): color_acc / hits (DE already normalized)
     // --------------------------------------------------------
-    float color_idx = float(color) / (float(hits) * float(COLOR_SCALE));
+    float color_idx;
+    if (u_linear_mode != 0) {
+        color_idx = float(color) / max(float(hits), 1.0);
+    } else {
+        color_idx = float(color) / (float(hits) * float(COLOR_SCALE));
+    }
     color_idx = clamp(color_idx, 0.0, 1.0);
 
     // Sample palette — 1D lookup along X axis of the 2D texture

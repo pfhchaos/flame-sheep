@@ -85,12 +85,28 @@ _IGNORED_PARAMS = {'move_x', 'move_y', 'split_shift'}
 # ---------------------------------------------------------------------------
 
 def _parse_affine(coefs_str: str) -> np.ndarray:
-    """Parse 'a b c d e f' affine coefficient string."""
+    """Parse flam3 'v0 v1 v2 v3 v4 v5' affine coefficient string.
+
+    flam3 stores affine coefficients as column-major pairs:
+        c[0][0] c[0][1]  c[1][0] c[1][1]  c[2][0] c[2][1]
+        (v0     v1       v2      v3        v4      v5)
+
+    and applies them as:
+        tx = c[0][0]*x + c[1][0]*y + c[2][0]   = v0*x + v2*y + v4
+        ty = c[0][1]*x + c[1][1]*y + c[2][1]   = v1*x + v3*y + v5
+
+    Our convention is row-major [a, b, c, d, e, f]:
+        nx = a*x + b*y + c
+        ny = d*x + e*y + f
+
+    So we reorder: a=v0, b=v2, c=v4, d=v1, e=v3, f=v5.
+    """
     vals = [float(v) for v in coefs_str.split()]
     if len(vals) != 6:
         raise ValueError(f'Expected 6 affine coefficients, got {len(vals)}: {coefs_str}')
-    # Clamp to float32 range to avoid overflow warnings
-    arr = np.array(vals, dtype=np.float64)
+    v0, v1, v2, v3, v4, v5 = vals
+    reordered = [v0, v2, v4, v1, v3, v5]
+    arr = np.array(reordered, dtype=np.float64)
     np.clip(arr, -1e30, 1e30, out=arr)
     return arr.astype(np.float32)
 
@@ -125,6 +141,7 @@ def _parse_xform(elem: ET.Element) -> Transform:
     # Color and weight (older formats may have 'color' as "value speed")
     color_str = elem.get('color', '0')
     tr.color = float(color_str.split()[0])
+    tr.color_speed = float(elem.get('color_speed', '0.5'))
     tr.weight = float(elem.get('weight', '1'))
 
     # Parse all remaining attributes as variations or params
@@ -196,6 +213,13 @@ def _map_param_name(xml_name: str) -> str | None:
         # disc2 uses 'disc2_rot' in XML but we store 'disc2_twist' + 'disc2_cosadd' + 'disc2_sinadd'
         # The XML 'disc2_rot' is actually the 'disc2_twist' param
         'disc2_rot': 'disc2_twist',
+        # juliascope params use 'juliascope_' prefix in XML but share
+        # 'julian_power'/'julian_dist' internally with julian
+        'juliascope_power': 'julian_power',
+        'juliascope_dist': 'julian_dist',
+        # rectangles params
+        'rectangles_x': 'rect_x',
+        'rectangles_y': 'rect_y',
     }
     return _RENAMES.get(xml_name)
 
@@ -238,10 +262,8 @@ def parse_genome_xml(xml_str: str) -> Genome | None:
     flam3_center = [float(v) for v in root.get('center', '0 0').split()]
     g.zoom = float(root.get('scale', '100')) / (width * 0.5)
     g.rotation = float(root.get('rotate', '0')) * np.pi / 180.0  # degrees → radians
-    # Store flam3 tonemap params for rendering (not part of Genome dataclass,
-    # attached as ad-hoc attributes)
-    g._flam3_brightness = float(root.get('brightness', '4'))
-    g._flam3_gamma = float(root.get('gamma', '4'))
+    g.flam3_brightness = float(root.get('brightness', '4'))
+    g.flam3_gamma = float(root.get('gamma', '4'))
     # Rotate flam3 center into our coordinate system
     cos_r = np.cos(g.rotation)
     sin_r = np.sin(g.rotation)

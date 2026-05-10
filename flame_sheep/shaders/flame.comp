@@ -87,6 +87,11 @@ layout(std430, binding = 5) readonly buffer Weights {
     float u_weights[];
 };
 
+// Color blend speed per transform: color = speed * xform.color + (1-speed) * prev
+layout(std430, binding = 6) readonly buffer ColorSpeeds {
+    float u_color_speeds[];  // length = MAX_TRANSFORMS+1
+};
+
 // Post-affines: applied after variations. Identity [1,0,0,0,1,0] when unused.
 layout(std430, binding = 9) readonly buffer PostAffines {
     float u_post_affines[];  // length = (MAX_TRANSFORMS+1) * 6
@@ -181,22 +186,6 @@ void main() {
         px = u_post_affines[pbase+0]*warped.x + u_post_affines[pbase+1]*warped.y + u_post_affines[pbase+2];
         py = u_post_affines[pbase+3]*warped.x + u_post_affines[pbase+4]*warped.y + u_post_affines[pbase+5];
 
-        // 6. Final xform (one branch — needed for color blend)
-        if (u_has_final_xform != 0) {
-            int ftidx = MAX_TRANSFORMS;
-            // Same 4-stage pipeline
-            vec2 fp = apply_pre_variations(vec2(px, py), ftidx);
-            int fabase = ftidx * 6;
-            float fnx = u_affines[fabase+0]*fp.x + u_affines[fabase+1]*fp.y + u_affines[fabase+2];
-            float fny = u_affines[fabase+3]*fp.x + u_affines[fabase+4]*fp.y + u_affines[fabase+5];
-            vec2 fwarped = apply_variations(vec2(fnx, fny), ftidx);
-            int fpbase = ftidx * 6;
-            px = u_post_affines[fpbase+0]*fwarped.x + u_post_affines[fpbase+1]*fwarped.y + u_post_affines[fpbase+2];
-            py = u_post_affines[fpbase+3]*fwarped.x + u_post_affines[fpbase+4]*fwarped.y + u_post_affines[fpbase+5];
-            // Blend color toward final xform's color
-            pc = (pc + u_colors[ftidx]) * 0.5;
-        }
-
         // Respawn walker if it escaped to infinity
         if (isinf(px) || isinf(py) || isnan(px) || isnan(py) ||
             abs(px) > 1e6 || abs(py) > 1e6) {
@@ -207,13 +196,35 @@ void main() {
         }
 
         // 7. Blend color toward this transform's color
-        pc = (pc + u_colors[tidx]) * 0.5;
+        float cs = u_color_speeds[tidx];
+        pc = cs * u_colors[tidx] + (1.0 - cs) * pc;
 
         // 5. Plot — skip first 20 iterations (fuse, not on attractor yet)
         if (iter < 20) continue;
 
-        // 6. Map to pixel
-        ivec2 pixel = world_to_pixel(vec2(px, py));
+        // 6. Apply final xform for PLOTTING ONLY (does not affect walker state).
+        //    In flam3, the final xform is a viewing transform — the walker
+        //    continues from the pre-final position on the next iteration.
+        float plot_x = px;
+        float plot_y = py;
+        float plot_c = pc;
+        if (u_has_final_xform != 0) {
+            int ftidx = MAX_TRANSFORMS;
+            vec2 fp = apply_pre_variations(vec2(plot_x, plot_y), ftidx);
+            int fabase = ftidx * 6;
+            float fnx = u_affines[fabase+0]*fp.x + u_affines[fabase+1]*fp.y + u_affines[fabase+2];
+            float fny = u_affines[fabase+3]*fp.x + u_affines[fabase+4]*fp.y + u_affines[fabase+5];
+            vec2 fwarped = apply_variations(vec2(fnx, fny), ftidx);
+            int fpbase = ftidx * 6;
+            plot_x = u_post_affines[fpbase+0]*fwarped.x + u_post_affines[fpbase+1]*fwarped.y + u_post_affines[fpbase+2];
+            plot_y = u_post_affines[fpbase+3]*fwarped.x + u_post_affines[fpbase+4]*fwarped.y + u_post_affines[fpbase+5];
+            // Blend color toward final xform's color
+            float fcs = u_color_speeds[ftidx];
+            plot_c = fcs * u_colors[ftidx] + (1.0 - fcs) * plot_c;
+        }
+
+        // 7. Map to pixel
+        ivec2 pixel = world_to_pixel(vec2(plot_x, plot_y));
 
         // Bounds check — point may be outside viewport
         if (pixel.x < 0 || pixel.x >= u_width ||
@@ -223,7 +234,7 @@ void main() {
         uint idx = uint(pixel.y * u_width + pixel.x);
         uint n_pixels = uint(u_width * u_height);
         atomicAdd(histogram[idx],            1u);                          // hit_count
-        atomicAdd(histogram[n_pixels + idx], uint(pc * float(COLOR_SCALE))); // color_acc
+        atomicAdd(histogram[n_pixels + idx], uint(plot_c * float(COLOR_SCALE))); // color_acc
 #ifdef SCORING_MODE
         atomicAdd(transform_hits[idx * uint(MAX_TRANSFORMS) + uint(tidx)], 1u);
 #endif

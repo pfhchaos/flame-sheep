@@ -1,91 +1,124 @@
 #version 430 core
 
 // ============================================================
-// density_estimation.comp — spatially-varying density estimation blur
+// density_estimation.comp — flam3-style adaptive density estimation
 // ============================================================
-// Matches flam3's density estimation: sparse pixels get wide gaussian
-// kernels, dense pixels stay sharp. This reveals filament structure
-// that would otherwise be invisible single-pixel dots.
+// Scatter approach:
+//   1. For each pixel with hits, compute local density
+//   2. Map density → kernel width (high density = sharp)
+//   3. Scatter log-scaled hits with Gaussian kernel
+//   4. Scatter color index (0-1) weighted by same kernel
+//      to preserve color_idx = color_acc / hits after scatter
 //
-// Gather approach: each output pixel reads from a neighborhood of
-// input pixels, weighting each by a gaussian whose sigma comes from
-// the INPUT pixel's density. Low-density inputs scatter widely.
+// Output layout differs from input:
+//   hits channel:  accumulated log-density (fixed-point × HITS_SCALE)
+//   color channel: accumulated color_idx weighted by hits (fixed-point × COLOR_OUT_SCALE)
+// Tonemap reconstructs color_idx = color_channel / hits_channel (scales cancel)
 // ============================================================
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// Input histogram (original, read-only)
 layout(std430, binding = 11) readonly buffer InputHistogram {
-    uint in_histogram[];  // [hits..., colors...]
+    uint in_histogram[];  // [hits_0..hits_n, colors_0..colors_n]
 };
 
-// Output histogram (DE-filtered)
-layout(std430, binding = 12) buffer OutputHistogram {
-    uint out_histogram[];  // [hits..., colors...]
+layout(std430, binding = 12) coherent buffer OutputHistogram {
+    uint out_histogram[];
 };
 
 uniform int u_width;
 uniform int u_height;
-uniform int u_max_radius;      // estimator_radius (typically 7-11)
-uniform float u_curve;         // estimator_curve (typically 0.4-0.6)
-uniform float u_min_density;   // minimum hit count to consider (noise floor)
+uniform int u_max_radius;
+uniform float u_curve;
 
-// Max hit count (from reduce_max pass)
-layout(std430, binding = 8) readonly buffer MaxBuf {
-    uint max_hits;
-};
+// Input COLOR_SCALE (must match flame.comp)
+#define COLOR_SCALE 1000000.0
 
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     if (pos.x >= u_width || pos.y >= u_height) return;
 
     uint n_pixels = uint(u_width * u_height);
-    int max_r = u_max_radius;
-    float max_density = float(max_hits);
-    if (max_density < 1.0) max_density = 1.0;
+    uint center_idx = uint(pos.y * u_width + pos.x);
 
-    // Gather: each source pixel scatters to this output pixel.
-    // The contribution is source_density * gaussian(dist, source_sigma),
-    // normalized per-source (divide by source's kernel integral) so
-    // each source preserves its total energy while spreading it.
-    float total_hits = 0.0;
-    float total_color = 0.0;
+    float center_hits = float(in_histogram[center_idx]);
+    if (center_hits < 0.5) return;
 
-    for (int dy = -max_r; dy <= max_r; dy++) {
-        for (int dx = -max_r; dx <= max_r; dx++) {
+    // Don't scatter very sparse pixels — they're noise, not structure.
+    // flam3 doesn't need this because it oversamples 4×, making
+    // background pixels truly zero. We compensate by thresholding.
+    // Threshold: skip if local 3×3 density is below ~1% of max density.
+    // We compute this cheaply by checking the center pixel alone first.
+    // The kernel width calc below handles the rest adaptively.
+
+    float center_color_acc = float(in_histogram[n_pixels + center_idx]);
+
+    // --- Local density (3×3 neighborhood) ---
+    float f_select = 0.0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
             int ix = pos.x + dx;
             int iy = pos.y + dy;
-
             if (ix < 0 || ix >= u_width || iy < 0 || iy >= u_height) continue;
-
-            uint src_idx = uint(iy * u_width + ix);
-            float src_hits = float(in_histogram[src_idx]);
-
-            if (src_hits < u_min_density) continue;
-
-            // Source pixel's blur radius based on its density.
-            // Dense pixels → small radius (stay sharp), sparse → large (spread out).
-            float density_norm = src_hits / max_density;
-            float radius = float(max_r) * (1.0 - pow(density_norm, u_curve));
-            radius = clamp(radius, 0.5, float(max_r));
-
-            float dist2 = float(dx * dx + dy * dy);
-            if (dist2 > radius * radius) continue;
-
-            float sigma = radius / 2.5;
-            float weight = exp(-dist2 / (2.0 * sigma * sigma));
-
-            // Normalize by the source kernel's approximate integral (2π σ²)
-            // so each source preserves its total energy while spreading
-            float kernel_area = 6.28318530 * sigma * sigma;
-            float contribution = weight / max(kernel_area, 0.01);
-
-            total_hits += src_hits * contribution;
-            total_color += float(in_histogram[n_pixels + src_idx]) * contribution;
+            f_select += float(in_histogram[uint(iy * u_width + ix)]);
         }
     }
+    f_select /= 9.0;
 
-    uint out_idx = uint(pos.y * u_width + pos.x);
-    out_histogram[out_idx] = uint(min(total_hits, 4294967000.0));
-    out_histogram[n_pixels + out_idx] = uint(min(total_color, 4294967000.0));
+    // --- Kernel width ---
+    float filt_h = float(u_max_radius) / pow(f_select + 1.0, u_curve);
+    filt_h = clamp(filt_h, 0.5, float(u_max_radius));
+    int r = int(ceil(filt_h));
+
+    float sigma = filt_h / 2.5;
+    float sigma2_inv = 1.0 / (2.0 * sigma * sigma);
+
+    // Extract color index (0-1)
+    float color_idx = center_color_acc / (center_hits * COLOR_SCALE);
+    color_idx = clamp(color_idx, 0.0, 1.0);
+
+    // Normalize kernel so total scattered energy = source energy.
+    // Without this, every source adds unscaled, and backgrounds blow up.
+    float kernel_sum = 0.0;
+    for (int dy = -r; dy <= r; dy++) {
+        for (int dx = -r; dx <= r; dx++) {
+            float d2 = float(dx * dx + dy * dy);
+            if (d2 > filt_h * filt_h) continue;
+            int ix = pos.x + dx;
+            int iy = pos.y + dy;
+            if (ix < 0 || ix >= u_width || iy < 0 || iy >= u_height) continue;
+            kernel_sum += exp(-d2 * sigma2_inv);
+        }
+    }
+    if (kernel_sum < 1e-6) kernel_sum = 1.0;
+    float inv_kernel = 1.0 / kernel_sum;
+
+    // --- Scatter ---
+    // Each source pixel distributes its log-scaled value across neighbors.
+    // kernel weights sum to 1 → total energy is preserved.
+    for (int dy = -r; dy <= r; dy++) {
+        for (int dx = -r; dx <= r; dx++) {
+            float d2 = float(dx * dx + dy * dy);
+            if (d2 > filt_h * filt_h) continue;
+
+            int ix = pos.x + dx;
+            int iy = pos.y + dy;
+            if (ix < 0 || ix >= u_width || iy < 0 || iy >= u_height) continue;
+
+            float w = exp(-d2 * sigma2_inv) * inv_kernel;
+            uint dst_idx = uint(iy * u_width + ix);
+
+            // Scatter both channels with same kernel weights (linear space).
+            // Log-density mapping happens in tonemap afterward.
+            // color_idx = color_acc/(hits*COLOR_SCALE) is preserved since
+            // both are weighted by the same kernel.
+            uint hits_contrib  = uint(center_hits * w + 0.5);
+            uint color_contrib = uint(center_color_acc * w + 0.5);
+
+            if (hits_contrib > 0u)
+                atomicAdd(out_histogram[dst_idx], hits_contrib);
+            if (color_contrib > 0u)
+                atomicAdd(out_histogram[n_pixels + dst_idx], color_contrib);
+        }
+    }
 }

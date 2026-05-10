@@ -59,6 +59,8 @@ class Transform:
     pre_variations: np.ndarray | None = None
     # Color index blended during chaos game
     color: float = 0.0
+    # Color blend speed: color = speed * xform.color + (1-speed) * prev_color
+    color_speed: float = 0.5
     # Probability weight for this transform being chosen
     weight: float = 1.0
     # Per-variation parameters (e.g. julian_power, splits_x)
@@ -106,6 +108,9 @@ class Genome:
     zoom: float = 1.0
     rotation: float = 0.0
     center: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
+    # flam3 tone mapping parameters (used for esheep rendering)
+    flam3_brightness: float = 4.0
+    flam3_gamma: float = 4.0
 
     @classmethod
     def random(cls, rng: np.random.Generator | None = None, n_transforms: int | None = None) -> 'Genome':
@@ -376,22 +381,11 @@ class Genome:
             for k, param_name in enumerate(spec[:MAX_PARAMS_PER_VAR]):
                 var_array[base + 2 + k] = tr.var_params.get(param_name, 0.0)
 
-    def to_gpu_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray,
-                                     np.ndarray, np.ndarray, np.ndarray, bool]:
-        """
-        Pack genome into flat arrays for GPU upload.
+    def to_gpu_arrays(self) -> dict:
+        """Pack genome into flat arrays for GPU upload.
 
         All buffers have MAX_TRANSFORMS+1 slots — slot MAX_TRANSFORMS is for
         the final xform (identity/empty when absent).
-
-        Returns:
-            affines:         (MAX_TRANSFORMS+1, 6) float32
-            active_vars:     (MAX_TRANSFORMS+1, MAX_ACTIVE_VARS*SLOT_SIZE) float32
-            colors:          (MAX_TRANSFORMS+1,) float32
-            weights:         (MAX_TRANSFORMS,) float32 [normalized, no final xform]
-            post_affines:    (MAX_TRANSFORMS+1, 6) float32 — identity when unused
-            pre_active_vars: (MAX_TRANSFORMS+1, MAX_ACTIVE_VARS*SLOT_SIZE) float32
-            has_final_xform: bool
         """
         n = len(self.transforms)
         n_slots = MAX_TRANSFORMS + 1  # +1 for final xform
@@ -400,6 +394,7 @@ class Genome:
         active_vars = np.full((n_slots, MAX_ACTIVE_VARS * SLOT_SIZE),
                               -1.0, dtype=np.float32)
         colors      = np.zeros(n_slots, dtype=np.float32)
+        color_speeds = np.full(n_slots, 0.5, dtype=np.float32)
         weights     = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
 
         # Post-affines default to identity
@@ -413,6 +408,7 @@ class Genome:
         for i, tr in enumerate(self.transforms[:MAX_TRANSFORMS]):
             affines[i] = tr.affine
             colors[i]  = tr.color
+            color_speeds[i] = tr.color_speed
             weights[i] = tr.weight
 
             # Main variations
@@ -438,13 +434,23 @@ class Genome:
             fidx = MAX_TRANSFORMS
             affines[fidx] = ft.affine
             colors[fidx] = ft.color
+            color_speeds[fidx] = ft.color_speed
             self._pack_variations(ft, active_vars[fidx], ft.variations)
             if ft.post_affine is not None:
                 post_affines[fidx] = ft.post_affine
             if ft.pre_variations is not None:
                 self._pack_variations(ft, pre_active_vars[fidx], ft.pre_variations)
 
-        return affines, active_vars, colors, weights, post_affines, pre_active_vars, has_final
+        return {
+            'affines': affines,
+            'active_vars': active_vars,
+            'colors': colors,
+            'color_speeds': color_speeds,
+            'weights': weights,
+            'post_affines': post_affines,
+            'pre_active_vars': pre_active_vars,
+            'has_final_xform': has_final,
+        }
 
 
     def aesthetic_score(self, renderer: FlameRenderer | None = None, n_test: int = 5000) -> dict[str, float]:
