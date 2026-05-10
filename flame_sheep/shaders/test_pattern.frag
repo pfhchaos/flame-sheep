@@ -34,6 +34,12 @@ void main() {
     float cx = float(u_viewport_x) + v_uv.x * float(u_surface_w) * scale_x;
     float cy = float(u_viewport_y) + (1.0 - v_uv.y) * float(u_surface_h) * scale_y;
 
+    // Discard pixels outside canvas (overscan region)
+    if (cx < 0.0 || cx >= float(u_width) || cy < 0.0 || cy >= float(u_height)) {
+        frag_color = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
     // Normalized canvas position (0..1)
     float nx = cx / float(u_width);
     float ny = cy / float(u_height);
