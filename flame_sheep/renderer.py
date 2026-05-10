@@ -211,18 +211,11 @@ class FlameRenderer:
         self.walker_buf = self.ctx.buffer(walker_data.tobytes())
         self.walker_buf.bind_to_storage_buffer(1)
 
-        # Fullscreen quad — 4 triangles fanning from center to avoid
-        # diagonal seam artifact when W-based perspective skew is active.
-        # Center vertex at (0,0) splits the quad into 4 triangles:
-        #   bottom: (-1,-1) (1,-1) (0,0)
-        #   right:  (1,-1) (1,1) (0,0)
-        #   top:    (1,1) (-1,1) (0,0)
-        #   left:   (-1,1) (-1,-1) (0,0)
+        # Fullscreen quad — 2 triangles. Perspective skew is in UV space
+        # (vertex shader), so no W interpolation seam to worry about.
         quad_verts = np.array([
-            -1, -1,   1, -1,   0,  0,   # bottom
-             1, -1,   1,  1,   0,  0,   # right
-             1,  1,  -1,  1,   0,  0,   # top
-            -1,  1,  -1, -1,   0,  0,   # left
+            -1, -1,   1, -1,   -1,  1,
+             1, -1,   1,  1,   -1,  1,
         ], dtype=np.float32)
         self.quad_vbo = self.ctx.buffer(quad_verts.tobytes())
         self.quad_vao = self.ctx.vertex_array(
