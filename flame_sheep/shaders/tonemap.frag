@@ -61,9 +61,11 @@ void main() {
     int px = u_viewport_x + int(v_uv.x * float(u_surface_w) * scale_x);
     int py = u_viewport_y + int((1.0 - v_uv.y) * float(u_surface_h) * scale_y);
 
-    // Clamp to canvas bounds
-    px = clamp(px, 0, u_width  - 1);
-    py = clamp(py, 0, u_height - 1);
+    // Discard pixels outside canvas (overscan region)
+    if (px < 0 || px >= u_width || py < 0 || py >= u_height) {
+        frag_color = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
 
     uint idx = uint(py * u_width + px);
 
