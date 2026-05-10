@@ -211,16 +211,19 @@ class FlameRenderer:
         self.walker_buf = self.ctx.buffer(walker_data.tobytes())
         self.walker_buf.bind_to_storage_buffer(1)
 
-        # Fullscreen quad — vertical strip mesh to minimize bilinear
-        # interpolation error from UV skew. More strips = smoother.
-        N_STRIPS = 8
+        # Fullscreen quad — grid mesh to minimize bilinear interpolation
+        # error from UV skew. Split horizontally at center (y=0) and into
+        # vertical strips. The x*y error term is bounded by the cell size.
+        NX, NY = 8, 2  # 8 columns × 2 rows = 32 triangles
         verts = []
-        for i in range(N_STRIPS):
-            x0 = -1.0 + 2.0 * i / N_STRIPS
-            x1 = -1.0 + 2.0 * (i + 1) / N_STRIPS
-            # Two triangles per strip
-            verts.extend([x0, -1, x1, -1, x0, 1])
-            verts.extend([x1, -1, x1, 1, x0, 1])
+        for iy in range(NY):
+            y0 = -1.0 + 2.0 * iy / NY
+            y1 = -1.0 + 2.0 * (iy + 1) / NY
+            for ix in range(NX):
+                x0 = -1.0 + 2.0 * ix / NX
+                x1 = -1.0 + 2.0 * (ix + 1) / NX
+                verts.extend([x0, y0, x1, y0, x0, y1])
+                verts.extend([x1, y0, x1, y1, x0, y1])
         quad_verts = np.array(verts, dtype=np.float32)
         self.quad_vbo = self.ctx.buffer(quad_verts.tobytes())
         self.quad_vao = self.ctx.vertex_array(
