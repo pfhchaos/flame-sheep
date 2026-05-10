@@ -48,7 +48,10 @@ def collect_onset_times(pcm_mono: np.ndarray, adaptive: bool = False,
     if fine_hop:
         return _collect_fine_hop(pcm_mono, adaptive=adaptive, sharpness=sharpness)
 
-    from tests.conftest import make_processor
+    from flame_sheep_audio import AudioProcessor
+    from flame_sheep_audio.source import FeedSource
+    def make_processor(adaptive=False, sharpness=True):
+        return AudioProcessor(source=FeedSource(), adaptive=adaptive, sharpness=sharpness)
 
     proc = make_processor(adaptive=adaptive, sharpness=sharpness)
 

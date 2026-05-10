@@ -16,7 +16,7 @@ from flame_sheep.variations import apply_variation_cpu, Variation
 from flame_sheep.variations._cpu import Xorshift32
 import flame_sheep.variations._cpu as cpu_mod
 
-REFERENCE_CSV = Path(__file__).parent / 'flam3_reference.csv'
+REFERENCE_CSV = Path(__file__).resolve().parent.parent.parent / 'flam3_reference.csv'
 
 # Map flam3 oracle var_index to our variation index
 # (they should match for standard flam3 variations)

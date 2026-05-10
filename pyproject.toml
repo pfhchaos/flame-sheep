@@ -28,7 +28,7 @@ where = ["."]
 exclude = ["tests*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "flame_sheep_audio/tests"]
 addopts = "--tb=short -m 'not slow'"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
