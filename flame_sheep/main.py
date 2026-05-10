@@ -609,31 +609,31 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     RENDER_SCALE = 0.5  # render at half the max PPI for performance
     canvas_ppmm = max_ppi / 25.4 * RENDER_SCALE  # pixels per mm in canvas
     
+    # Overscan: expand canvas vertically so the trapezoid from perspective
+    # skew is fully covered with fractal data (no black corners).
+    overscan = _monitor_cfg('__default__', 'overscan', 0.02)
+    from types import SimpleNamespace as _NS
+    if isinstance(overscan, _NS):
+        overscan = 0.02
+    has_skew = any(abs(_monitor_cfg(n, 'skew', 0.0)) > 0.1 for n in active)
+    if has_skew:
+        total_phys_h_mm *= (1.0 + 2.0 * overscan)
+
     canvas_w = int(total_phys_w_mm * canvas_ppmm)
     canvas_h = int(total_phys_h_mm * canvas_ppmm)
     log.info(f'physical canvas: {total_phys_w_mm:.0f}x{total_phys_h_mm:.0f}mm '
           f'-> render {canvas_w}x{canvas_h}px @ {canvas_ppmm:.2f} px/mm')
 
     # --- compute viewport for each output (in canvas pixels) ---
-    # Overscan expands the viewport vertically to cover trapezoid corners
-    # from perspective skew on angled monitors.
-    overscan = _monitor_cfg('__default__', 'overscan', 0.02)
-    from types import SimpleNamespace as _NS
-    if isinstance(overscan, _NS):
-        overscan = 0.02
-
     viewports: dict[str, Viewport] = {}
     for name, g in active.items():
         vx = int(phys_x[name] * canvas_ppmm)
         vy = int(phys_y[name] * canvas_ppmm)
         vw = int(g['phys_w_mm'] * canvas_ppmm)
         vh = int(g['phys_h_mm'] * canvas_ppmm)
-        # Apply overscan for skewed monitors
-        skew = _monitor_cfg(name, 'skew', 0.0)
-        if abs(skew) > 0.1:
-            ovh = int(vh * overscan)
-            vy -= ovh
-            vh += 2 * ovh
+        # Shift viewports down by overscan amount to center in expanded canvas
+        if has_skew:
+            vy += int(canvas_h * overscan / (1.0 + 2.0 * overscan))
         viewports[name] = Viewport(vx, vy, vw, vh)
         log.info(f'{name}: viewport {vw}x{vh}+{vx},{vy} (canvas px)')
 
