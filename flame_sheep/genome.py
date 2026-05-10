@@ -367,7 +367,7 @@ class Genome:
     def _pack_variations(tr: 'Transform', var_array: np.ndarray,
                          variations: np.ndarray) -> None:
         """Pack active variations from a weight array into a GPU slot row."""
-        active_indices = np.where(variations > 1e-6)[0]
+        active_indices = np.where(np.abs(variations) > 1e-6)[0]
         for j, var_idx in enumerate(active_indices[:MAX_ACTIVE_VARS]):
             base = j * SLOT_SIZE
             var_array[base + 0] = float(var_idx)
