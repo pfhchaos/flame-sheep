@@ -63,9 +63,10 @@ void main() {
 
             if (src_hits < u_min_density) continue;
 
-            // Source pixel's blur radius based on its density
-            float density_ratio = max_density / src_hits;
-            float radius = float(max_r) * pow(density_ratio, u_curve);
+            // Source pixel's blur radius based on its density.
+            // Dense pixels → small radius (stay sharp), sparse → large (spread out).
+            float density_norm = src_hits / max_density;
+            float radius = float(max_r) * (1.0 - pow(density_norm, u_curve));
             radius = clamp(radius, 0.5, float(max_r));
 
             float dist2 = float(dx * dx + dy * dy);
