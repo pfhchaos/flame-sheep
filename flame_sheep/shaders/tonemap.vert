@@ -23,12 +23,13 @@ void main() {
     if (u_skew == 0.0) {
         gl_Position = vec4(in_pos, 0.0, 1.0);
     } else {
-        // Scale Y based on X position — trapezoid, not perspective warp.
-        // t = 0..1 across screen, scale = 1 at center, compressed on far side.
+        // Scale Y based on X position — trapezoid.
+        // Expand the LARGER side so the quad overshoots the screen,
+        // ensuring the trapezoid fully covers the viewport.
         float t = in_pos.x * 0.5 + 0.5;
-        float scale = 1.0 / (1.0 + u_skew * (t - 0.5));
+        float scale = 1.0 + u_skew * (t - 0.5);
 
-        // Compress/expand Y around center (y=0 in clip space)
+        // Expand Y on the near side (scale > 1), compress on far side (scale < 1)
         float y_skewed = in_pos.y * scale;
 
         gl_Position = vec4(in_pos.x, y_skewed, 0.0, 1.0);
