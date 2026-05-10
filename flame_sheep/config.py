@@ -81,6 +81,13 @@ DEFAULTS = {
         'feature_fields': [],
         'levels': {},
     },
+    'monitors': {
+        'default_diagonal': 27.0,  # fallback diagonal in inches
+        'overscan': 0.02,          # fraction to overscan for skew edge coverage
+        # Per-monitor overrides: [monitors.NAME]
+        # diagonal = 43.0        # inches
+        # skew = 11.0            # degrees, positive = angled right
+    },
 }
 
 
