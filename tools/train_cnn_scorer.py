@@ -50,19 +50,22 @@ def build_image_tensor(dataset: SheepDataset) -> torch.Tensor:
 
 def pairwise_accuracy(model: AestheticNet, images: torch.Tensor,
                       pairs: list[tuple[int, int]], device: str = 'cpu',
-                      batch_size: int = 512) -> float:
+                      batch_size: int = 256) -> float:
     """Compute fraction of pairs where model ranks the winner higher."""
     model.eval()
 
-    # Score all images in batches
-    all_scores = []
-    with torch.no_grad():
-        for i in range(0, len(images), batch_size):
-            batch = images[i:i + batch_size].float().to(device)
-            all_scores.append(model(batch).cpu())
-    scores = torch.cat(all_scores)
+    # Only score images that appear in pairs
+    unique_idx = sorted(set(w for w, _ in pairs) | set(l for _, l in pairs))
+    idx_to_pos = {idx: i for i, idx in enumerate(unique_idx)}
 
-    correct = sum(1 for w, l in pairs if scores[w] > scores[l])
+    scores = torch.zeros(len(unique_idx))
+    with torch.no_grad():
+        for i in range(0, len(unique_idx), batch_size):
+            batch_idx = unique_idx[i:i + batch_size]
+            batch = images[batch_idx].float().to(device)
+            scores[i:i + len(batch_idx)] = model(batch).cpu()
+
+    correct = sum(1 for w, l in pairs if scores[idx_to_pos[w]] > scores[idx_to_pos[l]])
     return correct / max(len(pairs), 1)
 
 
@@ -98,11 +101,9 @@ def train_epoch(model: AestheticNet, images: torch.Tensor,
         w_scores = model(w_batch)
         l_scores = model(l_batch)
 
-        # Bradley-Terry loss: -log(σ(score_winner - score_loser))
-        loss = F.binary_cross_entropy_with_logits(
-            w_scores - l_scores,
-            torch.ones_like(w_scores),
-        )
+        # Margin ranking loss: push winner score above loser by margin
+        target = torch.ones_like(w_scores)
+        loss = F.margin_ranking_loss(w_scores, l_scores, target, margin=1.0)
 
         optimizer.zero_grad()
         loss.backward()
@@ -127,6 +128,8 @@ def main():
     parser.add_argument('--val-gen', type=int, default=None,
                         help='Hold out this generation for validation (default: largest)')
     parser.add_argument('--device', type=str, default='cpu')
+    parser.add_argument('--image-size', type=int, default=128,
+                        help='Resize images to NxN for training (default: 128)')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -141,7 +144,7 @@ def main():
 
     # Load dataset (preload all images into RAM for fast training)
     log.info('Loading dataset from %s...', manifest)
-    dataset = SheepDataset(manifest, augment=True, preload=True)
+    dataset = SheepDataset(manifest, augment=True, preload=True, image_size=args.image_size)
     log.info('Loaded %d genomes (preloaded into RAM)', len(dataset))
 
     # Split by generation
@@ -175,18 +178,21 @@ def main():
 
     train_dataset = SheepDataset.__new__(SheepDataset)
     train_dataset.image_dir = dataset.image_dir
+    train_dataset.image_size = dataset.image_size
     train_dataset.augment = True
     train_dataset.entries = train_entries
     train_dataset._cache = train_cache
 
     val_dataset = SheepDataset.__new__(SheepDataset)
     val_dataset.image_dir = dataset.image_dir
+    val_dataset.image_size = dataset.image_size
     val_dataset.augment = False
     val_dataset.entries = val_entries
     val_dataset._cache = val_cache
 
-    train_sampler = PairSampler(train_dataset, pairs_per_epoch=args.pairs_per_epoch)
-    val_sampler = PairSampler(val_dataset, pairs_per_epoch=min(5000, len(val_indices) * 5))
+    # Train on all pairs (noisy but high volume), validate on clear-signal pairs
+    train_sampler = PairSampler(train_dataset, pairs_per_epoch=args.pairs_per_epoch, min_rating_gap=0)
+    val_sampler = PairSampler(val_dataset, pairs_per_epoch=min(2000, len(val_indices) * 2), min_rating_gap=10)
 
     val_pairs = val_sampler.sample_pairs()
     log.info('Train: %d genomes, Val: %d genomes (%d pairs)',
@@ -246,7 +252,7 @@ def main():
     with torch.no_grad():
         for label, group in [('TOP', top_5), ('BOTTOM', bottom_5)]:
             for local_idx, (_, _, rating, gen) in group:
-                score = model(val_images[local_idx].unsqueeze(0).to(args.device)).item()
+                score = model(val_images[local_idx].float().unsqueeze(0).to(args.device)).item()
                 log.info('  %s  rating=%3d  score=%.3f', label, rating, score)
 
 
