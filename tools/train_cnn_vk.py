@@ -375,12 +375,15 @@ class VkTrainer:
         gz = B * final_c
         self.gpu.dispatch(gap_bw_pipeline, gx, gy, gz, push)
 
-        # Copy linear grads to flat grad buffer
-        lin_grads = self.gpu.download(lin_grad_buf, np.uint8, lin_grad_size * 4)
-        # Read existing flat grads, add linear grads, write back
-        flat_grads = bytearray(self.gpu.download(self.grads_buf, np.uint8, self.total_weights * 4))
-        flat_grads[lin_grad_offset * 4:lin_grad_offset * 4 + lin_grad_size * 4] = bytes(lin_grads)
-        self.gpu.upload(self.grads_buf, bytes(flat_grads))
+        # Accumulate linear grads into flat grad buffer (add, not replace)
+        lin_grads_f = np.frombuffer(
+            self.gpu.download(lin_grad_buf, np.uint8, lin_grad_size * 4).tobytes(),
+            dtype=np.float32)
+        flat_grads_f = np.frombuffer(
+            self.gpu.download(self.grads_buf, np.uint8, self.total_weights * 4).tobytes(),
+            dtype=np.float32).copy()
+        flat_grads_f[lin_grad_offset:lin_grad_offset + lin_grad_size] += lin_grads_f
+        self.gpu.upload(self.grads_buf, np.frombuffer(flat_grads_f.tobytes(), dtype=np.uint32))
 
         gap_bw_pipeline.destroy()
         d_out_buf.destroy()
@@ -439,12 +442,16 @@ class VkTrainer:
             self.gpu.dispatch(bw_pipeline, (n_threads + 63) // 64, push_constants=push)
             bw_pipeline.destroy()
 
-            # Copy layer grads to flat grad buffer
+            # Accumulate layer grads into flat grad buffer (add, not replace)
             layer_offset = sum(self.w_counts[:i])
-            lg = self.gpu.download(layer_grad_buf, np.uint8, layer_grad_size * 4)
-            flat_grads = bytearray(self.gpu.download(self.grads_buf, np.uint8, self.total_weights * 4))
-            flat_grads[layer_offset * 4:layer_offset * 4 + layer_grad_size * 4] = bytes(lg)
-            self.gpu.upload(self.grads_buf, bytes(flat_grads))
+            lg_f = np.frombuffer(
+                self.gpu.download(layer_grad_buf, np.uint8, layer_grad_size * 4).tobytes(),
+                dtype=np.float32)
+            flat_grads_f = np.frombuffer(
+                self.gpu.download(self.grads_buf, np.uint8, self.total_weights * 4).tobytes(),
+                dtype=np.float32).copy()
+            flat_grads_f[layer_offset:layer_offset + layer_grad_size] += lg_f
+            self.gpu.upload(self.grads_buf, np.frombuffer(flat_grads_f.tobytes(), dtype=np.uint32))
             layer_grad_buf.destroy()
 
             # --- Backward input (only if not first layer) ---
