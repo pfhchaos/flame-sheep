@@ -47,23 +47,23 @@ class AestheticNet(nn.Module):
     def __init__(self):
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(4, 16, 3, stride=2, padding=1),   # → 128×128
+            nn.Conv2d(4, 8, 3, stride=2, padding=1),    # → H/2
+            nn.BatchNorm2d(8),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(8, 16, 3, stride=2, padding=1),   # → H/4
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
 
-            nn.Conv2d(16, 32, 3, stride=2, padding=1),  # → 64×64
+            nn.Conv2d(16, 32, 3, stride=2, padding=1),  # → H/8
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
 
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),  # → 32×32
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),  # → H/16
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-
-            nn.Conv2d(64, 128, 3, stride=2, padding=1), # → 16×16
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
         )
-        self.head = nn.Linear(128, 1)
+        self.head = nn.Linear(64, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass. x: (B, 4, 256, 256) → (B,) scores."""
@@ -84,9 +84,11 @@ class SheepDataset(Dataset):
     """
 
     def __init__(self, manifest_path: str | Path, image_dir: str | Path | None = None,
-                 augment: bool = False, preload: bool = False):
+                 augment: bool = False, preload: bool = False,
+                 image_size: int = 256):
         self.image_dir = Path(image_dir) if image_dir else Path(manifest_path).parent
         self.augment = augment
+        self.image_size = image_size
 
         self.entries = []  # (static_path, swept_path, rating, generation)
         with open(manifest_path) as f:
@@ -128,13 +130,14 @@ class SheepDataset(Dataset):
         return img, rating, gen
 
     def _load_4ch(self, static_name: str, swept_name: str) -> torch.Tensor:
-        """Load static RGB + swept grayscale → (4, 256, 256) float32."""
+        """Load static RGB + swept grayscale → (4, size, size) float32."""
         from PIL import Image
 
-        static_img = Image.open(self.image_dir / static_name).convert('RGB')
-        swept_img = Image.open(self.image_dir / swept_name).convert('L')
+        sz = self.image_size
+        static_img = Image.open(self.image_dir / static_name).convert('RGB').resize((sz, sz), Image.LANCZOS)
+        swept_img = Image.open(self.image_dir / swept_name).convert('L').resize((sz, sz), Image.LANCZOS)
 
-        static_arr = np.array(static_img, dtype=np.float32) / 255.0  # (256, 256, 3)
+        static_arr = np.array(static_img, dtype=np.float32) / 255.0  # (sz, sz, 3)
         swept_arr = np.array(swept_img, dtype=np.float32) / 255.0    # (256, 256)
 
         # Stack: (256, 256, 3) + (256, 256, 1) → (256, 256, 4) → (4, 256, 256)
@@ -160,9 +163,11 @@ class PairSampler:
     Samples uniformly across generations to avoid large-generation bias.
     """
 
-    def __init__(self, dataset: SheepDataset, pairs_per_epoch: int = 50000):
+    def __init__(self, dataset: SheepDataset, pairs_per_epoch: int = 50000,
+                 min_rating_gap: int = 0):
         self.dataset = dataset
         self.pairs_per_epoch = pairs_per_epoch
+        self.min_rating_gap = min_rating_gap
         self.gen_map = dataset.by_generation()
         self.rng = np.random.default_rng()
 
@@ -190,7 +195,7 @@ class PairSampler:
                 a, b = self.rng.choice(n, size=2, replace=False)
                 idx_a, rating_a = rated[a]
                 idx_b, rating_b = rated[b]
-                if rating_a == rating_b:
+                if abs(rating_a - rating_b) <= self.min_rating_gap:
                     continue
                 if rating_a > rating_b:
                     pairs.append((idx_a, idx_b))
