@@ -56,27 +56,80 @@ def weight_counts(layers: list) -> list[int]:
     return counts
 
 
+class ImageStore:
+    """Lazy-loading image store. Loads from disk on demand with LRU cache.
+
+    At 256×256×4×4 = 1MB per image, a 4GB cache holds ~4000 images.
+    For 18K images, most batches hit cache after the first epoch.
+    """
+
+    def __init__(self, manifest_path: Path, image_dir: Path,
+                 image_size: int, cache_gb: float = 4.0):
+        self.image_dir = image_dir
+        self.image_size = image_size
+
+        self.entries = []
+        with open(manifest_path) as f:
+            for row in csv.DictReader(f):
+                self.entries.append((
+                    row['static_path'], row['swept_path'],
+                    int(row['rating']), int(row['generation']),
+                ))
+
+        bytes_per_image = 4 * image_size * image_size * 4
+        self.max_cache = int(cache_gb * 1e9 / bytes_per_image)
+        self._cache: dict[int, np.ndarray] = {}
+        self._access_order: list[int] = []
+
+    def __len__(self):
+        return len(self.entries)
+
+    def _load_one(self, idx: int) -> np.ndarray:
+        static, swept, _, _ = self.entries[idx]
+        sz = self.image_size
+        s_img = Image.open(self.image_dir / static).convert('RGB').resize(
+            (sz, sz), Image.LANCZOS)
+        w_img = Image.open(self.image_dir / swept).convert('L').resize(
+            (sz, sz), Image.LANCZOS)
+        img = np.zeros((4, sz, sz), dtype=np.float32)
+        img[:3] = np.array(s_img, dtype=np.float32).transpose(2, 0, 1) / 255.0
+        img[3] = np.array(w_img, dtype=np.float32) / 255.0
+        return img
+
+    def get_batch(self, indices: list[int] | np.ndarray) -> np.ndarray:
+        """Load a batch of images by index. Uses LRU cache."""
+        batch = np.zeros((len(indices), 4, self.image_size, self.image_size),
+                         dtype=np.float32)
+        for i, idx in enumerate(indices):
+            if idx not in self._cache:
+                # Evict oldest if cache full
+                while len(self._cache) >= self.max_cache:
+                    old = self._access_order.pop(0)
+                    self._cache.pop(old, None)
+                self._cache[idx] = self._load_one(idx)
+            else:
+                # Move to end of access order
+                try:
+                    self._access_order.remove(idx)
+                except ValueError:
+                    pass
+            self._access_order.append(idx)
+            batch[i] = self._cache[idx]
+        return batch
+
+
 def load_images(manifest_path: Path, image_dir: Path,
                 image_size: int) -> tuple[np.ndarray, list]:
-    """Load all images as (N, 4, H, W) float32 + metadata."""
-    entries = []
-    with open(manifest_path) as f:
-        for row in csv.DictReader(f):
-            entries.append((
-                row['static_path'], row['swept_path'],
-                int(row['rating']), int(row['generation']),
-            ))
+    """Load all images as (N, 4, H, W) float32 + metadata.
+
+    For backward compatibility. Use ImageStore for streaming.
+    """
+    store = ImageStore(manifest_path, image_dir, image_size, cache_gb=100)
+    entries = store.entries
 
     images = np.zeros((len(entries), 4, image_size, image_size), dtype=np.float32)
-    for i, (static, swept, _, _) in enumerate(entries):
-        s_img = Image.open(image_dir / static).convert('RGB').resize(
-            (image_size, image_size), Image.LANCZOS)
-        w_img = Image.open(image_dir / swept).convert('L').resize(
-            (image_size, image_size), Image.LANCZOS)
-        s_arr = np.array(s_img, dtype=np.float32) / 255.0
-        w_arr = np.array(w_img, dtype=np.float32) / 255.0
-        images[i, :3] = s_arr.transpose(2, 0, 1)
-        images[i, 3] = w_arr
+    for i in range(len(entries)):
+        images[i] = store._load_one(i)
         if (i + 1) % 2000 == 0:
             log.info('  loaded %d/%d images', i + 1, len(entries))
 
@@ -490,12 +543,14 @@ class VkTrainer:
 def main():
     parser = argparse.ArgumentParser(description='Train CNN scorer on GPU (Vulkan)')
     parser.add_argument('--data', type=str, required=True)
-    parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--batch-size', type=int, default=32)
-    parser.add_argument('--pairs-per-epoch', type=int, default=10000)
+    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--lr', type=float, default=0.003)
+    parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--pairs-per-epoch', type=int, default=5000)
     parser.add_argument('--val-gen', type=int, default=244)
     parser.add_argument('--image-size', type=int, default=256)
+    parser.add_argument('--cache-gb', type=float, default=4.0,
+                        help='Image cache size in GB (default: 4.0)')
     parser.add_argument('--output', type=str, default=None)
     args = parser.parse_args()
 
@@ -503,12 +558,14 @@ def main():
                         datefmt='%H:%M:%S')
 
     data_dir = Path(args.data)
-    output_path = Path(args.output) if args.output else data_dir / 'cnn_scorer_vk.bin'
+    output_path = Path(args.output) if args.output else data_dir / 'cnn_scorer_vk.npy'
 
-    # Load images
-    log.info('Loading images...')
-    all_images, entries = load_images(data_dir / 'manifest.csv', data_dir, args.image_size)
-    log.info('Loaded %d images (%s)', len(all_images), all_images.shape)
+    # Streaming image store (loads from disk on demand)
+    store = ImageStore(data_dir / 'manifest.csv', data_dir, args.image_size,
+                       cache_gb=args.cache_gb)
+    entries = store.entries
+    log.info('Dataset: %d genomes, image cache: %.1f GB (%d images)',
+             len(entries), args.cache_gb, store.max_cache)
 
     # Init Vulkan
     gpu = VkCompute()
@@ -516,18 +573,19 @@ def main():
 
     trainer = VkTrainer(gpu, args.image_size, args.batch_size)
 
-    # Sample validation pairs
+    # Validation pairs (within val_gen only)
     val_pairs = sample_pairs(entries, 2000, min_gap=10, exclude_gen=None)
     val_pairs = [(w, l) for w, l in val_pairs
                  if entries[w][3] == args.val_gen and entries[l][3] == args.val_gen]
     log.info('Validation pairs: %d (gen %d)', len(val_pairs), args.val_gen)
 
     best_val_acc = 0.0
+    patience = 0
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
 
-        # Sample training pairs (exclude val gen)
+        # Sample training pairs from ALL generations except val
         train_pairs = sample_pairs(entries, args.pairs_per_epoch, min_gap=0,
                                    exclude_gen=args.val_gen)
 
@@ -542,21 +600,23 @@ def main():
             batch = pair_arr[i:i + args.batch_size]
             if len(batch) < 2:
                 continue
-            w_imgs = all_images[batch[:, 0]]
-            l_imgs = all_images[batch[:, 1]]
+            w_imgs = store.get_batch(batch[:, 0])
+            l_imgs = store.get_batch(batch[:, 1])
             loss = trainer.train_step(w_imgs, l_imgs, args.lr)
+            if np.isnan(loss):
+                log.warning('NaN loss at batch %d, skipping', i)
+                continue
             epoch_loss += loss
             n_batches += 1
 
         avg_loss = epoch_loss / max(n_batches, 1)
 
-        # Validate: score all val gen images, compute pairwise accuracy
+        # Validate
         val_indices = sorted(set(w for w, _ in val_pairs) | set(l for _, l in val_pairs))
         val_scores = {}
         for i in range(0, len(val_indices), args.batch_size):
             batch_idx = val_indices[i:i + args.batch_size]
-            batch_imgs = all_images[batch_idx]
-            # Pad to batch_size if needed
+            batch_imgs = store.get_batch(batch_idx)
             if len(batch_imgs) < args.batch_size:
                 pad = np.zeros((args.batch_size - len(batch_imgs), *batch_imgs.shape[1:]),
                                dtype=np.float32)
@@ -569,15 +629,20 @@ def main():
         val_acc = correct / max(len(val_pairs), 1)
 
         elapsed = time.time() - t0
-        log.info('Epoch %2d/%d  loss=%.4f  val_acc=%.3f  lr=%.1e  (%.1fs)',
-                 epoch, args.epochs, avg_loss, val_acc, args.lr, elapsed)
+        log.info('Epoch %2d/%d  loss=%.4f  val_acc=%.3f  cache=%d  (%.0fs)',
+                 epoch, args.epochs, avg_loss, val_acc, len(store._cache), elapsed)
 
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            # Save weights
+            patience = 0
             weights = gpu.download(trainer.weights_buf, np.float32, trainer.total_weights)
             np.save(str(output_path), weights)
             log.info('  -> saved (best val_acc=%.3f)', best_val_acc)
+        else:
+            patience += 1
+            if patience >= 15:
+                log.info('Early stopping (15 epochs without improvement)')
+                break
 
     log.info('Training complete. Best val accuracy: %.3f', best_val_acc)
     gpu.destroy()
