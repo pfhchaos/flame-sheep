@@ -110,6 +110,21 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
     return scores
 
 
+def _refresh_loop_fitness(conn: sqlite3.Connection, log: logging.Logger) -> None:
+    """Recompute fitness for all loops after a scoring pass completes."""
+    from .storage import Library
+    try:
+        lib = Library.__new__(Library)
+        lib.conn = conn
+        loop_ids = [r[0] for r in conn.execute('SELECT id FROM loops').fetchall()]
+        for lid in loop_ids:
+            lib.update_loop_fitness(lid)
+        if loop_ids:
+            log.info('Refreshed fitness for %d loops after scoring pass', len(loop_ids))
+    except Exception:
+        log.exception('Failed to refresh loop fitness')
+
+
 def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
     """Entry point for the CPU score subprocess."""
     # Clear inherited handlers from fork (parent's setup_logging adds to named loggers)
@@ -149,6 +164,7 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
         log.exception('Failed to load CNN scorer — CNN scoring disabled')
 
     log.info('CPU score worker started')
+    was_scoring = False  # track when we transition from scoring → idle
 
     try:
         while not stop_event.is_set():
@@ -168,8 +184,14 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
             ).fetchone()
 
             if row is None:
+                if was_scoring:
+                    # Just finished a scoring pass — refresh loop fitnesses
+                    _refresh_loop_fitness(conn, log)
+                    was_scoring = False
                 stop_event.wait(BackgroundCpuScorer.IDLE_CHECK_INTERVAL)
                 continue
+
+            was_scoring = True
 
             gid = row[0]
             render_static = row[1]
