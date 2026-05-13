@@ -10,7 +10,7 @@ log = logging.getLogger(__name__)
 
 import numpy as np
 
-from flame_sheep_audio import AudioState
+from flame_sheep_audio import AudioState, SAMPLE_RATE
 from flame_sheep_audio.response import MelCentroid, Delta
 from flame_sheep.genome import _lerp_arr
 from flame_sheep.config import cfg
@@ -75,8 +75,13 @@ class PaletteAxis:
                 self.palette_speed = 0.03 + event.energy * 0.1 * density_scale
                 log.debug(f'[backbeat] energy={event.energy:.2f}')
 
-        # Mel-space centroid delta (perceptually uniform)
-        if len(audio.spectrum) > 0 and self._mel_centroid is not None:
+        # Mel-space centroid delta (reinit on spectrum size change)
+        n_bins = len(audio.spectrum)
+        if n_bins > 0 and (self._mel_centroid is None
+                           or self._mel_centroid.n_bins != n_bins):
+            freqs = np.linspace(0, SAMPLE_RATE / 2, n_bins)
+            self._mel_centroid = MelCentroid(freqs)
+        if n_bins > 0 and self._mel_centroid is not None:
             mel_centroid = self._mel_centroid.compute(audio.spectrum)
         else:
             mel_centroid = 0.0
