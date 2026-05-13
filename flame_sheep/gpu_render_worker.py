@@ -249,8 +249,8 @@ class BackgroundGpuRenderer:
 def main():
     """CLI entry point: render all unscored genomes.
 
-    Run when wallpaper is NOT running — two GPU processes on Arc
-    will crash the desktop.
+    Can also run standalone for bulk rendering. The wallpaper startup
+    now launches this as a background worker automatically.
     """
     import argparse
 
