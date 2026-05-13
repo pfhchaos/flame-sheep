@@ -22,7 +22,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-RENDER_VERSION = 1  # bump to re-render all genomes
+RENDER_VERSION = 2  # v2: re-render with survey-corrected framing
 
 COLOR_SCALE = 1_000_000.0
 
