@@ -748,16 +748,15 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         threading.Thread(target=_wait_evolve, daemon=True).start()
 
     # --- background workers ---
+    # GPU render worker is NOT started here — it competes for the GPU and
+    # kills desktop performance. Run separately: python -m flame_sheep.gpu_render_worker
     from .cpu_score_worker import BackgroundCpuScorer
-    from .gpu_render_worker import BackgroundGpuRenderer
     from .transition_worker import BackgroundTransitionScorer
     from .storage import _db_path
     db = str(_db_path())
-    gpu_renderer = BackgroundGpuRenderer(db_path=db)
     cpu_scorer = BackgroundCpuScorer(db_path=db)
     transition_scorer = BackgroundTransitionScorer(db_path=db)
     if lib is not None:
-        gpu_renderer.start()
         cpu_scorer.start()
         transition_scorer.start()
 
@@ -1005,7 +1004,6 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         log.debug(f'[render] exiting render loop (quit_requested={quit_requested})')
         if feature_logger:
             feature_logger.close()
-        gpu_renderer.stop()
         cpu_scorer.stop()
         transition_scorer.stop()
         orch.stop()
