@@ -137,9 +137,15 @@ class Variation:
     COTH_FUNC     = 119
     EXP_FUNC      = 120  # complex exp, different from EXPONENTIAL (idx 18)
     LOG_FUNC      = 121
+    # --- new variations ---
+    SPLITBRDR     = 122
+    PHOENIX_JULIA = 123
+    JULIAQ        = 124
+    MINKOWSKOPE   = 125
+    GLYNNIA       = 126
 
 
-NUM_VARIATIONS = 122
+NUM_VARIATIONS = 127
 
 # Variations that require per-transform parameters (var_params dict).
 # Note: WAVES/POPCORN/RINGS/FAN (idx 15/17/21/22) read from the affine
@@ -173,6 +179,9 @@ PARAMETRIC_VARIATIONS = {
     Variation.MODULUS_FUNC, Variation.BENT2, Variation.BIPOLAR,
     Variation.FLUX, Variation.SPLIT, Variation.SEPARATION,
     Variation.POPCORN2,
+    # new variations
+    Variation.SPLITBRDR, Variation.PHOENIX_JULIA,
+    Variation.JULIAQ, Variation.MINKOWSKOPE,
 }
 
 # Per-variation parameter spec: ordered list of param names.
@@ -264,6 +273,14 @@ VAR_PARAMS_SPEC = {
     Variation.SEPARATION:   ['separation_x', 'separation_y',
                              'separation_xinside', 'separation_yinside'],
     Variation.POPCORN2:     ['popcorn2_x', 'popcorn2_y', 'popcorn2_c'],
+    # new variations
+    Variation.SPLITBRDR:    ['splitbrdr_x', 'splitbrdr_y', 'splitbrdr_px', 'splitbrdr_py'],
+    Variation.PHOENIX_JULIA: ['phoenix_power', 'phoenix_dist',
+                              'phoenix_x_distort', 'phoenix_y_distort'],
+    Variation.JULIAQ:       ['juliaq_power', 'juliaq_divisor'],
+    Variation.MINKOWSKOPE:  ['mskope_separation', 'mskope_frequencyx',
+                             'mskope_frequencyy', 'mskope_amplitude',
+                             'mskope_perturbation', 'mskope_damping'],
 }
 
 # Backwards compat — old code may reference this

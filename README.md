@@ -8,10 +8,11 @@ Renders IFS (Iterated Function System) flame fractals as your desktop wallpaper,
 
 - **Fractal wallpaper** — full-screen flame fractals rendered via OpenGL compute shaders, displayed as a Wayland layer-shell surface behind your windows
 - **Audio-reactive** — captures system audio via PipeWire, analyzes it in real time, and drives the visual response
-- **Beat detection** — spectral flux onset detection with per-bin harmonic/percussive separation. Low-frequency beats drive genome morphing, mid-range drives palette changes, high-frequency drives zoom pulses
+- **Beat detection** — spectral flux onset detection with phase-coherence-based percussive separation. Band-separated onsets drive independent visual axes (morphing, palette, zoom)
 - **Density-driven** — at high tempos, per-event effects smoothly scale down into continuous texture. Works with everything from ambient to speedcore
 - **Adaptive** — band frequencies drift toward where the percussion actually lives (optional spring-model adaptive bands). Tempo-scaled constants adjust to the music's speed
-- **Evolutionary** — genomes evolve via user feedback (like/dislike). Background CPU scorer evaluates symmetry, self-similarity, fractal dimension, and detail sensitivity
+- **Evolutionary** — genomes evolve via CNN aesthetic scoring (trained on crowdsourced Electric Sheep ratings) and direct user feedback (like/dislike). Background GPU and CPU scorers evaluate visual quality
+- **Transition graph** — pairwise genome distances (structural + parametric) enable smooth morphing between visually compatible genomes. Loops are composed from high-scoring genomes connected by smooth transitions
 - **Multi-monitor** — renders independently on each output via wlr-layer-shell frame callbacks
 
 ## Requirements
@@ -20,7 +21,7 @@ Renders IFS (Iterated Function System) flame fractals as your desktop wallpaper,
 - **Compositor**: sway or any wlr-layer-shell compatible Wayland compositor
 - **Audio**: PipeWire
 - **Python**: 3.11+
-- **Dependencies**: moderngl, numpy, scipy, sounddevice
+- **Dependencies**: moderngl, numpy, scipy, sounddevice, Pillow
 
 ## Quick start
 
@@ -66,6 +67,7 @@ echo "like" > ~/.local/share/flame-sheep/ctl     # like current genome
 echo "dislike" > ~/.local/share/flame-sheep/ctl   # dislike current genome
 echo "swap" > ~/.local/share/flame-sheep/ctl      # force genome swap
 echo "next" > ~/.local/share/flame-sheep/ctl      # next loop
+echo "evolve" > ~/.local/share/flame-sheep/ctl       # force evolution cycle
 echo "config reload" > ~/.local/share/flame-sheep/ctl  # hot-reload config
 ```
 
@@ -91,6 +93,14 @@ python tools/view_symmetry_groups.py --variation sattractor --param sat_m=6
 # Analyze a song's audio characteristics
 python tools/generate_golden_masters.py --verify   # check transform regression
 ```
+
+## Architecture
+
+- **127 variation functions** — CPU + GPU implementations, verified against flam3 and JWildfire reference sources
+- **Three-tier scoring** — fast CPU pre-filter → GPU histogram analysis → CNN aesthetic ranking
+- **CNN scorer** — 25K-parameter siamese network trained on Vulkan compute shaders (Intel Arc A770), 71.7% pairwise accuracy on crowdsourced Electric Sheep ratings
+- **Transition graph** — sparse pairwise distance matrix for smooth genome morphing, used for loop composition and switching
+- **Control pipe** — runtime commands via named pipe at `~/.local/share/flame-sheep/ctl`
 
 ## License
 

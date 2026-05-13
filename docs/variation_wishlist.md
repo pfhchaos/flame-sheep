@@ -15,8 +15,8 @@ Candidates from jwildfire_variation_catalog.txt, filtered by:
 | crackle | medium | 6 | STOCHASTIC | TODO (needs Voronoi noise) |
 | dc_carpet | trivial | 1 | TILING | TODO (needs DC color support) |
 | stripes | trivial | 2 | TILING | DONE |
-| xtrb | trivial | 6 | TILING | TODO |
-| splitbrdr | cheap | 4 | TILING | TODO |
+| xtrb | trivial | 6 | TILING | SKIP (massive trilinear coord system, not trivial) |
+| splitbrdr | cheap | 4 | TILING | DONE |
 
 ## Priority 2: Polar & Spiral
 
@@ -27,8 +27,8 @@ Candidates from jwildfire_variation_catalog.txt, filtered by:
 | layered_spiral | cheap | 1 | ROTATIONAL | DONE |
 | spiralwing | cheap | 0 | ROTATIONAL | DONE |
 | vortex | cheap | 0 | ROTATIONAL | SKIP (iterative flow field, too expensive) |
-| phoenix_julia | medium | 4 | POLAR | TODO |
-| juliaq | medium | 2 | POLAR | TODO |
+| phoenix_julia | medium | 4 | POLAR | DONE |
+| juliaq | medium | 2 | POLAR | DONE |
 
 ## Priority 3: Reflective & Symmetry
 
@@ -38,8 +38,8 @@ Candidates from jwildfire_variation_catalog.txt, filtered by:
 | flipcircle | trivial | 0 | REFLECTIVE | DONE |
 | auger | cheap | 4 | REFLECTIVE | DONE |
 | eclipse | cheap | 1 | REFLECTIVE | DONE |
-| minkowskope | cheap | 0 | REFLECTIVE | TODO |
-| wallpaper_js | cheap | 0 | REFLECTIVE | TODO |
+| minkowskope | cheap | 6 | REFLECTIVE | DONE |
+| wallpaper_js | cheap | 0 | REFLECTIVE | SKIP (covered by existing wallpaper variation) |
 
 ## Priority 4: Interesting Shapes
 
@@ -47,15 +47,15 @@ Candidates from jwildfire_variation_catalog.txt, filtered by:
 |---|---|---|---|---|
 | flower | medium | 2 | ALGEBRAIC | DONE |
 | blade | medium | 0 | ALGEBRAIC | DONE |
-| crown | medium | 2 | ALGEBRAIC | TODO (complex number math) |
-| dragon | medium | 0 | STOCHASTIC | TODO |
-| glynnia | medium | 0 | POLAR | TODO |
+| crown | medium | 2 | ALGEBRAIC | SKIP (base shape, ignores input coordinates) |
+| dragon | medium | 0 | STOCHASTIC | SKIP (stateful turtle, doesn't fit chaos game) |
+| glynnia | medium | 0 | POLAR | DONE |
 | collideoscope | medium | 2 | POLAR | DONE |
 | lissajous | cheap | 7 | FRACTAL | DONE |
 | ripple | medium | 8 | FRACTAL | DONE |
 
 ## Status
-- 70 variations currently implemented (was 54)
-- 16 implemented this session
-- ~14 remaining TODO candidates
+- 127 variations implemented (NUM_VARIATIONS)
+- 2 remaining TODO: crackle (Voronoi noise), dc_carpet (DC color support)
 - DC color support would unlock dc_carpet and other dc_ variations
+- See `variation_catalog.md` for the full exhaustive inventory

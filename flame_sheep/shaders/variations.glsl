@@ -1216,6 +1216,144 @@ vec2 var_log_func(vec2 p, Polar pc) {
     return vec2(0.5 * log(max(pc.r_sq, 1e-10)), pc.phi);
 }
 
+// --- New variations ---
+
+vec2 var_splitbrdr(vec2 p, Polar pc, int slot) {
+    float sb_x  = u_active_vars[slot + PARAM_OFFSET + 0];
+    float sb_y  = u_active_vars[slot + PARAM_OFFSET + 1];
+    float sb_px = u_active_vars[slot + PARAM_OFFSET + 2];
+    float sb_py = u_active_vars[slot + PARAM_OFFSET + 3];
+    float B = (p.x*p.x + p.y*p.y) / 4.0 + 1.0;
+    float b = 1.0 / B;
+    vec2 result = p * b + p * vec2(sb_px, sb_py);
+    float rx = round(p.x);
+    float ry = round(p.y);
+    float ox = p.x - rx;
+    float oy = p.y - ry;
+    if (rng_float() >= 0.75) {
+        result += vec2(ox * 0.5 + rx, oy * 0.5 + ry);
+    } else {
+        if (abs(ox) >= abs(oy)) {
+            if (ox >= 0.0) {
+                result += vec2(ox * 0.5 + rx + sb_x,
+                               oy * 0.5 + ry + sb_y * oy / (ox + 1e-10));
+            } else {
+                result += vec2(ox * 0.5 + rx - sb_y,
+                               oy * 0.5 + ry - sb_y * oy / (ox - 1e-10));
+            }
+        } else {
+            if (oy >= 0.0) {
+                result += vec2(ox * 0.5 + rx + ox / (oy + 1e-10) * sb_y,
+                               oy * 0.5 + ry + sb_y);
+            } else {
+                result += vec2(ox * 0.5 + rx - ox / (oy - 1e-10) * sb_x,
+                               oy * 0.5 + ry - sb_y);
+            }
+        }
+    }
+    return result;
+}
+
+vec2 var_phoenix_julia(vec2 p, Polar pc, int slot) {
+    float power     = u_active_vars[slot + PARAM_OFFSET + 0];
+    float dist      = u_active_vars[slot + PARAM_OFFSET + 1];
+    float x_distort = u_active_vars[slot + PARAM_OFFSET + 2];
+    float y_distort = u_active_vars[slot + PARAM_OFFSET + 3];
+    float inv_n = dist / power;
+    float inv_2pi_n = 6.28318530718 / power;
+    float cn = dist / power / 2.0;
+    float pre_x = p.x * (x_distort + 1.0);
+    float pre_y = p.y * (y_distort + 1.0);
+    float a = atan(pre_y, pre_x) * inv_n + float(int(rng_float() * 32767.0)) * inv_2pi_n;
+    float r = pow(p.x*p.x + p.y*p.y + 1e-10, cn);
+    return r * vec2(cos(a), sin(a));
+}
+
+vec2 var_juliaq(vec2 p, Polar pc, int slot) {
+    float power   = u_active_vars[slot + PARAM_OFFSET + 0];
+    float divisor = u_active_vars[slot + PARAM_OFFSET + 1];
+    if (abs(power) < 1e-10) power = 1.0;
+    float inv_power = divisor / power;
+    float inv_power_2pi = 6.28318530718 / power;
+    float half_inv_power = 0.5 * divisor / power;
+    float a = atan(p.y, p.x) * inv_power + float(int(rng_float() * 10.0)) * inv_power_2pi;
+    float r = pow(p.x*p.x + p.y*p.y + 1e-10, half_inv_power);
+    return r * vec2(cos(a), sin(a));
+}
+
+float _minkowski_qmark(float x) {
+    float p = 0.0, q = 1.0, r = 1.0, s = 1.0;
+    float d = 1.0, y = 0.0;
+    for (int i = 0; i < 20; i++) {
+        d *= 0.5;
+        float m = p + r;
+        float n = q + s;
+        if (x < m / n) { r = m; s = n; }
+        else { y += d; p = m; q = n; }
+    }
+    return y + d;
+}
+
+float _minkosine(float x, bool alt_wave) {
+    float lp = mod(abs(x), 4.0);
+    float pp = mod(abs(x), 2.0);
+    if (pp > 1.0) pp = 2.0 - pp;
+    float mink = alt_wave ? _minkowski_qmark(pp) - pp : _minkowski_qmark(pp);
+    if ((lp < 2.0) ^^ (x > 0.0)) return mink;
+    return -mink;
+}
+
+vec2 var_minkowskope(vec2 p, Polar pc, int slot) {
+    float separation   = u_active_vars[slot + PARAM_OFFSET + 0];
+    float frequencyx   = u_active_vars[slot + PARAM_OFFSET + 1];
+    float frequencyy   = u_active_vars[slot + PARAM_OFFSET + 2];
+    float amplitude    = u_active_vars[slot + PARAM_OFFSET + 3];
+    float perturbation = u_active_vars[slot + PARAM_OFFSET + 4];
+    float damping      = u_active_vars[slot + PARAM_OFFSET + 5];
+    bool alt_wave = frequencyx <= 0.0;
+    float tpf = 0.5 * frequencyx;
+    float tpf2 = 0.5 * frequencyy;
+    float pt = perturbation * _minkosine(tpf2 * p.y, alt_wave);
+    float t;
+    if (abs(damping) < 1e-6) {
+        t = amplitude * _minkosine(tpf * p.x + pt - 1.0, alt_wave) + separation;
+    } else {
+        t = amplitude * exp(-abs(p.x) * damping) * _minkosine(tpf * p.x + pt - 1.0, alt_wave) + separation;
+    }
+    if (abs(p.y) <= t) return -p;
+    return p;
+}
+
+vec2 var_glynnia(vec2 p, Polar pc) {
+    float vvar2 = inversesqrt(2.0);  // weight applied by caller
+    float r = pc.r_val;
+    if (r >= 1.0) {
+        if (rng_float() > 0.5) {
+            float d = sqrt(r + p.x);
+            if (d < 1e-10) return p;
+            return vec2(vvar2 * d, -vvar2 / d * p.y);
+        } else {
+            float d = r + p.x;
+            float dx = sqrt(r * (p.y*p.y + d*d));
+            if (dx < 1e-10) return p;
+            float rr = 1.0 / dx;
+            return vec2(rr * d, rr * p.y);
+        }
+    } else {
+        if (rng_float() > 0.5) {
+            float d = sqrt(r + p.x);
+            if (d < 1e-10) return p;
+            return vec2(-vvar2 * d, -vvar2 / d * p.y);
+        } else {
+            float d = r + p.x;
+            float dx = sqrt(r * (p.y*p.y + d*d));
+            if (dx < 1e-10) return p;
+            float rr = 1.0 / dx;
+            return vec2(-rr * d, rr * p.y);
+        }
+    }
+}
+
 // ------------------------------------------------------------
 // Apply single variation by index (switch-based dispatch)
 // ------------------------------------------------------------
@@ -1343,6 +1481,11 @@ vec2 apply_single_variation(int var_idx, vec2 p, Polar pc, int slot, int tidx) {
         case 119: return var_coth_func(p, pc);
         case 120: return var_exp_func(p, pc);
         case 121: return var_log_func(p, pc);
+        case 122: return var_splitbrdr(p, pc, slot);
+        case 123: return var_phoenix_julia(p, pc, slot);
+        case 124: return var_juliaq(p, pc, slot);
+        case 125: return var_minkowskope(p, pc, slot);
+        case 126: return var_glynnia(p, pc);
         default: return p;
     }
 }

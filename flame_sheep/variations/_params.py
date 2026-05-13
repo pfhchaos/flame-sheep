@@ -421,6 +421,32 @@ def random_var_params(var_idx: int, rng: np.random.Generator) -> dict[str, float
         return {'popcorn2_x': float(rng.uniform(-0.5, 0.5)),
                 'popcorn2_y': float(rng.uniform(-0.5, 0.5)),
                 'popcorn2_c': float(rng.uniform(1.0, 5.0))}
+    elif var_idx == Variation.SPLITBRDR:
+        return {'splitbrdr_x': float(rng.uniform(0.05, 0.5)),
+                'splitbrdr_y': float(rng.uniform(0.05, 0.5)),
+                'splitbrdr_px': float(rng.uniform(-0.5, 0.5)),
+                'splitbrdr_py': float(rng.uniform(-0.5, 0.5))}
+    elif var_idx == Variation.PHOENIX_JULIA:
+        p = int(rng.integers(2, 10))
+        if rng.random() < 0.5: p = -p
+        return {'phoenix_power': float(p),
+                'phoenix_dist': float(rng.uniform(0.2, 3.5)),
+                'phoenix_x_distort': float(rng.uniform(-2.5, 2.5)),
+                'phoenix_y_distort': float(rng.uniform(-2.5, 2.5))}
+    elif var_idx == Variation.JULIAQ:
+        p = int(rng.integers(2, 10))
+        d = int(rng.integers(1, max(2, abs(p))))
+        if rng.random() < 0.5: p = -p
+        if rng.random() < 0.5: d = -d
+        return {'juliaq_power': float(p),
+                'juliaq_divisor': float(d)}
+    elif var_idx == Variation.MINKOWSKOPE:
+        return {'mskope_separation': float(rng.uniform(0.1, 1.0)),
+                'mskope_frequencyx': float(rng.uniform(-5.0, 5.0)),
+                'mskope_frequencyy': float(rng.uniform(-5.0, 5.0)),
+                'mskope_amplitude': float(rng.uniform(0.1, 1.0)),
+                'mskope_perturbation': float(rng.uniform(0.0, 2.0)),
+                'mskope_damping': float(rng.uniform(0.0, 1.0))}
 
     return {}
 
@@ -519,6 +545,15 @@ _PARAM_RANGES: dict[str, tuple[float, float]] = {
     'separation_xinside': (0.0, 1.0), 'separation_yinside': (0.0, 1.0),
     'popcorn2_x': (-0.5, 0.5), 'popcorn2_y': (-0.5, 0.5),
     'popcorn2_c': (1.0, 5.0),
+    # new variations
+    'splitbrdr_x': (0.05, 0.5), 'splitbrdr_y': (0.05, 0.5),
+    'splitbrdr_px': (-0.5, 0.5), 'splitbrdr_py': (-0.5, 0.5),
+    'phoenix_power': (2.0, 10.0), 'phoenix_dist': (0.2, 3.5),
+    'phoenix_x_distort': (-2.5, 2.5), 'phoenix_y_distort': (-2.5, 2.5),
+    'juliaq_power': (2.0, 10.0), 'juliaq_divisor': (1.0, 8.0),
+    'mskope_separation': (0.1, 1.0), 'mskope_frequencyx': (-5.0, 5.0),
+    'mskope_frequencyy': (-5.0, 5.0), 'mskope_amplitude': (0.1, 1.0),
+    'mskope_perturbation': (0.0, 2.0), 'mskope_damping': (0.0, 1.0),
 }
 
 # Integer params that should be rounded after jitter
@@ -530,6 +565,7 @@ _INTEGER_PARAMS = {
     'super_shape_m', 'pie_slices',
     'wedge_julia_count', 'wedge_julia_power',
     'wedge_count', 'wedge_sph_count',
+    'phoenix_power', 'juliaq_power', 'juliaq_divisor',
 }
 
 
