@@ -54,6 +54,137 @@ class LoopCandidate:
         return len(self.genome_ids)
 
 
+def _canonical_rotation(ids: list[int]) -> tuple[int, ...]:
+    """Canonical form of a cyclic genome sequence (smallest rotation)."""
+    n = len(ids)
+    if n == 0:
+        return ()
+    doubled = ids + ids
+    best = tuple(ids)
+    for start in range(1, n):
+        candidate = tuple(doubled[start:start + n])
+        if candidate < best:
+            best = candidate
+    return best
+
+
+def _dedup_rotations(candidates: list[LoopCandidate]) -> list[LoopCandidate]:
+    """Remove loops that are rotations of each other, keeping the first seen."""
+    seen: set[tuple[int, ...]] = set()
+    result = []
+    for c in candidates:
+        key = _canonical_rotation(c.genome_ids)
+        if key not in seen:
+            seen.add(key)
+            result.append(c)
+    return result
+
+
+# ----------------------------------------------------------------
+# Loop pruning
+# ----------------------------------------------------------------
+
+def prune_duplicate_loops(lib: Library) -> int:
+    """Remove loops that are rotations of each other, keeping the highest-fitness one.
+
+    Also removes loops with identical genome sets but different structures,
+    keeping only the best-scoring structure variant.
+    """
+    all_loops = lib.conn.execute(
+        'SELECT id, fitness FROM loops ORDER BY fitness DESC'
+    ).fetchall()
+
+    seen: dict[tuple[int, ...], int] = {}  # canonical genome set → best loop ID
+    to_delete = []
+
+    for lid, fitness in all_loops:
+        gids = lib.loop_genome_ids(lid)
+        if not gids:
+            to_delete.append(lid)
+            continue
+        key = _canonical_rotation(gids)
+        # Also check reverse rotation as a separate canonical form
+        # (we keep forward and reverse as distinct, but not rotations)
+        if key in seen:
+            to_delete.append(lid)
+        else:
+            # Check if same genome SET exists with different ordering/structure
+            frozen = frozenset(gids)
+            # For set-dedup, use sorted tuple as key
+            set_key = tuple(sorted(gids))
+            if set_key in seen:
+                to_delete.append(lid)
+            else:
+                seen[key] = lid
+                seen[set_key] = lid  # also register the set key
+
+    if to_delete:
+        n = lib.delete_loops(to_delete)
+        log.info('Pruned %d duplicate/rotation loops', n)
+        return n
+    return 0
+
+
+def prune_low_fitness_loops(lib: Library, min_fitness: float | None = None) -> int:
+    """Remove low-fitness loops that don't provide unique genome coverage.
+
+    A loop is safe to delete only if ALL its genomes appear in at least
+    one other surviving loop. Never deletes user-rated loops.
+    """
+    all_loops = lib.conn.execute(
+        'SELECT id, fitness FROM loops ORDER BY fitness DESC'
+    ).fetchall()
+
+    # Never delete loops with user votes
+    protected: set[int] = set()
+    for lid, _ in all_loops:
+        if lib.net_rating('loop', lid) != 0:
+            protected.add(lid)
+
+    # Build genome → loop membership (only surviving loops)
+    genome_loops: dict[int, set[int]] = {}
+    loop_genomes: dict[int, list[int]] = {}
+    for lid, _ in all_loops:
+        gids = lib.loop_genome_ids(lid)
+        loop_genomes[lid] = gids
+        for gid in gids:
+            genome_loops.setdefault(gid, set()).add(lid)
+
+    # Walk worst-to-best: delete if all genomes are covered by other loops
+    to_delete = []
+    for lid, fitness in reversed(all_loops):
+        if lid in protected:
+            continue
+        if min_fitness is not None and (fitness or 0) >= min_fitness:
+            continue
+
+        gids = loop_genomes.get(lid, [])
+        if not gids:
+            to_delete.append(lid)
+            continue
+
+        # Check if every genome in this loop has at least one other loop
+        all_covered = all(
+            len(genome_loops.get(gid, set()) - {lid} - set(to_delete)) >= 1
+            for gid in gids
+        )
+        if all_covered:
+            to_delete.append(lid)
+
+    if to_delete:
+        n = lib.delete_loops(to_delete)
+        log.info('Pruned %d low-fitness loops (kept %d)', n, len(all_loops) - n)
+        return n
+    return 0
+
+
+def prune_loops(lib: Library, min_fitness: float | None = None) -> int:
+    """Run all pruning passes: duplicates first, then coverage-safe fitness prune."""
+    n = prune_duplicate_loops(lib)
+    n += prune_low_fitness_loops(lib, min_fitness=min_fitness)
+    return n
+
+
 # ----------------------------------------------------------------
 # Loop structure playback
 # ----------------------------------------------------------------
@@ -184,10 +315,198 @@ def compose_loops(
         if loop is not None:
             candidates.append(loop)
 
-    # Sort by mean coherence descending
+    candidates = _dedup_rotations(candidates)
     candidates.sort(key=lambda c: c.mean_coherence, reverse=True)
-    log.info('Generated %d valid loops from %d attempts', len(candidates), n_attempts)
+    log.info('Generated %d unique loops from %d attempts', len(candidates), n_attempts)
     return candidates
+
+
+# ----------------------------------------------------------------
+# Graph-based loop composition (uses transition cache + CNN scores)
+# ----------------------------------------------------------------
+
+def compose_loops_graph(
+    lib: Library,
+    loop_length: int = 6,
+    n_attempts: int = 50,
+    min_distance: float = 0.15,
+    cnn_floor: float | None = None,
+) -> list[LoopCandidate]:
+    """Generate candidate loops by traversing the genome transition graph.
+
+    Uses cached transition distances instead of computing motion fields.
+    Seeds weighted by CNN score and coverage bonus (genomes not yet in
+    many loops get priority).
+
+    Parameters
+    ----------
+    lib : Library
+        Database with populated genome_transitions table.
+    loop_length : int
+        Target genomes per loop.
+    n_attempts : int
+        Number of random seeds to try.
+    min_distance : float
+        Minimum normalized distance between consecutive genomes.
+        Prevents near-duplicate transitions.
+    cnn_floor : float or None
+        Minimum CNN score for genomes to be included. None = no filter.
+
+    Returns
+    -------
+    list[LoopCandidate]
+        Candidate loops sorted by composite score (best first).
+    """
+    # Build adjacency list from transition cache
+    rows = lib.conn.execute(
+        '''SELECT genome_a, genome_b, distance
+           FROM genome_transitions
+           WHERE genome_a != genome_b'''
+    ).fetchall()
+    if not rows:
+        log.warning('No transition data — cannot compose graph loops')
+        return []
+
+    adj: dict[int, list[tuple[int, float]]] = {}
+    for ga, gb, dist in rows:
+        adj.setdefault(ga, []).append((gb, dist))
+
+    # Filter by CNN score floor
+    node_scores: dict[int, float] = {}
+    if cnn_floor is not None:
+        score_rows = lib.conn.execute(
+            'SELECT id, cnn_score FROM genomes WHERE cnn_score IS NOT NULL AND cnn_score >= ?',
+            (cnn_floor,),
+        ).fetchall()
+    else:
+        score_rows = lib.conn.execute(
+            'SELECT id, COALESCE(cnn_score, 0) FROM genomes WHERE id IN (SELECT DISTINCT genome_a FROM genome_transitions WHERE genome_a != genome_b)'
+        ).fetchall()
+    node_scores = {r[0]: r[1] for r in score_rows}
+
+    # Only keep nodes that have transition edges AND pass CNN filter
+    valid_nodes = set(node_scores.keys()) & set(adj.keys())
+    if len(valid_nodes) < loop_length:
+        log.warning('Not enough connected genomes with scores (%d < %d)',
+                    len(valid_nodes), loop_length)
+        return []
+
+    # Coverage bonus: prefer genomes not yet in many loops
+    loop_counts = lib.genome_loop_counts()
+
+    # Build seed weights: CNN score * coverage bonus
+    node_list = list(valid_nodes)
+    seed_weights = np.array([
+        max(node_scores.get(gid, 0), 0.01) * (1.0 / (1.0 + loop_counts.get(gid, 0)))
+        for gid in node_list
+    ])
+    seed_weights /= seed_weights.sum()
+
+    rng = np.random.default_rng()
+    candidates: list[LoopCandidate] = []
+
+    for _ in range(n_attempts):
+        loop = _build_graph_loop(
+            node_list, adj, node_scores, loop_counts, seed_weights,
+            rng, loop_length, min_distance, valid_nodes,
+        )
+        if loop is not None:
+            candidates.append(loop)
+
+    # Score and sort: CNN quality * transition smoothness
+    def _loop_score(c: LoopCandidate) -> float:
+        # Use genome IDs stored on the candidate to look up CNN scores
+        cnn_scores = [node_scores.get(gid, 0) for gid in c.genome_ids]
+        avg_cnn = np.mean(cnn_scores) if cnn_scores else 0
+        # Coherences hold transition distances (repurposed); lower = better
+        avg_dist = np.mean(c.coherences) if c.coherences else 1.0
+        smoothness = 1.0 / (1.0 + avg_dist)
+        coverage = np.mean([
+            1.0 / (1.0 + loop_counts.get(gid, 0)) for gid in c.genome_ids
+        ])
+        return avg_cnn * smoothness * (0.5 + 0.5 * coverage)
+
+    candidates = _dedup_rotations(candidates)
+    candidates.sort(key=_loop_score, reverse=True)
+    log.info('Graph composition: %d unique loops from %d attempts (%d nodes)',
+             len(candidates), n_attempts, len(valid_nodes))
+    return candidates
+
+
+def _build_graph_loop(
+    node_list: list[int],
+    adj: dict[int, list[tuple[int, float]]],
+    node_scores: dict[int, float],
+    loop_counts: dict[int, int],
+    seed_weights: np.ndarray,
+    rng: np.random.Generator,
+    target_length: int,
+    min_distance: float,
+    valid_nodes: set[int],
+) -> LoopCandidate | None:
+    """Build one loop by greedy graph traversal."""
+    # Pick seed
+    seed_idx = rng.choice(len(node_list), p=seed_weights)
+    seed = node_list[seed_idx]
+
+    sequence = [seed]
+    distances = []
+
+    for _ in range(target_length - 1):
+        current = sequence[-1]
+        neighbors = adj.get(current, [])
+        if not neighbors:
+            break
+
+        used = set(sequence)
+        # Score neighbors: CNN quality * proximity * coverage
+        scored: list[tuple[int, float, float]] = []
+        for nb, dist in neighbors:
+            if nb in used or nb not in valid_nodes:
+                continue
+            norm_dist = dist / (dist + 1.0)
+            if norm_dist < min_distance:
+                continue
+            cnn = max(node_scores.get(nb, 0), 0.01)
+            coverage = 1.0 / (1.0 + loop_counts.get(nb, 0))
+            score = cnn * (1.0 / (1.0 + dist)) * (0.5 + 0.5 * coverage)
+            scored.append((nb, dist, score))
+
+        if not scored:
+            break
+
+        # Weighted random selection (not pure greedy — preserves diversity)
+        scores = np.array([s[2] for s in scored])
+        weights = scores / scores.sum()
+        idx = rng.choice(len(scored), p=weights)
+        chosen, chosen_dist, _ = scored[idx]
+
+        sequence.append(chosen)
+        distances.append(chosen_dist)
+
+    if len(sequence) < 3:
+        return None
+
+    # Check closing edge (last → seed)
+    closing_dist = None
+    for nb, dist in adj.get(sequence[-1], []):
+        if nb == seed:
+            closing_dist = dist
+            break
+
+    if closing_dist is None:
+        return None
+
+    distances.append(closing_dist)
+
+    # Build LoopCandidate — store transition distances in coherences field
+    # (repurposed: coherences normally hold motion field coherence values,
+    # but graph-composed loops don't compute motion fields)
+    return LoopCandidate(
+        genome_ids=sequence,
+        motion_fields=[],  # no motion fields computed
+        coherences=distances,  # transition distances (lower = better)
+    )
 
 
 def _build_one_loop(
@@ -273,21 +592,6 @@ def _build_one_loop(
         return None
 
     return loop
-
-
-def loop_overlap(lib: Library, loop_ids_a: list[int], loop_ids_b: list[int]) -> float:
-    """
-    Fraction of genomes shared between two loops.
-
-    Returns 0.0 (completely different) to 1.0 (identical genome sets).
-    Based on set intersection over the smaller loop's size.
-    """
-    set_a = set(loop_ids_a)
-    set_b = set(loop_ids_b)
-    if not set_a or not set_b:
-        return 0.0
-    shared = len(set_a & set_b)
-    return shared / min(len(set_a), len(set_b))
 
 
 def _too_similar(lib: Library, child_ids: list[int],
@@ -415,15 +719,26 @@ def mutate_loop(
     target_id = ids[pos]
     target = lib.load_genome(target_id)
 
-    # Find a replacement from the library that's nearby but different
-    candidates = lib.top_genomes(n=50)
+    # Find a replacement from the transition cache
+    neighbors = lib.nearest_transitions(target_id, n=30)
+    id_set = set(ids)
     replacements = []
-    for cid, _ in candidates:
-        if cid == target_id or cid in ids:
+    for gid, dist in neighbors:
+        if gid in id_set:
             continue
-        d = target.distance(lib.load_genome(cid))
-        if 0.1 <= d <= 0.4:
-            replacements.append((cid, d))
+        norm_dist = dist / (dist + 1.0)
+        if 0.1 <= norm_dist <= 0.4:
+            replacements.append((gid, dist))
+
+    # Fall back to brute-force scan if transition cache is empty
+    if not replacements:
+        candidates = lib.top_genomes(n=50)
+        for cid, _ in candidates:
+            if cid == target_id or cid in id_set:
+                continue
+            d = target.distance(lib.load_genome(cid))
+            if 0.1 <= d <= 0.4:
+                replacements.append((cid, d))
 
     if not replacements:
         return None
@@ -546,7 +861,8 @@ def refine_loop(
                   loop_id, child_fitness, worst_fitness)
         return None
 
-    # Save child genome and create new loop
+    # Frame and save child genome
+    child.survey_and_correct()
     child_gid = lib.save_genome(child)
     child_ids = list(ids)
     child_ids[worst_pos] = child_gid
@@ -596,19 +912,36 @@ def insert_genome(
     g_after = genomes[(worst_idx + 1) % n]
     gap_dist = dists[worst_idx]
 
-    # Find a bridging genome: close to both endpoints
-    candidates = lib.top_genomes(n=50)
+    # Find a bridging genome via transition cache intersection
+    id_set = set(ids)
+    before_id = ids[worst_idx]
+    after_id = ids[(worst_idx + 1) % n]
+
+    # Get neighbors of both endpoints
+    before_neighbors = {gid: dist for gid, dist in lib.nearest_transitions(before_id, n=30)}
+    after_neighbors = {gid: dist for gid, dist in lib.nearest_transitions(after_id, n=30)}
+
+    # Intersect: genomes near both endpoints are natural bridges
     bridges = []
-    for cid, _ in candidates:
-        if cid in ids:
-            continue
-        cg = lib.load_genome(cid)
-        d_before = g_before.distance(cg)
-        d_after = cg.distance(g_after)
-        # Must be closer to each endpoint than the gap itself
-        if d_before < gap_dist * 0.8 and d_after < gap_dist * 0.8:
-            score = d_before + d_after  # lower = better bridge
-            bridges.append((cid, score))
+    common = set(before_neighbors) & set(after_neighbors) - id_set
+    for cid in common:
+        d_before = before_neighbors[cid]
+        d_after = after_neighbors[cid]
+        score = d_before + d_after
+        bridges.append((cid, score))
+
+    # Fall back to brute-force if no cached bridges
+    if not bridges:
+        candidates = lib.top_genomes(n=50)
+        for cid, _ in candidates:
+            if cid in id_set:
+                continue
+            cg = lib.load_genome(cid)
+            d_before = g_before.distance(cg)
+            d_after = cg.distance(g_after)
+            if d_before < gap_dist * 0.8 and d_after < gap_dist * 0.8:
+                score = d_before + d_after
+                bridges.append((cid, score))
 
     if not bridges:
         return None
@@ -712,6 +1045,7 @@ def jitter_loop(
     jittered = genome.jitter(rng, scale=scale)
     if not jittered.is_viable():
         return None
+    jittered.survey_and_correct()
 
     new_gid = lib.save_genome(jittered)
     child_ids = list(ids)
@@ -765,6 +1099,69 @@ def mutate_structure(
     log.debug('Structure mutation %d (%s -> %s) -> %d',
               loop_id, current, new_structure, new_id)
     return new_id
+
+
+def explore_breed(
+    lib: Library,
+    rng: np.random.Generator | None = None,
+    n_children: int = 3,
+    jitter_scale: float = 0.1,
+) -> list[int]:
+    """Breed new genomes near high-CNN genomes that have few transition neighbors.
+
+    These genomes are quality isolates — good fractals that can't participate
+    in loops because they have no smooth transitions to anything. Breeding
+    nearby creates neighbors, growing the transition graph over time.
+
+    The new genomes are saved to the library. Background workers will
+    score them (CNN) and compute transition distances automatically.
+
+    Returns list of new genome IDs.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    # Find genomes with CNN scores but few transition neighbors
+    transition_counts = lib.genome_transition_counts()
+    rows = lib.conn.execute(
+        '''SELECT id, cnn_score FROM genomes
+           WHERE cnn_score IS NOT NULL
+           ORDER BY cnn_score DESC
+           LIMIT 200'''
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    # Score by CNN quality * isolation (fewer neighbors = higher priority)
+    scored = []
+    for gid, cnn in rows:
+        n_neighbors = transition_counts.get(gid, 0)
+        # Priority = CNN score * isolation factor
+        # Genomes with 0 neighbors get max isolation bonus
+        isolation = 1.0 / (1.0 + n_neighbors)
+        scored.append((gid, cnn * isolation))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    new_ids = []
+    for gid, _ in scored[:n_children * 2]:  # try more than needed
+        if len(new_ids) >= n_children:
+            break
+        genome = lib.load_genome(gid)
+        child = genome.jitter(rng, scale=jitter_scale)
+        if not child.is_viable():
+            continue
+        child.survey_and_correct()
+        child_id = lib.save_genome(child)
+        new_ids.append(child_id)
+        log.debug('Explore breed: genome #%d -> #%d (jitter %.2f)',
+                  gid, child_id, jitter_scale)
+
+    if new_ids:
+        log.info('Explore breed: %d new genomes near %d quality isolates',
+                 len(new_ids), min(len(scored), n_children * 2))
+    return new_ids
 
 
 def evolve_loops(
@@ -867,8 +1264,12 @@ def evolve_loops(
             parent = int(rng.choice(top_ids))
             child = jitter_loop(lib, parent, rng)
             if child is not None:
-                new_ids.append(child)
-                all_existing.append(child)
+                child_ids = lib.loop_genome_ids(child)
+                if _too_similar(lib, child_ids, all_existing, max_overlap):
+                    log.debug('Discarded jitter mutation %d (too similar)', child)
+                else:
+                    new_ids.append(child)
+                    all_existing.append(child)
 
         # Refinement: replace weakest genome in top loops
         n_refine = max(1, n_mutation // 5)
@@ -876,20 +1277,28 @@ def evolve_loops(
             parent = int(rng.choice(top_ids))
             child = refine_loop(lib, parent, rng)
             if child is not None:
-                new_ids.append(child)
-                all_existing.append(child)
+                child_ids = lib.loop_genome_ids(child)
+                if _too_similar(lib, child_ids, all_existing, max_overlap):
+                    log.debug('Discarded refinement %d (too similar)', child)
+                else:
+                    new_ids.append(child)
+                    all_existing.append(child)
 
         for _ in range(n_structure_mut):
             parent = int(rng.choice(top_ids))
             child = mutate_structure(lib, parent, rng)
             if child is not None:
-                new_ids.append(child)
-                all_existing.append(child)
+                child_ids = lib.loop_genome_ids(child)
+                if _too_similar(lib, child_ids, all_existing, max_overlap):
+                    log.debug('Discarded structure mutation %d (too similar)', child)
+                else:
+                    new_ids.append(child)
+                    all_existing.append(child)
 
-        # Fresh blood: randomly composed loops from the genome pool
-        fresh_candidates = compose_loops(
-            lib, pool_size=pool_size, loop_length=loop_length,
-            n_attempts=n_fresh * 3, min_coherence=-0.5,
+        # Fresh blood: graph-based composition (requires transition data)
+        # Sparse graphs need many attempts to find closeable cycles
+        fresh_candidates = compose_loops_graph(
+            lib, loop_length=loop_length, n_attempts=max(n_fresh * 3, 200),
         )
         n_added_fresh = 0
         for cand in fresh_candidates:
@@ -904,10 +1313,17 @@ def evolve_loops(
             all_existing.append(fresh_id)
             n_added_fresh += 1
 
+        # Explore breeding: grow transition graph near quality isolates
+        explore_breed(lib, rng, n_children=2)
+
         # Update fitness for all loops (incorporates user ratings)
         for lid in top_ids + new_ids:
             lib.update_loop_fitness(lid)
 
-        log.info('Generation %d: %d new (%d fresh)', gen, len(new_ids), n_added_fresh)
+        # Prune duplicates and low-fitness loops
+        prune_loops(lib)
+
+        log.info('Generation %d: %d new (%d fresh), %d total loops',
+                 gen, len(new_ids), n_added_fresh, lib.loop_count())
 
     return [t[0] for t in lib.top_loops(n=n_survivors)]

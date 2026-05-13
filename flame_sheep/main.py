@@ -158,6 +158,14 @@ class FlameSheepCore:
             mode=snap.mode,
         )
 
+        # Cross-band inhibition: when multiple bands fire simultaneously,
+        # suppress weaker events that are likely bleed from the dominant hit.
+        # Events within 60% of the strongest are kept (independent hits).
+        if len(audio.events) > 1:
+            best_energy = max(e.energy for e in audio.events)
+            audio.events = [e for e in audio.events
+                            if e.energy > best_energy * 0.6]
+
         current_mode = Mode(snap.mode)
 
         # Tick all axes — genome_axis handles mode internally
@@ -245,6 +253,16 @@ class FlameSheepCore:
     @property
     def active_loop_id(self):
         return self._genome_axis.active_loop_id
+
+    @property
+    def active_genome_db_id(self) -> int | None:
+        """DB ID of the genome currently dominant on screen."""
+        ga = self._genome_axis
+        if ga.morph_t < 0.5:
+            g = ga.current_genome
+        else:
+            g = ga.target_genome
+        return g.db_id if g is not None else None
 
     def force_genome_swap(self) -> None:
         """Immediately swap to a new genome — call when image looks degenerate."""
@@ -665,7 +683,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
     # --- library + evolution state ---
     from .storage import Library
-    from .loops import evolve_loops, compose_loops, save_best_loops
+    from .loops import evolve_loops, compose_loops, compose_loops_graph, save_best_loops
     lib = Library()
 
     # Auto-seed library if empty
@@ -731,10 +749,14 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
     # --- background CPU scoring (GPU rendering is CLI-only) ---
     from .cpu_score_worker import BackgroundCpuScorer
+    from .transition_worker import BackgroundTransitionScorer
     from .storage import _db_path
-    cpu_scorer = BackgroundCpuScorer(db_path=str(_db_path()))
+    db = str(_db_path())
+    cpu_scorer = BackgroundCpuScorer(db_path=db)
+    transition_scorer = BackgroundTransitionScorer(db_path=db)
     if lib is not None:
         cpu_scorer.start()
+        transition_scorer.start()
 
     # --- Register command handlers on orchestrator ---
     quit_requested = False
@@ -747,25 +769,19 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         core.force_genome_swap()
 
     def _handle_like(event):
-        if core.active_loop_id is not None:
-            lib.rate('loop', core.active_loop_id, +1)
-            for pid in core._palette_axis.palette_history:
-                lib.rate('palette', pid, +1)
-            lib.update_loop_fitness(core.active_loop_id)
-            log.debug(f'[ctl] liked loop #{core.active_loop_id} '
-                   f'(+{len(core._palette_axis.palette_history)} palettes)')
+        gid = core.active_genome_db_id
+        if gid is not None:
+            lib.rate('genome', gid, +1)
+            log.debug(f'[ctl] liked genome #{gid}')
             _maybe_evolve()
         else:
-            log.warning('no active loop to rate')
+            log.warning('no active genome to rate')
 
     def _handle_dislike(event):
-        if core.active_loop_id is not None:
-            lib.rate('loop', core.active_loop_id, -1)
-            for pid in core._palette_axis.palette_history:
-                lib.rate('palette', pid, -1)
-            lib.update_loop_fitness(core.active_loop_id)
-            log.debug(f'[ctl] disliked loop #{core.active_loop_id} '
-                   f'(+{len(core._palette_axis.palette_history)} palettes)')
+        gid = core.active_genome_db_id
+        if gid is not None:
+            lib.rate('genome', gid, -1)
+            log.debug(f'[ctl] disliked genome #{gid}')
             _maybe_evolve()
         core.next_loop()
 
@@ -987,6 +1003,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         if feature_logger:
             feature_logger.close()
         cpu_scorer.stop()
+        transition_scorer.stop()
         orch.stop()
         session.destroy()
 
@@ -1084,7 +1101,7 @@ def _run_variation_benchmark() -> None:
         top = lib.top_genomes(n=50)
         genome_results = []
         for gid, _score in top:
-            g = lib.load_genome(gid, auto_center=False)
+            g = lib.load_genome(gid)
             ms = _bench_genome(g)
             # Identify dominant variations
             dom_vars = []
@@ -1125,7 +1142,7 @@ def _run_library_commands(args: argparse.Namespace) -> None:
     """Handle --generate-genomes, --compose-loops, --evolve, --stats."""
     from .genome import Genome
     from .storage import Library
-    from .loops import compose_loops, save_best_loops, evolve_loops
+    from .loops import save_best_loops, evolve_loops
 
     lib = Library()
 
@@ -1152,13 +1169,11 @@ def _run_library_commands(args: argparse.Namespace) -> None:
         print(f'Library now has {lib.palette_count()} palettes')
 
     if args.compose_loops is not None:
+        from .loops import compose_loops_graph
         n = args.compose_loops
         print(f'Composing loops (target: {n}, length: {args.loop_length})...')
-        candidates = compose_loops(
-            lib, pool_size=min(40, lib.genome_count()),
-            loop_length=args.loop_length,
-            n_attempts=n * 10,
-            min_coherence=-1.0,
+        candidates = compose_loops_graph(
+            lib, loop_length=args.loop_length, n_attempts=n * 10,
         )
         if candidates:
             ids = save_best_loops(lib, candidates, n_keep=n)
@@ -1179,10 +1194,16 @@ def _run_library_commands(args: argparse.Namespace) -> None:
             top = evolve_loops(lib, n_generations=3, n_offspring=8,
                                pool_size=min(30, lib.genome_count()),
                                loop_length=args.loop_length)
-            print(f'Top {len(top)} loops after evolution:')
+            print(f'Top {len(top)} loops after evolution ({lib.loop_count()} total):')
             for lid in top:
                 scores = lib.loop_fitness(lid)
                 print(f'  #{lid}: fitness={scores["fitness"]:.3f}')
+
+    if getattr(args, 'prune_loops', False):
+        from .loops import prune_loops
+        before = lib.loop_count()
+        n = prune_loops(lib)
+        print(f'Pruned {n} loops ({before} -> {lib.loop_count()})')
 
     if args.stats:
         n_genomes = lib.genome_count()
@@ -1237,6 +1258,8 @@ def main() -> None:
                         help='genomes per loop (default: 6)')
     parser.add_argument('--generate-palettes', type=int, metavar='N', default=None,
                         help='generate N random palettes into the library')
+    parser.add_argument('--prune-loops', action='store_true',
+                        help='remove duplicate and low-fitness loops')
     parser.add_argument('--stats', action='store_true',
                         help='print library statistics and exit')
     parser.add_argument('--blur-radius', type=float, default=0.6,
@@ -1330,7 +1353,7 @@ def main() -> None:
         import_catalog(args.import_catalog)
         return
 
-    if args.generate_genomes or args.generate_palettes is not None or args.compose_loops is not None or args.evolve or args.stats:
+    if args.generate_genomes or args.generate_palettes is not None or args.compose_loops is not None or args.evolve or args.prune_loops or args.stats:
         _run_library_commands(args)
         return
 

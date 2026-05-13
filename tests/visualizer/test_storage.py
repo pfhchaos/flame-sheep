@@ -273,3 +273,22 @@ class TestLoopFitnessStorage:
         gids = [tmp_lib.save_genome(Genome.random(rng)) for _ in range(4)]
         loop_id = tmp_lib.save_loop(gids)
         assert tmp_lib.loop_genome_ids(loop_id) == gids
+
+    def test_genome_db_id_roundtrip(self, tmp_lib):
+        """Genome.db_id should be set after save + load."""
+        rng = np.random.default_rng(70)
+        genome = Genome.random(rng)
+        assert genome.db_id is None
+        gid = tmp_lib.save_genome(genome)
+        loaded = tmp_lib.load_genome(gid)
+        assert loaded.db_id == gid
+
+    def test_genome_rating(self, tmp_lib):
+        """Direct genome ratings should accumulate."""
+        rng = np.random.default_rng(71)
+        gid = tmp_lib.save_genome(Genome.random(rng))
+        assert tmp_lib.net_rating('genome', gid) == 0
+        tmp_lib.rate('genome', gid, +1)
+        tmp_lib.rate('genome', gid, +1)
+        tmp_lib.rate('genome', gid, -1)
+        assert tmp_lib.net_rating('genome', gid) == 1
