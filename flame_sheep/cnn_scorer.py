@@ -12,6 +12,7 @@ Training uses Bradley-Terry pairwise ranking loss within same generation
 from __future__ import annotations
 
 import csv
+import importlib.resources
 import io
 from pathlib import Path
 
@@ -68,8 +69,85 @@ class AestheticNet(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass. x: (B, 4, 256, 256) → (B,) scores."""
         x = self.features(x)
-        x = x.mean(dim=(2, 3))  # global average pool → (B, 128)
+        x = x.mean(dim=(2, 3))  # global average pool → (B, 64)
         return self.head(x).squeeze(-1)
+
+
+class AestheticNetVk(nn.Module):
+    """No-batchnorm variant matching the Vulkan compute trainer.
+
+    Same architecture as AestheticNet but without BatchNorm2d layers.
+    24,665 parameters total. Weights stored as a flat float32 .npy array.
+    """
+
+    # Weight layout in the flat array (contiguous float32):
+    #   Layer 0:  8× 4×3×3 kernel +  8 bias =    296
+    #   Layer 1: 16× 8×3×3 kernel + 16 bias =  1,168
+    #   Layer 2: 32×16×3×3 kernel + 32 bias =  4,640
+    #   Layer 3: 64×32×3×3 kernel + 64 bias = 18,496
+    #   Linear:  64 weights + 1 bias          =     65
+    #   Total:                                  24,665
+    LAYERS = [
+        (4,  8,  3, 2, 1),
+        (8,  16, 3, 2, 1),
+        (16, 32, 3, 2, 1),
+        (32, 64, 3, 2, 1),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(4, 8, 3, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(8, 16, 3, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, 32, 3, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.head = nn.Linear(64, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass. x: (B, 4, 256, 256) → (B,) scores."""
+        x = self.features(x)
+        x = x.mean(dim=(2, 3))  # global average pool → (B, 64)
+        return self.head(x).squeeze(-1)
+
+
+def load_vk_weights(model: AestheticNetVk, npy_path: str | Path) -> None:
+    """Load flat .npy weights from Vulkan trainer into AestheticNetVk.
+
+    The .npy file contains 24,665 float32 values laid out as:
+    [conv0_weight, conv0_bias, conv1_weight, conv1_bias, ..., linear_weight, linear_bias]
+    """
+    flat = np.load(npy_path).astype(np.float32)
+    assert flat.shape == (24665,), f'Expected 24665 weights, got {flat.shape}'
+
+    state = {}
+    offset = 0
+
+    # Conv layers: features.0, features.2, features.4, features.6 (skip ReLU indices)
+    for i, (c_in, c_out, k, _, _) in enumerate(AestheticNetVk.LAYERS):
+        key_prefix = f'features.{i * 2}'
+        n_w = c_out * c_in * k * k
+        state[f'{key_prefix}.weight'] = torch.from_numpy(
+            flat[offset:offset + n_w].reshape(c_out, c_in, k, k).copy())
+        offset += n_w
+        state[f'{key_prefix}.bias'] = torch.from_numpy(
+            flat[offset:offset + c_out].copy())
+        offset += c_out
+
+    # Linear head
+    n_linear = AestheticNetVk.LAYERS[-1][1]  # 64
+    state['head.weight'] = torch.from_numpy(
+        flat[offset:offset + n_linear].reshape(1, n_linear).copy())
+    offset += n_linear
+    state['head.bias'] = torch.from_numpy(flat[offset:offset + 1].copy())
+    offset += 1
+
+    assert offset == 24665, f'Weight offset mismatch: {offset}'
+    model.load_state_dict(state)
 
 
 # ---------------------------------------------------------------------------
@@ -210,14 +288,36 @@ class PairSampler:
 # Inference API
 # ---------------------------------------------------------------------------
 
+def _default_weights_path() -> Path:
+    """Resolve bundled weights via importlib.resources."""
+    ref = importlib.resources.files('flame_sheep.data').joinpath('cnn_scorer_vk.npy')
+    # as_posix works for both installed and editable installs
+    return Path(str(ref))
+
+
+def _prepare_input(static_png: bytes, swept_png: bytes) -> torch.Tensor:
+    """Convert rendered PNGs to model input tensor (1, 4, 256, 256)."""
+    from PIL import Image
+
+    static_img = Image.open(io.BytesIO(static_png)).convert('RGB').resize((256, 256), Image.LANCZOS)
+    swept_img = Image.open(io.BytesIO(swept_png)).convert('L').resize((256, 256), Image.LANCZOS)
+
+    static_arr = np.array(static_img, dtype=np.float32) / 255.0
+    swept_arr = np.array(swept_img, dtype=np.float32) / 255.0
+
+    combined = np.concatenate([static_arr, swept_arr[:, :, None]], axis=2)
+    return torch.from_numpy(combined.transpose(2, 0, 1)).unsqueeze(0)
+
+
 def score_genome(static_png: bytes, swept_png: bytes,
-                 model_path: str | Path) -> float:
+                 model_path: str | Path | None = None) -> float:
     """Score a single genome from its rendered PNGs.
 
     Args:
         static_png: PNG bytes of static color render
         swept_png: PNG bytes of swept grayscale render
-        model_path: path to trained weights (.pt file)
+        model_path: path to trained weights (.pt or .npy). Defaults to
+            ~/.local/share/flame-sheep/cnn_scorer_vk.npy
 
     Returns:
         Scalar aesthetic score (higher = more aesthetic).
@@ -225,33 +325,30 @@ def score_genome(static_png: bytes, swept_png: bytes,
     if not _HAS_TORCH:
         raise ImportError('PyTorch required for CNN scoring')
 
-    from PIL import Image
-
-    static_img = Image.open(io.BytesIO(static_png)).convert('RGB')
-    swept_img = Image.open(io.BytesIO(swept_png)).convert('L')
-
-    static_arr = np.array(static_img, dtype=np.float32) / 255.0
-    swept_arr = np.array(swept_img, dtype=np.float32) / 255.0
-
-    combined = np.concatenate([static_arr, swept_arr[:, :, None]], axis=2)
-    tensor = torch.from_numpy(combined.transpose(2, 0, 1)).unsqueeze(0)  # (1, 4, 256, 256)
-
-    model = AestheticNet()
-    model.load_state_dict(torch.load(model_path, map_location='cpu', weights_only=True))
-    model.eval()
+    model = load_model(model_path)
+    tensor = _prepare_input(static_png, swept_png)
 
     with torch.no_grad():
-        score = model(tensor).item()
-
-    return score
+        return model(tensor).item()
 
 
-def load_model(model_path: str | Path) -> AestheticNet:
-    """Load a trained model for batch inference."""
+def load_model(model_path: str | Path | None = None) -> AestheticNetVk | AestheticNet:
+    """Load a trained model for batch inference.
+
+    Auto-detects format: .npy loads AestheticNetVk (Vulkan weights),
+    .pt loads AestheticNet (PyTorch weights).
+    """
     if not _HAS_TORCH:
         raise ImportError('PyTorch required for CNN scoring')
 
-    model = AestheticNet()
-    model.load_state_dict(torch.load(model_path, map_location='cpu', weights_only=True))
+    path = Path(model_path) if model_path else _default_weights_path()
+
+    if path.suffix == '.npy':
+        model = AestheticNetVk()
+        load_vk_weights(model, path)
+    else:
+        model = AestheticNet()
+        model.load_state_dict(torch.load(path, map_location='cpu', weights_only=True))
+
     model.eval()
     return model
