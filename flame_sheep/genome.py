@@ -302,13 +302,14 @@ class Genome:
             sin_r * cx + cos_r * cy,
         ], dtype=np.float32)
 
-        # Zoom from bounding box extent
-        extent_x = survey['bbox_max_x'] - survey['bbox_min_x']
-        extent_y = survey['bbox_max_y'] - survey['bbox_min_y']
-        extent = max(extent_x, extent_y, 0.1)
-        # Target: attractor fills ~1/margin of the viewport (bound=4.0 → width=8.0)
-        target_zoom = 8.0 / (extent * margin)
-        self.zoom = float(np.clip(target_zoom, 0.3, 5.0))
+        # Zoom from bounding box extent — fit the larger axis
+        extent_x = max(survey['bbox_max_x'] - survey['bbox_min_x'], 0.1)
+        extent_y = max(survey['bbox_max_y'] - survey['bbox_min_y'], 0.1)
+        extent = max(extent_x, extent_y)
+        # Target: attractor fills ~1/margin of viewport. ES median zoom ~0.25.
+        # TODO: independent x/y zoom needs shader change (uniform float → vec2)
+        target_zoom = 2.0 / (extent * margin)
+        self.zoom = float(np.clip(target_zoom, 0.1, 1.5))
 
     def survey_and_correct(self) -> bool:
         """Survey the attractor and correct framing. Returns False if not in viewport."""
