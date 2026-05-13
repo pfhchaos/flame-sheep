@@ -21,13 +21,14 @@ from PIL import Image
 
 log = logging.getLogger(__name__)
 
-SCORE_VERSION = 7  # v7: image-based + experimental metrics
+SCORE_VERSION = 8  # v8: + CNN aesthetic score
 
 
 def _score_genome(render_static: bytes, render_swept: bytes | None,
                   hist_static: bytes | None = None,
                   hist_transform: bytes | None = None,
                   render_size: int = 512,
+                  cnn_model=None,
                   ) -> dict[str, float]:
     """Compute all metrics from stored blobs."""
     from .image_scorer import score_from_image
@@ -48,6 +49,18 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
 
     # Experimental metrics
     scores.update(score_all(static_img, swept_img))
+
+    # CNN aesthetic score
+    if cnn_model is not None and render_swept is not None:
+        try:
+            import torch
+            from .cnn_scorer import _prepare_input
+
+            tensor = _prepare_input(render_static, render_swept)
+            with torch.no_grad():
+                scores['cnn_score'] = cnn_model(tensor).item()
+        except Exception:
+            pass  # non-fatal: other scores still valid
 
     # Histogram-based scoring (if blobs stored)
     if hist_static is not None:
@@ -99,6 +112,10 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
 
 def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
     """Entry point for the CPU score subprocess."""
+    # Clear inherited handlers from fork (parent's setup_logging adds to named loggers)
+    for name in ('flame_sheep', 'flame_sheep_audio', None):
+        logger = logging.getLogger(name)
+        logger.handlers.clear()
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(name)s %(levelname)s %(message)s',
                         datefmt='%H:%M:%S')
@@ -116,6 +133,20 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     conn = sqlite3.connect(db_path)
     conn.execute('PRAGMA busy_timeout=5000')
     _ensure_schema(conn)
+
+    # Load CNN model once (if weights available)
+    cnn_model = None
+    try:
+        from .cnn_scorer import load_model, _default_weights_path
+        weights_path = _default_weights_path()
+        if weights_path.exists():
+            cnn_model = load_model()
+            log.info('CNN scorer loaded from %s', weights_path)
+        else:
+            log.warning('CNN weights not found at %s — CNN scoring disabled',
+                        weights_path)
+    except Exception:
+        log.exception('Failed to load CNN scorer — CNN scoring disabled')
 
     log.info('CPU score worker started')
 
@@ -148,7 +179,8 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
 
             try:
                 scores = _score_genome(render_static, render_swept,
-                                       hist_static, hist_transform)
+                                       hist_static, hist_transform,
+                                       cnn_model=cnn_model)
 
                 # Build SET clause dynamically from available scores
                 score_cols = [
@@ -171,6 +203,8 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                     'lacunarity', 'radial_slope', 'radial_r2',
                     'compactness', 'bbox_aspect', 'filament_count',
                     'contrast_ratio', 'angular_uniformity',
+                    # CNN
+                    'cnn_score',
                 ]
 
                 set_parts = []

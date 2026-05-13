@@ -186,14 +186,14 @@ class GenomeAxis:
         self._section_warmup += 1
         self._section_cooldown += 1
 
-        # --- Mel-space centroid delta (lazy init on first valid spectrum) ---
-        if len(audio.spectrum) > 0 and self._mel_centroid is None:
+        # --- Mel-space centroid delta (lazy init / reinit on spectrum size change) ---
+        n_bins = len(audio.spectrum)
+        if n_bins > 0 and (self._mel_centroid is None
+                           or self._mel_centroid.n_bins != n_bins):
             from flame_sheep_audio.response import MelCentroid as _MC
-            # Derive freqs from spectrum length — matches whatever engine is active
-            n_bins = len(audio.spectrum)
             freqs = np.linspace(0, SAMPLE_RATE / 2, n_bins)
             self._mel_centroid = _MC(freqs)
-        if len(audio.spectrum) > 0 and self._mel_centroid is not None:
+        if n_bins > 0 and self._mel_centroid is not None:
             mel_centroid = self._mel_centroid.compute(audio.spectrum)
         else:
             mel_centroid = 0.0
@@ -304,11 +304,6 @@ class GenomeAxis:
     def contribute(self, frame: FlameSheepCore.FrameState) -> None:
         """Write interpolated genome to frame. Same for all modes."""
         frame.genome = self.current_genome.lerp(self.target_genome, self._morph_t)
-        # Pull center toward origin — swept centroid from GPU scorer
-        # handles the main correction via auto_center on load. This
-        # runtime pull compensates for residual drift during morphing.
-        CENTER_PULL = 0.002
-        frame.genome.center = frame.genome.center * (1.0 - CENTER_PULL)
         if self._rotation_phase != 0.0:
             frame.genome = frame.genome.rotated(self._rotation_phase)
 
@@ -431,7 +426,10 @@ class GenomeAxis:
 
         self._loop_sequence = loop_sequence(self._loop_genomes, self._loop_structure)
         self._loop_cycle_len = cycle_length(n, self._loop_structure)
-        start = int(self.rng.integers(0, n))
+
+        # Pick start position: closest genome to current (smooth transition)
+        start = self._best_entry_position(self._loop_genomes)
+
         for _ in range(start):
             next(self._loop_sequence)
         self._loop_step = start
@@ -448,6 +446,21 @@ class GenomeAxis:
         for i, g in enumerate(self._loop_genomes):
             marker = " <--" if i == start else ""
             log.debug(f"  [{i}] {_describe_genome(g)}{marker}")
+
+    def _best_entry_position(self, loop_genomes: list) -> int:
+        """Pick the loop genome closest to the current genome."""
+        if self.current_genome is None or len(loop_genomes) <= 1:
+            return int(self.rng.integers(0, max(1, len(loop_genomes))))
+
+        best_idx = 0
+        best_dist = float('inf')
+        for i, g in enumerate(loop_genomes):
+            d = self.current_genome.distance(g)
+            if d < best_dist:
+                best_dist = d
+                best_idx = i
+
+        return best_idx
 
     def next_loop(self) -> None:
         if self._lib is None or self._lib.loop_count() < 1:
@@ -489,25 +502,9 @@ class GenomeAxis:
         weights = fitnesses / fitnesses.sum()
         idx = self.rng.choice(len(candidates), p=weights)
         lid, info = candidates[idx]
-        self._loop_history.append(lid)
-
-        items = self._lib.load_loop(lid)
-        self._loop_genomes = [genome for _, genome, _ in items]
-        self._loop_structure = self._lib.loop_type(lid)
-        n = len(self._loop_genomes)
-        self._loop_cycle_len = cycle_length(n, self._loop_structure)
-        self._loop_sequence = loop_sequence(self._loop_genomes, self._loop_structure)
-        start = int(self.rng.integers(0, n))
-        for _ in range(start):
-            next(self._loop_sequence)
-        self._loop_step = start
-        self.active_loop_id = lid
-        self.current_genome = self._loop_genomes[start]
-        self.target_genome = next(self._loop_sequence)
-        self._loop_step += 1
-        self._morph_t = 0.0
+        self._load_and_track(lid, info['fitness'])
         log.info(f'[idle] switched to loop #{lid} '
-                 f'({self._loop_structure}, fitness={info["fitness"]:.3f}, {n} genomes)')
+                 f'(fitness={info["fitness"]:.3f})')
 
     # --- Genome prefetch ---
 

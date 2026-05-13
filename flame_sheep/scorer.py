@@ -23,7 +23,9 @@ log = logging.getLogger(__name__)
 
 def _scorer_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
     """Entry point for the scorer subprocess."""
-    # Reconfigure logging in the child process
+    # Reconfigure logging in the child process (clear inherited handlers from fork)
+    for name in ('flame_sheep', 'flame_sheep_audio', None):
+        logging.getLogger(name).handlers.clear()
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(name)s %(levelname)s %(message)s',
                         datefmt='%H:%M:%S')

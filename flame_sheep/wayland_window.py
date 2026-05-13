@@ -364,7 +364,7 @@ class WallpaperSession:
         layer_surface.ack_configure(serial)
         surf._wl_surface.commit()
         surf._configured = True
-        log.info(f'configured {surf.width}x{surf.height}')
+        log.debug(f'configured {surf.width}x{surf.height}')
         if surf._egl_window:
             _libwlegl.wl_egl_window_resize(
                 ctypes.c_void_p(surf._egl_window),

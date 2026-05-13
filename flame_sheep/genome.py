@@ -94,6 +94,17 @@ class Transform:
 
         t.color = float(rng.uniform(0, 1))
         t.weight = float(rng.uniform(0.5, 2.0))
+
+        # ~25% chance of post_affine (near-identity, contractive)
+        if rng.random() < 0.25:
+            while True:
+                pa = np.array([1, 0, 0, 0, 1, 0], dtype=np.float32)
+                pa += rng.uniform(-0.3, 0.3, 6).astype(np.float32)
+                M = np.array([[pa[0], pa[1]], [pa[3], pa[4]]])
+                if np.max(np.linalg.svd(M, compute_uv=False)) < 0.9:
+                    break
+            t.post_affine = pa
+
         return t
 
 
@@ -108,6 +119,8 @@ class Genome:
     zoom: float = 1.0
     rotation: float = 0.0
     center: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
+    # Database ID (set when loaded from library, None for ephemeral genomes)
+    db_id: int | None = None
     # flam3 tone mapping parameters (used for esheep rendering)
     flam3_brightness: float = 4.0
     flam3_gamma: float = 4.0
@@ -125,9 +138,14 @@ class Genome:
             g.zoom = float(rng.uniform(0.8, 1.5))
             g.rotation = float(rng.uniform(0, 2 * np.pi))
             g.center = rng.uniform(-0.5, 0.5, 2).astype(np.float32)
-            if g.is_viable():
+            # ~15% chance of final_xform (never weight-selected)
+            if rng.random() < 0.15:
+                g.final_xform = Transform.random(rng)
+                g.final_xform.weight = 0.0
+            if g.is_viable() and g.survey_and_correct():
                 return g
         # Fallback: return last attempt anyway, better than hanging
+        g.survey_and_correct()
         return g
 
     def is_viable(self, n_test: int = 2000, bound: float = 4.0) -> bool:
@@ -187,12 +205,124 @@ class Genome:
 
         return hits > (n_test - 20) * 0.5
 
-    def jitter(self, rng: np.random.Generator, scale: float = 0.1) -> 'Genome':
-        """Create a mutated copy with gaussian noise on variation parameters.
+    def survey_attractor(self, n_test: int = 5000, survey_bound: float = 8.0) -> dict:
+        """Run a cheap CPU chaos game to find the attractor's centroid and bounding box.
 
-        Each transform's var_params are jittered by gaussian noise scaled
-        to each parameter's valid range. Affine, weights, color, and palette
-        are unchanged — this is a small exploratory mutation.
+        Uses a 2x-wide viewport to catch off-center attractors. Collects raw
+        point positions (not grid cells) for accurate centroid estimation.
+
+        Returns dict with: centroid_x, centroid_y, bbox_min_x, bbox_min_y,
+        bbox_max_x, bbox_max_y, coverage, in_viewport.
+        """
+        rng = np.random.default_rng()
+        x, y = 0.0, 0.0
+        fuse = 20
+        xs, ys = [], []
+
+        weights = np.array([tr.weight for tr in self.transforms], dtype=np.float64)
+        if weights.sum() == 0:
+            return {'centroid_x': 0, 'centroid_y': 0, 'coverage': 0, 'in_viewport': False}
+        weights /= weights.sum()
+        cumw = np.cumsum(weights)
+
+        for i in range(fuse + n_test):
+            r = rng.random()
+            tidx = min(int(np.searchsorted(cumw, r)), len(self.transforms) - 1)
+            tr = self.transforms[tidx]
+            nx, ny = x, y
+
+            if tr.pre_variations is not None:
+                best_pre = int(np.argmax(tr.pre_variations))
+                wp = float(tr.pre_variations[best_pre])
+                if wp > 0.0:
+                    nx, ny = _apply_variation_cpu(best_pre, nx, ny, wp, tr.affine)
+
+            a, b, c, d, e, f = tr.affine
+            nx, ny = a*nx + b*ny + c, d*nx + e*ny + f
+
+            best_var = int(np.argmax(tr.variations))
+            w = float(tr.variations[best_var])
+            if w > 0.0:
+                nx, ny = _apply_variation_cpu(best_var, nx, ny, w, tr.affine)
+
+            if tr.post_affine is not None:
+                pa, pb, pc_, pd, pe, pf = tr.post_affine
+                nx, ny = pa*nx + pb*ny + pc_, pd*nx + pe*ny + pf
+
+            x, y = nx, ny
+            if not (np.isfinite(x) and np.isfinite(y)):
+                return {'centroid_x': 0, 'centroid_y': 0, 'coverage': 0, 'in_viewport': False}
+
+            if i >= fuse and abs(x) < survey_bound and abs(y) < survey_bound:
+                xs.append(x)
+                ys.append(y)
+
+        if len(xs) < 10:
+            return {'centroid_x': 0, 'centroid_y': 0, 'coverage': 0, 'in_viewport': False}
+
+        xs_arr = np.array(xs, dtype=np.float64)
+        ys_arr = np.array(ys, dtype=np.float64)
+
+        centroid_x = float(np.mean(xs_arr))
+        centroid_y = float(np.mean(ys_arr))
+
+        # Bounding box from 5th/95th percentile (robust to outliers)
+        bbox_min_x = float(np.percentile(xs_arr, 5))
+        bbox_max_x = float(np.percentile(xs_arr, 95))
+        bbox_min_y = float(np.percentile(ys_arr, 5))
+        bbox_max_y = float(np.percentile(ys_arr, 95))
+
+        # Coverage: fraction of points in the display viewport (bound=4.0)
+        display_bound = 4.0
+        in_display = np.sum((np.abs(xs_arr) < display_bound) & (np.abs(ys_arr) < display_bound))
+        coverage = float(in_display / len(xs_arr))
+
+        return {
+            'centroid_x': centroid_x, 'centroid_y': centroid_y,
+            'bbox_min_x': bbox_min_x, 'bbox_min_y': bbox_min_y,
+            'bbox_max_x': bbox_max_x, 'bbox_max_y': bbox_max_y,
+            'coverage': coverage,
+            'in_viewport': coverage > 0.1,
+        }
+
+    def correct_framing(self, survey: dict, margin: float = 1.2) -> None:
+        """Correct center and zoom so the attractor is well-framed.
+
+        Mutates self in place. Must account for rotation: the shader applies
+        rotation before center offset, so we need to rotate the centroid.
+        """
+        cx = survey['centroid_x']
+        cy = survey['centroid_y']
+
+        # Rotate centroid to match shader coordinate system
+        cos_r = np.cos(self.rotation)
+        sin_r = np.sin(self.rotation)
+        self.center = np.array([
+            cos_r * cx - sin_r * cy,
+            sin_r * cx + cos_r * cy,
+        ], dtype=np.float32)
+
+        # Zoom from bounding box extent
+        extent_x = survey['bbox_max_x'] - survey['bbox_min_x']
+        extent_y = survey['bbox_max_y'] - survey['bbox_min_y']
+        extent = max(extent_x, extent_y, 0.1)
+        # Target: attractor fills ~1/margin of the viewport (bound=4.0 → width=8.0)
+        target_zoom = 8.0 / (extent * margin)
+        self.zoom = float(np.clip(target_zoom, 0.3, 5.0))
+
+    def survey_and_correct(self) -> bool:
+        """Survey the attractor and correct framing. Returns False if not in viewport."""
+        survey = self.survey_attractor()
+        if not survey['in_viewport']:
+            return False
+        self.correct_framing(survey)
+        return True
+
+    def jitter(self, rng: np.random.Generator, scale: float = 0.1) -> 'Genome':
+        """Create a mutated copy with gaussian noise on parameters.
+
+        Jitters var_params, post_affine coefficients, and final_xform.
+        Small chance of structural mutations (add/remove post_affine or final_xform).
 
         Args:
             rng: numpy random generator
@@ -204,65 +334,48 @@ class Genome:
         for tr in g.transforms:
             if tr.var_params:
                 tr.var_params = jitter_var_params(tr.var_params, rng, scale=scale)
+            # Jitter post_affine coefficients
+            if tr.post_affine is not None:
+                tr.post_affine = tr.post_affine + rng.normal(0, scale * 0.3, 6).astype(np.float32)
+            # Structural: 5% chance to add/remove post_affine
+            elif rng.random() < 0.05:
+                tr.post_affine = np.array([1, 0, 0, 0, 1, 0], dtype=np.float32)
+                tr.post_affine += rng.uniform(-0.1, 0.1, 6).astype(np.float32)
+            elif tr.post_affine is not None and rng.random() < 0.05:
+                tr.post_affine = None
+        # Jitter final_xform
+        if g.final_xform is not None:
+            if g.final_xform.var_params:
+                g.final_xform.var_params = jitter_var_params(
+                    g.final_xform.var_params, rng, scale=scale)
+            if g.final_xform.post_affine is not None:
+                g.final_xform.post_affine = (
+                    g.final_xform.post_affine + rng.normal(0, scale * 0.3, 6).astype(np.float32))
+        # Structural: 5% chance to add/remove final_xform
+        if g.final_xform is None and rng.random() < 0.05:
+            g.final_xform = Transform.random(rng)
+            g.final_xform.weight = 0.0
+        elif g.final_xform is not None and rng.random() < 0.05:
+            g.final_xform = None
         return g
 
     def distance(self, other: 'Genome') -> float:
+        """Perceptual distance between two genomes, in [0, 1].
+
+        Uses variation-aware transform matching: greedy Jaccard alignment
+        of active variation sets, then normalized parameter distance on
+        matched transforms + penalty for unmatched.
+
+        Palette is excluded — it's driven independently by the palette axis.
+
+        Raw transition distance (unbounded) is mapped to [0, 1] via
+        d / (d + 1), where typical "good transition" distances are 0-1
+        and structurally incompatible pairs saturate near 1.0.
         """
-        Perceptual distance between two genomes, in [0, 1].
+        from .transition import compute_transition_distance
 
-        Combines:
-          - weighted affine+variation distance (how different the IFS shapes are)
-          - palette distance (how different the colours look)
-
-        The affine/variation feature vector is built by sorting transforms by
-        their normalised selection weight (heaviest first) then concatenating
-        [weight, affine×6, variations×30] per slot, zero-padded to MAX_TRANSFORMS.
-        Sorting by weight makes the comparison order-independent: the most
-        influential transforms are aligned regardless of list order.
-        """
-        def _feature_vec(g: 'Genome') -> np.ndarray:
-            n = len(g.transforms)
-            # Build variation array directly from transforms for distance calc
-            affines = np.zeros((MAX_TRANSFORMS, 6), dtype=np.float32)
-            variations = np.zeros((MAX_TRANSFORMS, NUM_VARIATIONS), dtype=np.float32)
-            weights = np.zeros(MAX_TRANSFORMS, dtype=np.float32)
-            for i, tr in enumerate(g.transforms[:MAX_TRANSFORMS]):
-                affines[i] = tr.affine
-                variations[i] = tr.variations
-                weights[i] = tr.weight
-            w_sum = weights[:n].sum()
-            if w_sum > 0:
-                weights[:n] /= w_sum
-            # sort slots by descending weight so dominant transforms align
-            order = np.argsort(-weights[:n])
-            rows = []
-            for i in range(MAX_TRANSFORMS):
-                if i < n:
-                    s = order[i]
-                else:
-                    s = i  # zero slot
-                w   = weights[s] if i < n else 0.0
-                aff = affines[s]            # (6,)  already in [-1,1] ish
-                var = variations[s]         # (30,) already sum-to-1
-                rows.append(np.concatenate([[w], aff, var]))
-            return np.concatenate(rows).astype(np.float64)
-
-        va = _feature_vec(self)
-        vb = _feature_vec(other)
-
-        # L2 distance, normalised by the max possible range
-        # affine values are ~[-1,1], weight ~[0,1], variations ~[0,1]
-        # vector length = MAX_TRANSFORMS * (1 + 6 + 30) = 6*37 = 222
-        vec_len = MAX_TRANSFORMS * (1 + 6 + NUM_VARIATIONS)
-        iff_dist = float(np.linalg.norm(va - vb)) / np.sqrt(vec_len * 4.0)  # 4≈max sq diff
-        iff_dist = min(1.0, iff_dist)
-
-        # Mean absolute palette difference (already in [0,1])
-        pal_dist = float(np.mean(np.abs(self.palette.astype(np.float64)
-                                        - other.palette.astype(np.float64))))
-
-        # Weighted combination — IFS shape matters more than colour
-        return float(0.7 * iff_dist + 0.3 * pal_dist)
+        raw = compute_transition_distance(self, other)
+        return float(raw / (raw + 1.0))
 
     def lerp(self, other: 'Genome', t: float) -> 'Genome':
         """
@@ -308,6 +421,7 @@ class Genome:
             tr.affine     = _lerp_arr(ta.affine,     tb.affine,     t)
             tr.variations = _lerp_arr(ta.variations, tb.variations, t)
             tr.color      = float(ta.color  * (1-t) + tb.color  * t)
+            tr.color_speed = float(ta.color_speed * (1-t) + tb.color_speed * t)
             tr.weight     = float(ta.weight * (1-t) + tb.weight * t)
             # Lerp var_params — union of keys, missing = 0
             all_keys = set(ta.var_params) | set(tb.var_params)
@@ -315,8 +429,36 @@ class Genome:
                 k: ta.var_params.get(k, 0.0) * (1-t) + tb.var_params.get(k, 0.0) * t
                 for k in all_keys
             }
+            # Post-affine: lerp with identity fallback
+            _identity_affine = np.array([1, 0, 0, 0, 1, 0], dtype=np.float32)
+            if ta.post_affine is not None or tb.post_affine is not None:
+                pa_a = ta.post_affine if ta.post_affine is not None else _identity_affine
+                pa_b = tb.post_affine if tb.post_affine is not None else _identity_affine
+                tr.post_affine = _lerp_arr(pa_a, pa_b, t)
             result.transforms.append(tr)
-        
+
+        # Final xform: lerp with identity fallback
+        if self.final_xform is not None or other.final_xform is not None:
+            fa = self.final_xform if self.final_xform is not None else _identity_transform()
+            fb = other.final_xform if other.final_xform is not None else _identity_transform()
+            ft = Transform()
+            ft.affine = _lerp_arr(fa.affine, fb.affine, t)
+            ft.variations = _lerp_arr(fa.variations, fb.variations, t)
+            ft.color = float(fa.color * (1-t) + fb.color * t)
+            ft.color_speed = float(fa.color_speed * (1-t) + fb.color_speed * t)
+            ft.weight = 0.0
+            all_keys = set(fa.var_params) | set(fb.var_params)
+            ft.var_params = {
+                k: fa.var_params.get(k, 0.0) * (1-t) + fb.var_params.get(k, 0.0) * t
+                for k in all_keys
+            }
+            if fa.post_affine is not None or fb.post_affine is not None:
+                _identity_affine = np.array([1, 0, 0, 0, 1, 0], dtype=np.float32)
+                pa_a = fa.post_affine if fa.post_affine is not None else _identity_affine
+                pa_b = fb.post_affine if fb.post_affine is not None else _identity_affine
+                ft.post_affine = _lerp_arr(pa_a, pa_b, t)
+            result.final_xform = ft
+
         result.palette  = _lerp_arr(self.palette,  other.palette,  t)
         result.zoom     = float(self.zoom     * (1-t) + other.zoom     * t)
         result.rotation = float(self.rotation * (1-t) + other.rotation * t)

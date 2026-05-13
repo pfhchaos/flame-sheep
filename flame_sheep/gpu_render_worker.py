@@ -29,6 +29,8 @@ COLOR_SCALE = 1_000_000.0
 
 def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
     """Entry point for the GPU render subprocess."""
+    for name in ('flame_sheep', 'flame_sheep_audio', None):
+        logging.getLogger(name).handlers.clear()
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(name)s %(levelname)s %(message)s',
                         datefmt='%H:%M:%S')

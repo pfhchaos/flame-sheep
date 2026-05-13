@@ -138,7 +138,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                  'bbox_aspect',
                  'filament_count',
                  'contrast_ratio',
-                 'angular_uniformity'):
+                 'angular_uniformity',
+                 'cnn_score'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} REAL')
     for col in ('render_static', 'render_swept',
@@ -149,10 +150,33 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} INTEGER DEFAULT 0')
 
+    # Transition scoring columns
+    if 'variation_signature' not in existing:
+        conn.execute('ALTER TABLE genomes ADD COLUMN variation_signature TEXT')
+    if 'n_transforms' not in existing:
+        conn.execute('ALTER TABLE genomes ADD COLUMN n_transforms INTEGER')
+
     # Add loop_type column if it doesn't exist
     loop_cols = {r[1] for r in conn.execute('PRAGMA table_info(loops)').fetchall()}
     if 'loop_type' not in loop_cols:
         conn.execute("ALTER TABLE loops ADD COLUMN loop_type TEXT DEFAULT 'cyclic'")
+
+    if 'framing_version' not in existing:
+        conn.execute('ALTER TABLE genomes ADD COLUMN framing_version INTEGER DEFAULT 0')
+
+    # Transition cache table
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS genome_transitions (
+            genome_a    INTEGER NOT NULL,
+            genome_b    INTEGER NOT NULL,
+            distance    REAL NOT NULL,
+            PRIMARY KEY (genome_a, genome_b)
+        )
+    ''')
+    conn.execute('''
+        CREATE INDEX IF NOT EXISTS idx_transitions_a
+        ON genome_transitions(genome_a, distance)
+    ''')
 
     conn.commit()
 
@@ -655,15 +679,20 @@ class Library:
 
     def save_genome(self, genome: Genome, scores: dict[str, float] | None = None) -> int:
         """Store a genome, return its ID."""
+        from .transition import variation_signature
+
         params = _genome_to_json(genome)
         if scores is None:
             scores = genome.aesthetic_score()
+        sig = variation_signature(genome)
+        n_xforms = len(genome.transforms)
         cur = self.conn.execute(
             '''INSERT INTO genomes (params, coverage, entropy, color_entropy, balance, complexity,
                                     edge_sharpness, contour_coherence,
                                     symmetry_max, rotational, reflective, radial, periodic, fractal_dim,
-                                    centroid_x, centroid_y, score_version)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                    centroid_x, centroid_y, score_version,
+                                    variation_signature, n_transforms, framing_version)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (params, scores['coverage'], scores['entropy'],
              scores['color_entropy'], scores['balance'], scores['complexity'],
              scores.get('edge_sharpness', 0.0), scores.get('contour_coherence', 0.0),
@@ -671,34 +700,25 @@ class Library:
              scores.get('reflective'), scores.get('radial'),
              scores.get('periodic'), scores.get('fractal_dim'),
              scores.get('centroid_offset_x'), scores.get('centroid_offset_y'),
-             1),  # version 1 = initial CPU scores, bg scorer upgrades to SCORE_VERSION
+             1, sig, n_xforms, 1),
         )
         self.conn.commit()
         return cur.lastrowid
 
-    def load_genome(self, genome_id: int, auto_center: bool = True) -> Genome:
+    def load_genome(self, genome_id: int) -> Genome:
         """Load a genome by ID.
 
-        If auto_center is True and the genome has been scored with centroid
-        offsets, nudge genome.center to compensate so the attractor renders
-        centered in the viewport.
+        Center and zoom are baked into params from survey_and_correct()
+        at creation time.
         """
         row = self.conn.execute(
-            'SELECT params, centroid_x, centroid_y FROM genomes WHERE id = ?',
+            'SELECT params FROM genomes WHERE id = ?',
             (genome_id,),
         ).fetchone()
         if row is None:
             raise KeyError(f'No genome with id {genome_id}')
         genome = _genome_from_json(row[0])
-        if auto_center and row[1] is not None and row[2] is not None:
-            # Partial correction — nudge toward center, don't slam there.
-            # centroid_offset is in [-1, 1], representing fraction of half-grid.
-            # In world space with bound=4.0, offset * 4.0 gives the displacement.
-            # Apply 50% correction to preserve some artistic randomness.
-            bound = 4.0
-            correction = 0.5
-            genome.center = genome.center - correction * np.array(
-                [row[1] * bound, row[2] * bound], dtype=np.float32)
+        genome.db_id = genome_id
         return genome
 
     def genome_scores(self, genome_id: int) -> dict[str, float]:
@@ -717,23 +737,65 @@ class Library:
                     centroid_offset_x=row[7], centroid_offset_y=row[8])
 
     def top_genomes(self, n: int = 20, min_coverage: float = 0.01) -> list[tuple[int, dict]]:
-        """Return top N genomes ranked by a simple composite fitness."""
+        """Return top N genomes ranked by CNN score (preferred) or composite."""
         rows = self.conn.execute(
-            '''SELECT id, coverage, entropy, color_entropy, balance, complexity
+            '''SELECT id, coverage, entropy, color_entropy, balance, complexity,
+                      cnn_score
                FROM genomes
                WHERE coverage >= ?
-               ORDER BY (entropy + color_entropy + balance * 0.5 + complexity) DESC
+               ORDER BY COALESCE(cnn_score, -999) DESC,
+                        (entropy + color_entropy + balance * 0.5 + complexity) DESC
                LIMIT ?''',
             (min_coverage, n),
         ).fetchall()
         return [
             (r[0], dict(coverage=r[1], entropy=r[2], color_entropy=r[3],
-                        balance=r[4], complexity=r[5]))
+                        balance=r[4], complexity=r[5], cnn_score=r[6]))
             for r in rows
         ]
 
     def genome_count(self) -> int:
         return self.conn.execute('SELECT COUNT(*) FROM genomes').fetchone()[0]
+
+    def genome_loop_counts(self) -> dict[int, int]:
+        """Count how many loops each genome appears in."""
+        rows = self.conn.execute(
+            'SELECT genome_id, COUNT(DISTINCT loop_id) FROM loop_items GROUP BY genome_id'
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def genome_transition_counts(self) -> dict[int, int]:
+        """Count cached transition neighbors per genome (excluding self-edges)."""
+        rows = self.conn.execute(
+            '''SELECT genome_a, COUNT(*) FROM genome_transitions
+               WHERE genome_a != genome_b
+               GROUP BY genome_a'''
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    # -- Transitions --
+
+    def store_transition(self, genome_a: int, genome_b: int, distance: float) -> None:
+        """Cache a pairwise transition distance (both directions)."""
+        self.conn.execute(
+            'INSERT OR REPLACE INTO genome_transitions (genome_a, genome_b, distance) VALUES (?, ?, ?)',
+            (genome_a, genome_b, distance),
+        )
+        self.conn.execute(
+            'INSERT OR REPLACE INTO genome_transitions (genome_a, genome_b, distance) VALUES (?, ?, ?)',
+            (genome_b, genome_a, distance),
+        )
+
+    def nearest_transitions(self, genome_id: int, n: int = 10) -> list[tuple[int, float]]:
+        """Return the N nearest genomes by transition distance."""
+        rows = self.conn.execute(
+            '''SELECT genome_b, distance FROM genome_transitions
+               WHERE genome_a = ?
+               ORDER BY distance ASC
+               LIMIT ?''',
+            (genome_id, n),
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
 
     # -- Loops --
 
@@ -797,9 +859,8 @@ class Library:
         Load a loop: returns [(genome_id, Genome, motion_field), ...] in order.
         """
         rows = self.conn.execute(
-            '''SELECT li.genome_id, g.params, li.motion_field
+            '''SELECT li.genome_id, li.motion_field
                FROM loop_items li
-               JOIN genomes g ON g.id = li.genome_id
                WHERE li.loop_id = ?
                ORDER BY li.position''',
             (loop_id,),
@@ -807,8 +868,8 @@ class Library:
         if not rows:
             raise KeyError(f'No loop with id {loop_id}')
         result = []
-        for gid, params, mf_blob in rows:
-            genome = _genome_from_json(params)
+        for gid, mf_blob in rows:
+            genome = self.load_genome(gid)
             mf = motion_field_from_blob(mf_blob) if mf_blob else None
             result.append((gid, genome, mf))
         return result
@@ -834,6 +895,7 @@ class Library:
         Components:
           - auto: mean_coherence + diversity + palette_flow + smoothness
           - genome_quality: mean genome fitness across loop genomes
+          - transition_quality: smoothness of consecutive genome transitions
           - user_bonus: clamped loop vote (-1/0/+1) * 0.5
         """
         user_bonus = self.net_rating('loop', loop_id) * 0.5
@@ -853,7 +915,24 @@ class Library:
         else:
             genome_quality = 0.0
 
-        fitness = auto + genome_quality * 0.3 + user_bonus
+        # Mean transition quality between consecutive genomes in loop
+        transition_quality = 0.0
+        if len(genome_ids) >= 2:
+            dists = []
+            for i in range(len(genome_ids)):
+                ga = genome_ids[i]
+                gb = genome_ids[(i + 1) % len(genome_ids)]
+                row_t = self.conn.execute(
+                    'SELECT distance FROM genome_transitions WHERE genome_a=? AND genome_b=?',
+                    (ga, gb),
+                ).fetchone()
+                if row_t is not None:
+                    dists.append(row_t[0])
+            if dists:
+                mean_dist = sum(dists) / len(dists)
+                transition_quality = 1.0 / (1.0 + mean_dist)
+
+        fitness = auto + genome_quality * 0.3 + transition_quality * 0.2 + user_bonus
         self.conn.execute(
             'UPDATE loops SET fitness = ? WHERE id = ?',
             (fitness, loop_id),
@@ -882,6 +961,28 @@ class Library:
             (loop_id,),
         ).fetchall()
         return [r[0] for r in rows]
+
+    def delete_loop(self, loop_id: int) -> None:
+        """Delete a loop and its items (CASCADE)."""
+        self.conn.execute('DELETE FROM loops WHERE id = ?', (loop_id,))
+        self.conn.commit()
+
+    def delete_loops(self, loop_ids: list[int]) -> int:
+        """Delete multiple loops. Returns count deleted."""
+        if not loop_ids:
+            return 0
+        placeholders = ','.join('?' * len(loop_ids))
+        # Clear parent references that point to loops being deleted
+        self.conn.execute(
+            f'UPDATE loops SET parent_a = NULL WHERE parent_a IN ({placeholders})',
+            loop_ids)
+        self.conn.execute(
+            f'UPDATE loops SET parent_b = NULL WHERE parent_b IN ({placeholders})',
+            loop_ids)
+        cur = self.conn.execute(
+            f'DELETE FROM loops WHERE id IN ({placeholders})', loop_ids)
+        self.conn.commit()
+        return cur.rowcount
 
     # -- Palettes (graph nodes) --
 
@@ -992,13 +1093,14 @@ class Library:
     def genome_fitness(self, genome_id: int) -> float:
         """Compute genome fitness from aesthetic scores + symmetry + user votes.
 
-        Combines stored aesthetic scores, symmetry metrics (if computed),
-        and propagated vote signal from loop ratings.
+        Uses CNN score as primary signal when available (trained on 13 years
+        of Electric Sheep crowd ratings). Falls back to cluster-based or
+        histogram-based heuristics for unscored genomes.
         """
         row = self.conn.execute(
             '''SELECT coverage, entropy, color_entropy, balance, complexity,
                       edge_sharpness, contour_coherence,
-                      symmetry_max, fractal_dim
+                      symmetry_max, fractal_dim, cnn_score
                FROM genomes WHERE id = ?''',
             (genome_id,),
         ).fetchone()
@@ -1006,51 +1108,44 @@ class Library:
             return 0.0
 
         coverage = row[0] or 0
-        entropy = row[1] or 0
         color_entropy = row[2] or 0
-        balance = row[3] or 0
-        complexity = row[4] or 0
-        edge_sharpness = row[5] or 0
-        contour_coherence = row[6] or 0
-        symmetry_max = row[7] or 0
         fractal_dim = row[8] or 1.0
+        cnn_score = row[9]
 
-        # Coverage sweet spot: 0.15-0.40 is ideal
-        # Too sparse = boring, too dense = blob
-        if coverage < 0.05:
-            coverage_score = coverage * 4  # penalize near-empty
-        elif coverage < 0.15:
-            coverage_score = 0.2 + (coverage - 0.05) * 4
-        elif coverage <= 0.40:
-            coverage_score = 0.6 + (coverage - 0.15) * 1.6  # sweet spot
+        if cnn_score is not None:
+            # CNN score is the primary aesthetic signal.
+            # Raw scores are unbounded; typical range roughly -2 to +5.
+            aesthetic = cnn_score
         else:
-            coverage_score = max(0, 1.0 - (coverage - 0.40) * 2)  # penalize blobs
+            # Fallback: hand-crafted heuristics for genomes not yet CNN-scored.
+            # Coverage sweet spot: 0.15-0.40 is ideal
+            if coverage < 0.05:
+                coverage_score = coverage * 4
+            elif coverage < 0.15:
+                coverage_score = 0.2 + (coverage - 0.05) * 4
+            elif coverage <= 0.40:
+                coverage_score = 0.6 + (coverage - 0.15) * 1.6
+            else:
+                coverage_score = max(0, 1.0 - (coverage - 0.40) * 2)
 
-        # Fractal dimension sweet spot: 1.5-1.8
-        fd_score = max(0, 1.0 - abs(fractal_dim - 1.65) / 0.65)
+            cl_row = self.conn.execute(
+                'SELECT cl_coverage, cl_edge_sharpness, cl_symmetry_best, cl_dominance'
+                ' FROM genomes WHERE id = ?',
+                (genome_id,),
+            ).fetchone()
 
-        # Cluster-based fitness when available (from background scorer).
-        # Per-cluster symmetry × coverage × edges: +0.192 correlation.
-        cl_row = self.conn.execute(
-            'SELECT cl_coverage, cl_edge_sharpness, cl_symmetry_best, cl_dominance'
-            ' FROM genomes WHERE id = ?',
-            (genome_id,),
-        ).fetchone()
-
-        if cl_row and cl_row[0] is not None:
-            cl_cov = cl_row[0] or 0
-            cl_edges = cl_row[1] or 0
-            cl_sym = cl_row[2] or 0
-            cl_dom = cl_row[3] or 0
-            eps = 0.01
-            aesthetic = cl_cov * (cl_edges + eps) * (cl_sym + eps)
-        else:
-            # Fallback to histogram-based (weak signal)
-            eps = 0.01
-            aesthetic = (
-                max(coverage_score, eps) ** 1.0
-                * max(color_entropy, eps) ** 1.0
-            )
+            if cl_row and cl_row[0] is not None:
+                cl_cov = cl_row[0] or 0
+                cl_edges = cl_row[1] or 0
+                cl_sym = cl_row[2] or 0
+                eps = 0.01
+                aesthetic = cl_cov * (cl_edges + eps) * (cl_sym + eps)
+            else:
+                eps = 0.01
+                aesthetic = (
+                    max(coverage_score, eps) ** 1.0
+                    * max(color_entropy, eps) ** 1.0
+                )
 
         # User signal: net votes propagated from loop ratings
         votes = self.net_rating('genome', genome_id)
