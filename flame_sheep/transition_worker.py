@@ -42,8 +42,6 @@ def _transition_main(db_path: str, stop_event: multiprocessing.synchronize.Event
     conn.execute('PRAGMA busy_timeout=5000')
     _ensure_schema(conn)
 
-    log.info('transition worker started')
-
     try:
         while not stop_event.is_set():
             if os.getloadavg()[0] > BackgroundTransitionScorer.LOAD_THRESHOLD:

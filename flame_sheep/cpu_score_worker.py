@@ -163,7 +163,6 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     except Exception:
         log.exception('Failed to load CNN scorer — CNN scoring disabled')
 
-    log.info('CPU score worker started')
     was_scoring = False  # track when we transition from scoring → idle
 
     try:
