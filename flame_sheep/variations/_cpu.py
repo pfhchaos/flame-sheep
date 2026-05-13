@@ -969,6 +969,124 @@ def apply_variation_cpu(var_idx: int, x: float, y: float, w: float,
         return w * expe * np.cos(y), w * expe * np.sin(y)
     elif var_idx == 121: # log(z) — complex log
         return w * 0.5 * np.log(x*x + y*y + 1e-10), w * np.arctan2(y, x)
+    elif var_idx == 122: # splitbrdr — bubble + tiled border
+        B = (x*x + y*y) / 4.0 + 1.0
+        b = w / B
+        rx = round(x)
+        ry = round(y)
+        ox = x - rx
+        oy = y - ry
+        sb_x = _current_var_params.get('splitbrdr_x', 0.25)
+        sb_y = _current_var_params.get('splitbrdr_y', 0.25)
+        sb_px = _current_var_params.get('splitbrdr_px', 0.0)
+        sb_py = _current_var_params.get('splitbrdr_py', 0.0)
+        out_x = x * b + x * sb_px
+        out_y = y * b + y * sb_py
+        if _rand() >= 0.75:
+            out_x += w * (ox * 0.5 + rx)
+            out_y += w * (oy * 0.5 + ry)
+        else:
+            if abs(ox) >= abs(oy):
+                if ox >= 0.0:
+                    out_x += w * (ox * 0.5 + rx + sb_x)
+                    out_y += w * (oy * 0.5 + ry + sb_y * oy / (ox + 1e-10))
+                else:
+                    out_x += w * (ox * 0.5 + rx - sb_y)
+                    out_y += w * (oy * 0.5 + ry - sb_y * oy / (ox - 1e-10))
+            else:
+                if oy >= 0.0:
+                    out_y += w * (oy * 0.5 + ry + sb_y)
+                    out_x += w * (ox * 0.5 + rx + ox / (oy + 1e-10) * sb_y)
+                else:
+                    out_y += w * (oy * 0.5 + ry - sb_y)
+                    out_x += w * (ox * 0.5 + rx - ox / (oy - 1e-10) * sb_x)
+        return out_x, out_y
+    elif var_idx == 123: # phoenix_julia
+        power = _current_var_params.get('phoenix_power', 3.0)
+        dist = _current_var_params.get('phoenix_dist', 1.0)
+        x_distort = _current_var_params.get('phoenix_x_distort', -0.5)
+        y_distort = _current_var_params.get('phoenix_y_distort', 0.0)
+        inv_n = dist / power
+        inv_2pi_n = 2.0 * np.pi / power
+        cn = dist / power / 2.0
+        pre_x = x * (x_distort + 1.0)
+        pre_y = y * (y_distort + 1.0)
+        a = np.arctan2(pre_y, pre_x) * inv_n + int(_rand() * 32767) * inv_2pi_n
+        r = w * (x*x + y*y + 1e-10) ** cn
+        return r * np.cos(a), r * np.sin(a)
+    elif var_idx == 124: # juliaq
+        power = _current_var_params.get('juliaq_power', 3.0)
+        divisor = _current_var_params.get('juliaq_divisor', 2.0)
+        if abs(power) < 1e-10: power = 1.0
+        inv_power = divisor / power
+        inv_power_2pi = 2.0 * np.pi / power
+        half_inv_power = 0.5 * divisor / power
+        a = np.arctan2(y, x) * inv_power + int(_rand() * 10) * inv_power_2pi
+        r = w * (x*x + y*y + 1e-10) ** half_inv_power
+        return r * np.cos(a), r * np.sin(a)
+    elif var_idx == 125: # minkowskope
+        separation = _current_var_params.get('mskope_separation', 0.5)
+        freq_x = _current_var_params.get('mskope_frequencyx', -2.0)
+        freq_y = _current_var_params.get('mskope_frequencyy', 2.0)
+        amplitude = _current_var_params.get('mskope_amplitude', 0.5)
+        perturbation = _current_var_params.get('mskope_perturbation', 1.0)
+        damping = _current_var_params.get('mskope_damping', 0.0)
+        alt_wave = freq_x <= 0.0
+        tpf = 0.5 * freq_x
+        tpf2 = 0.5 * freq_y
+        def _minkowski(xv):
+            p, q, r, s = 0.0, 1.0, 1.0, 1.0
+            d, yv = 1.0, 0.0
+            for _ in range(20):
+                d *= 0.5
+                m = p + r
+                n = q + s
+                if xv < m / n:
+                    r, s = m, n
+                else:
+                    yv += d
+                    p, q = m, n
+            return yv + d
+        def _minkosine(xv):
+            lp = abs(xv) % 4.0
+            p = abs(xv) % 2.0
+            if p > 1.0: p = 2.0 - p
+            mink = _minkowski(p) - p if alt_wave else _minkowski(p)
+            if (lp < 2.0) ^ (xv > 0): return mink
+            return -mink
+        pt = perturbation * _minkosine(tpf2 * y)
+        if abs(damping) < 1e-6:
+            t = amplitude * _minkosine(tpf * x + pt - 1.0) + separation
+        else:
+            t = amplitude * np.exp(-abs(x) * damping) * _minkosine(tpf * x + pt - 1.0) + separation
+        if abs(y) <= t:
+            return -w*x, -w*y
+        return w*x, w*y
+    elif var_idx == 126: # glynnia
+        vvar2 = w * np.sqrt(2.0) / 2.0
+        r = np.sqrt(x*x + y*y)
+        if r >= 1.0:
+            if _rand() > 0.5:
+                d = np.sqrt(r + x)
+                if abs(d) < 1e-10: return w*x, w*y
+                return vvar2 * d, -vvar2 / d * y
+            else:
+                d = r + x
+                dx = np.sqrt(r * (y*y + d*d))
+                if abs(dx) < 1e-10: return w*x, w*y
+                rr = w / dx
+                return rr * d, rr * y
+        else:
+            if _rand() > 0.5:
+                d = np.sqrt(r + x)
+                if abs(d) < 1e-10: return w*x, w*y
+                return -vvar2 * d, -vvar2 / d * y
+            else:
+                d = r + x
+                dx = np.sqrt(r * (y*y + d*d))
+                if abs(dx) < 1e-10: return w*x, w*y
+                rr = w / dx
+                return -rr * d, rr * y
     else:
         # treat unknown/safe variations as linear for viability purposes
         return w*x, w*y
