@@ -85,16 +85,18 @@ class ImageStore:
         return len(self.entries)
 
     def _load_one(self, idx: int) -> np.ndarray:
+        from flame_sheep.cnn_scorer import _build_4ch_hsl
+
         static, swept, _, _ = self.entries[idx]
         sz = self.image_size
         s_img = Image.open(self.image_dir / static).convert('RGB').resize(
             (sz, sz), Image.LANCZOS)
         w_img = Image.open(self.image_dir / swept).convert('L').resize(
             (sz, sz), Image.LANCZOS)
-        img = np.zeros((4, sz, sz), dtype=np.float32)
-        img[:3] = np.array(s_img, dtype=np.float32).transpose(2, 0, 1) / 255.0
-        img[3] = np.array(w_img, dtype=np.float32) / 255.0
-        return img
+        rgb = np.array(s_img, dtype=np.float32) / 255.0
+        swept_arr = np.array(w_img, dtype=np.float32) / 255.0
+        combined = _build_4ch_hsl(rgb, swept_arr)  # (sz, sz, 4)
+        return combined.transpose(2, 0, 1)  # (4, sz, sz)
 
     def get_batch(self, indices: list[int] | np.ndarray) -> np.ndarray:
         """Load a batch of images by index. Uses LRU cache."""

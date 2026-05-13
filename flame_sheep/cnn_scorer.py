@@ -1,10 +1,15 @@
 """CNN aesthetic scorer for flame fractal genomes.
 
 Siamese pairwise ranking model trained on Electric Sheep crowd ratings.
-Two inputs per genome: static render (RGB) + swept render (grayscale),
-concatenated as 4-channel input.
+Two inputs per genome: static render (HSL) + swept render (grayscale),
+concatenated as 4-channel input: [H, S_swept, L, reserved].
 
-Architecture: ~105K params, designed for CPU inference (<1ms per genome).
+HSL encoding: luminance carries structure, hue encodes palette position
+(invariant to hue rotation), swept render packed into saturation channel
+(original S is always 1.0 from rainbow palette → zero information).
+
+Architecture: ~24K params (Vulkan) or ~105K (PyTorch w/ batchnorm).
+Designed for CPU inference (<1ms per genome).
 
 Training uses Bradley-Terry pairwise ranking loss within same generation
 (voter populations vary across generations).
@@ -17,6 +22,50 @@ import io
 from pathlib import Path
 
 import numpy as np
+
+
+def rgb_to_hsl(rgb: np.ndarray) -> np.ndarray:
+    """Convert (H, W, 3) float32 RGB [0,1] to (H, W, 3) HSL [0,1]."""
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    max_c = np.maximum(np.maximum(r, g), b)
+    min_c = np.minimum(np.minimum(r, g), b)
+    L = (max_c + min_c) / 2.0
+    delta = max_c - min_c
+
+    S = np.where(delta < 1e-8, 0.0,
+                 np.where(L <= 0.5,
+                          delta / (max_c + min_c + 1e-8),
+                          delta / (2.0 - max_c - min_c + 1e-8)))
+
+    H = np.zeros_like(L)
+    mask = delta > 1e-8
+    rm = mask & (max_c == r)
+    H[rm] = ((g[rm] - b[rm]) / delta[rm]) % 6.0
+    gm = mask & (max_c == g)
+    H[gm] = (b[gm] - r[gm]) / delta[gm] + 2.0
+    bm = mask & (max_c == b)
+    H[bm] = (r[bm] - g[bm]) / delta[bm] + 4.0
+    H = H / 6.0
+    H[H < 0] += 1.0
+
+    return np.stack([H, S, L], axis=-1).astype(np.float32)
+
+
+def _build_4ch_hsl(rgb: np.ndarray, swept: np.ndarray) -> np.ndarray:
+    """Build 4-channel HSL input from RGB static + grayscale swept.
+
+    Channels: [H, S_swept, L, 0]
+    H = hue from static render (palette position)
+    S_swept = swept rotation render (replaces uninformative saturation)
+    L = luminance from static render (structure)
+    """
+    hsl = rgb_to_hsl(rgb)
+    out = np.zeros((*rgb.shape[:2], 4), dtype=np.float32)
+    out[:, :, 0] = hsl[:, :, 0]  # H
+    out[:, :, 1] = swept          # S_swept
+    out[:, :, 2] = hsl[:, :, 2]  # L
+    return out
+
 
 try:
     import torch
@@ -208,18 +257,17 @@ class SheepDataset(Dataset):
         return img, rating, gen
 
     def _load_4ch(self, static_name: str, swept_name: str) -> torch.Tensor:
-        """Load static RGB + swept grayscale → (4, size, size) float32."""
+        """Load static RGB + swept grayscale → (4, size, size) HSL input."""
         from PIL import Image
 
         sz = self.image_size
         static_img = Image.open(self.image_dir / static_name).convert('RGB').resize((sz, sz), Image.LANCZOS)
         swept_img = Image.open(self.image_dir / swept_name).convert('L').resize((sz, sz), Image.LANCZOS)
 
-        static_arr = np.array(static_img, dtype=np.float32) / 255.0  # (sz, sz, 3)
-        swept_arr = np.array(swept_img, dtype=np.float32) / 255.0    # (256, 256)
+        rgb = np.array(static_img, dtype=np.float32) / 255.0
+        swept_arr = np.array(swept_img, dtype=np.float32) / 255.0
 
-        # Stack: (256, 256, 3) + (256, 256, 1) → (256, 256, 4) → (4, 256, 256)
-        combined = np.concatenate([static_arr, swept_arr[:, :, None]], axis=2)
+        combined = _build_4ch_hsl(rgb, swept_arr)
         return torch.from_numpy(combined.transpose(2, 0, 1))
 
     def by_generation(self) -> dict[int, list[int]]:
@@ -296,16 +344,16 @@ def _default_weights_path() -> Path:
 
 
 def _prepare_input(static_png: bytes, swept_png: bytes) -> torch.Tensor:
-    """Convert rendered PNGs to model input tensor (1, 4, 256, 256)."""
+    """Convert rendered PNGs to model input tensor (1, 4, 256, 256) in HSL."""
     from PIL import Image
 
     static_img = Image.open(io.BytesIO(static_png)).convert('RGB').resize((256, 256), Image.LANCZOS)
     swept_img = Image.open(io.BytesIO(swept_png)).convert('L').resize((256, 256), Image.LANCZOS)
 
-    static_arr = np.array(static_img, dtype=np.float32) / 255.0
+    rgb = np.array(static_img, dtype=np.float32) / 255.0
     swept_arr = np.array(swept_img, dtype=np.float32) / 255.0
 
-    combined = np.concatenate([static_arr, swept_arr[:, :, None]], axis=2)
+    combined = _build_4ch_hsl(rgb, swept_arr)
     return torch.from_numpy(combined.transpose(2, 0, 1)).unsqueeze(0)
 
 
