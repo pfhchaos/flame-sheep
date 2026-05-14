@@ -67,9 +67,9 @@ class MprisListener:
             log.warning(f'MPRIS listener disabled — missing dependency: {e}')
             return
 
-        DBusGMainLoop(set_as_default=True)
+        loop = DBusGMainLoop(set_as_default=True)
         try:
-            bus = dbus.SessionBus()
+            bus = dbus.SessionBus(mainloop=loop)
         except dbus.exceptions.DBusException as e:
             log.warning(f'MPRIS listener disabled — no session bus: {e}')
             return
