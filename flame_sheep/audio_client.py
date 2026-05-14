@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import logging
 import mmap
-from multiprocessing.shared_memory import SharedMemory
 
 import numpy as np
 
@@ -61,17 +60,22 @@ class AudioDaemonClient:
         schema = json.loads(schema_json)
         self._schema = schema
 
-        # Connect to shared memory
+        # Connect to shared memory (raw /dev/shm to avoid resource tracker)
         try:
-            self._shm = SharedMemory(name=shm_name, create=False)
-        except FileNotFoundError:
+            import os
+            from flame_sheep_audio.shm_layout import SHM_SIZE
+            shm_path = f'/dev/shm/{shm_name}'
+            fd = os.open(shm_path, os.O_RDONLY)
+            self._mmap = mmap.mmap(fd, SHM_SIZE, access=mmap.ACCESS_READ)
+            os.close(fd)
+        except (FileNotFoundError, OSError):
             raise AudioDaemonUnavailable(f'Shared memory {shm_name!r} not found')
 
         # Build layout from schema
         n_bins = schema['n_bins']
         band_names = schema['band_names']
         self._layout = compute_layout(n_bins, band_names)
-        self._reader = ShmReader(self._layout, self._shm.buf)
+        self._reader = ShmReader(self._layout, self._mmap)
 
         # Subscribe to dbus signals for song_start events
         # (these come from MPRIS via the daemon, not from shmem)
@@ -114,7 +118,7 @@ class AudioDaemonClient:
     def stop(self) -> None:
         """Disconnect from shared memory. Does NOT stop the daemon."""
         try:
-            self._shm.close()
+            self._mmap.close()
         except Exception:
             pass
 
