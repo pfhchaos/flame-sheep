@@ -41,10 +41,13 @@ class AudioDaemonClient:
     """
 
     def __init__(self):
-        # Connect to dbus and get schema
+        # Connect to dbus and get schema.
+        # Use a private connection to avoid poisoning the SessionBus singleton
+        # (which MPRIS needs with a GLib main loop attached).
         try:
             import dbus
-            bus = dbus.SessionBus()
+            bus = dbus.bus.BusConnection(
+                dbus.bus.BusConnection.TYPE_SESSION)
             proxy = bus.get_object(BUS_NAME, OBJ_PATH)
             iface = dbus.Interface(proxy, IFACE)
             schema_json = str(iface.GetSchema())
