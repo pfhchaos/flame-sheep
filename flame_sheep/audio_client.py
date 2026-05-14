@@ -141,9 +141,21 @@ class AudioDaemonClient:
     def bin_freqs(self) -> np.ndarray:
         return self._bin_freqs
 
+    def song_started(self) -> None:
+        """Signal new song to daemon. TODO: forward via dbus."""
+        pass
+
+    def reset_bands(self) -> None:
+        """Reset adaptive bands. TODO: forward via dbus."""
+        pass
+
+    def hint_tempo(self, bpm: float) -> None:
+        """Provide tempo hint. TODO: forward via dbus."""
+        pass
+
     def reset_tempo(self) -> None:
-        """Request tempo reset via dbus (if supported)."""
-        pass  # TODO: add ResetTempo dbus method to daemon
+        """Reset tempo state. TODO: forward via dbus."""
+        pass
 
     def _on_song_start(self, title: str, artist: str) -> None:
         self._pending_song_starts.append((title, artist))
