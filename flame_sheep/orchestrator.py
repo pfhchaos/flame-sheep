@@ -49,8 +49,9 @@ class Orchestrator:
                  spectrum_engine: str = 'cqt') -> None:
         self._clock: Callable[[], float] = clock or time.perf_counter
 
-        # Audio engine
+        # Audio engine — try daemon client first, fall back to in-process
         self.audio: AudioProcessor | SyntheticAudioProcessor
+        self._using_daemon = False
         if test_audio:
             self.audio = SyntheticAudioProcessor(
                 low_interval=0.5,
@@ -59,20 +60,26 @@ class Orchestrator:
                 clock=clock,
             )
         else:
-            engine = None
-            if spectrum_engine == 'cqt':
-                try:
-                    from flame_sheep_audio._cqt_engine import CqtEngine
-                    engine = CqtEngine()
-                    log.info('spectrum engine: CQT (rt-cqt SlidingCqt)')
-                except ImportError:
-                    log.warning('CQT requested but prtcqt not available, falling back to octave bank')
-            if spectrum_engine == 'octave_bank' or engine is None:
-                from flame_sheep_audio._octave_bank import OctaveBankEngine
-                engine = OctaveBankEngine()
-                log.info('spectrum engine: octave bank')
-            self.audio = AudioProcessor(device=audio_device, spectrum_engine=engine)
-            log.info(f'audio device: {audio_device!r}')
+            try:
+                from .audio_client import AudioDaemonClient
+                self.audio = AudioDaemonClient()
+                self._using_daemon = True
+                log.info('using audio daemon')
+            except Exception:
+                engine = None
+                if spectrum_engine == 'cqt':
+                    try:
+                        from flame_sheep_audio._cqt_engine import CqtEngine
+                        engine = CqtEngine()
+                        log.info('spectrum engine: CQT (rt-cqt SlidingCqt)')
+                    except ImportError:
+                        log.warning('CQT requested but prtcqt not available, falling back to octave bank')
+                if spectrum_engine == 'octave_bank' or engine is None:
+                    from flame_sheep_audio._octave_bank import OctaveBankEngine
+                    engine = OctaveBankEngine()
+                    log.info('spectrum engine: octave bank')
+                self.audio = AudioProcessor(device=audio_device, spectrum_engine=engine)
+                log.info(f'audio device: {audio_device!r}')
 
         # Shared audio state (read by consumers, overwritten each tick)
         self.audio_state = AudioSnapshot()
