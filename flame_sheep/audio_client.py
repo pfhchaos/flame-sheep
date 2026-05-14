@@ -19,6 +19,8 @@ import logging
 import mmap
 from multiprocessing.shared_memory import SharedMemory
 
+import numpy as np
+
 from flame_sheep_audio._types import AudioSnapshot
 from flame_sheep_audio.shm_layout import (
     SHM_NAME, ShmLayout, ShmReader, compute_layout,
@@ -88,6 +90,20 @@ class AudioDaemonClient:
         from flame_sheep_audio._band_config import default_band_config
         self._band_config = default_band_config()
 
+        # Derive bin frequencies from engine type + bin count
+        # CQT: 9 octaves × 12 bins, starting at ~32Hz
+        # FFT: linear spacing 0..24000Hz
+        if n_bins == 108:  # CQT default
+            try:
+                from flame_sheep_audio._cqt_engine import CqtEngine
+                engine = CqtEngine()
+                self._bin_freqs = engine.bin_centers
+            except ImportError:
+                self._bin_freqs = np.linspace(20, 20000, n_bins).astype(np.float32)
+        else:
+            from flame_sheep_audio._constants import FREQS
+            self._bin_freqs = FREQS[:n_bins] if len(FREQS) >= n_bins else np.linspace(20, 20000, n_bins).astype(np.float32)
+
         log.info('Connected to audio daemon (shm=%s, %d bins, %d bands)',
                  shm_name, n_bins, len(band_names))
 
@@ -116,6 +132,10 @@ class AudioDaemonClient:
         self._pending_song_starts.clear()
 
         return snap
+
+    @property
+    def bin_freqs(self) -> np.ndarray:
+        return self._bin_freqs
 
     def reset_tempo(self) -> None:
         """Request tempo reset via dbus (if supported)."""
