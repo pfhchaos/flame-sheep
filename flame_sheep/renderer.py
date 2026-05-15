@@ -288,7 +288,16 @@ class FlameRenderer:
         cs = self.compute_shader
         import math
         cs['u_n_transforms'] = len(genome.transforms)
-        cs['u_zoom']         = genome.zoom
+        # Aspect-correct zoom so circles stay circular.
+        # Shorter axis gets the base zoom, longer axis is scaled down.
+        if self.canvas_w >= self.canvas_h:
+            # Landscape/square: y is the constraining axis
+            aspect = self.canvas_h / max(self.canvas_w, 1)
+            cs['u_zoom'] = (genome.zoom * aspect, genome.zoom)
+        else:
+            # Portrait: x is the constraining axis
+            aspect = self.canvas_w / max(self.canvas_h, 1)
+            cs['u_zoom'] = (genome.zoom, genome.zoom * aspect)
         cs['u_cos_rot']      = math.cos(genome.rotation)
         cs['u_sin_rot']      = math.sin(genome.rotation)
         cs['u_center']       = tuple(genome.center)
@@ -469,7 +478,8 @@ class FlameRenderer:
         self._ppmm = ppmm
 
     def render_tonemap(self, viewport: Viewport, surface_w: int, surface_h: int,
-                       brightness: float = 6.0, dt: float = 1/60) -> None:
+                       brightness: float = 6.0, dt: float = 1/60,
+                       screen_rect: tuple[int, int, int, int] | None = None) -> None:
         """
         Render the tonemap pass for one window's viewport slice,
         optionally with gaussian blur and temporal blend.
@@ -481,7 +491,21 @@ class FlameRenderer:
 
         The caller must have already made the target window's EGL surface
         current before calling this. After this returns, call win.swap().
+
+        screen_rect — optional (x, y, w, h) GL viewport override for split-screen.
+                      When set, renders to a sub-region of the surface instead of
+                      the full surface. Used by compare mode for side-by-side display.
         """
+        # Override surface dimensions for GL viewport if screen_rect provided
+        if screen_rect is not None:
+            _gl_viewport = screen_rect
+            # The tonemap shader maps UVs across the GL viewport, so surface_w/h
+            # must match the viewport size for correct aspect ratio
+            surface_w = screen_rect[2]
+            surface_h = screen_rect[3]
+        else:
+            _gl_viewport = (0, 0, surface_w, surface_h)
+
         # Effective accumulated frames from temporal decay (geometric series)
 
         # Frame-rate-independent temporal blend.
@@ -514,7 +538,7 @@ class FlameRenderer:
                 target.use()
             else:
                 _bind_default_framebuffer()
-            self.ctx.viewport = (0, 0, surface_w, surface_h)
+            self.ctx.viewport = _gl_viewport
 
             self.palette_tex.use(location=0)
             p = self.tonemap_program
@@ -564,9 +588,10 @@ class FlameRenderer:
             # Pass 3: vertical blur B → temp/screen
             if use_temporal:
                 current_fbo.use()
+                self.ctx.viewport = (0, 0, surface_w, surface_h)
             else:
                 _bind_default_framebuffer()
-            self.ctx.viewport = (0, 0, surface_w, surface_h)
+                self.ctx.viewport = _gl_viewport
             tex_b.use(location=0)
             bp['u_texture']   = 0
             bp['u_direction'] = (0.0, 1.0 / surface_h)
@@ -590,7 +615,7 @@ class FlameRenderer:
 
             # Blit blend result to screen
             _bind_default_framebuffer()
-            self.ctx.viewport = (0, 0, surface_w, surface_h)
+            self.ctx.viewport = _gl_viewport
             blend_tex.use(location=0)
             bp = self.blur_program
             bp['u_texture']   = 0
