@@ -882,8 +882,10 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         nonlocal _comparing
         if _comparing:
             _comparing = False
-            # Restore normal walker buffer
+            # Restore normal buffers
+            renderer.histogram_buf.bind_to_storage_buffer(0)
             renderer.walker_buf.bind_to_storage_buffer(1)
+            renderer._max_buf.bind_to_storage_buffer(8)
             renderer.reset_walkers()
             log.info('[ctl] exited compare mode')
 
@@ -1014,8 +1016,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
             if _comparing and _compare_mode:
                 # --- Compare mode: single renderer, two sequential dispatches ---
-                # Render left genome → tonemap → FBO snapshot.
-                # Then render right genome → histogram stays for tonemap pass.
+                # Swap histogram + walker buffers between left/right dispatches.
+                # Same decay, iterations, brightness as normal mode.
                 pair = _compare_mode.pair
                 if pair.left is not None and pair.right is not None:
                     rot = core._genome_axis._rotation_phase
@@ -1035,31 +1037,34 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                         renderer._compare_left_fbo = ctx.framebuffer(
                             color_attachments=[renderer._compare_left_tex])
 
-                    # Ensure separate walker buffers for left/right
-                    if not hasattr(renderer, '_compare_right_walkers'):
+                    # Ensure separate histogram + walker buffers for right side
+                    if not hasattr(renderer, '_compare_right_hist'):
                         import numpy as _np
                         from .renderer import N_WALKERS
-                        renderer._compare_left_walkers = ctx.buffer(
-                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
+                        n_pixels = renderer.canvas_w * renderer.canvas_h
+                        renderer._compare_right_hist = ctx.buffer(
+                            _np.zeros(n_pixels * 2, dtype=_np.uint32).tobytes())
                         renderer._compare_right_walkers = ctx.buffer(
                             _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
+                        renderer._compare_right_max = ctx.buffer(
+                            _np.zeros(1, dtype=_np.uint32).tobytes())
 
                     if _compare_needs_reset:
-                        from .renderer import N_WALKERS
                         import numpy as _np
-                        renderer._compare_left_walkers.write(
-                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
+                        from .renderer import N_WALKERS
+                        renderer.reset_walkers()
                         renderer._compare_right_walkers.write(
                             _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
                         _compare_needs_reset = False
 
-                    # --- Left genome ---
+                    # --- Left genome (uses renderer's own histogram/walkers) ---
+                    renderer.histogram_buf.bind_to_storage_buffer(0)
+                    renderer.walker_buf.bind_to_storage_buffer(1)
+                    renderer._max_buf.bind_to_storage_buffer(8)
                     renderer.upload_audio(frame.spectrum)
                     renderer.upload_genome(left_g)
                     renderer.upload_palette(frame.palette)
-                    # Swap in left walker buffer
-                    renderer._compare_left_walkers.bind_to_storage_buffer(1)
-                    renderer.clear_histogram(decay=0.0)
+                    renderer.clear_histogram(decay=0.3)
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
@@ -1069,11 +1074,12 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                                            brightness=frame.brightness,
                                            target_fbo=renderer._compare_left_fbo)
 
-                    # --- Right genome (reuse same renderer) ---
-                    renderer.upload_genome(right_g)
-                    # Swap in right walker buffer
+                    # --- Right genome (swap in right-side buffers) ---
+                    renderer._compare_right_hist.bind_to_storage_buffer(0)
                     renderer._compare_right_walkers.bind_to_storage_buffer(1)
-                    renderer.clear_histogram(decay=0.0)
+                    renderer._compare_right_max.bind_to_storage_buffer(8)
+                    renderer.upload_genome(right_g)
+                    renderer.clear_histogram(decay=0.3)
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
@@ -1115,12 +1121,20 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     bp['u_radius'] = 0.0
                     renderer.blur_vao.render(moderngl.TRIANGLES)
 
-                    # Right half: tonemap current histogram (right genome)
+                    # Right half: tonemap right histogram (still bound from compute)
+                    renderer._compare_right_hist.bind_to_storage_buffer(0)
+                    renderer._compare_right_max.bind_to_storage_buffer(8)
                     renderer.render_tonemap(vp, surf.width, surf.height,
                                            brightness=frame.brightness,
                                            screen_rect=(half_w, 0, surf.width - half_w, surf.height))
+
+                    # Restore normal histogram for other surfaces
+                    renderer.histogram_buf.bind_to_storage_buffer(0)
+                    renderer._max_buf.bind_to_storage_buffer(8)
                 elif _comparing:
-                    # Non-center monitors: render normally during compare mode
+                    # Non-center monitors: render left genome normally
+                    renderer.histogram_buf.bind_to_storage_buffer(0)
+                    renderer._max_buf.bind_to_storage_buffer(8)
                     renderer.render_tonemap(viewports[name], surf.width, surf.height,
                                            brightness=frame.brightness)
                 elif _blur_comparison and surf.width >= 3000:
