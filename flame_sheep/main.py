@@ -1031,6 +1031,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     right_g = pair.right.rotated(rot) if rot != 0.0 else pair.right
 
                     # Left genome → main renderer
+                    renderer.bind_buffers()
                     renderer.upload_audio(frame.spectrum)
                     renderer.upload_genome(left_g)
                     renderer.upload_palette(frame.palette)
@@ -1042,6 +1043,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     renderer.reduce_histogram_max()
 
                     # Right genome → compare renderer
+                    _compare_renderer.bind_buffers()
                     _compare_renderer.upload_audio(frame.spectrum)
                     _compare_renderer.upload_genome(right_g)
                     _compare_renderer.upload_palette(frame.palette)
@@ -1081,11 +1083,13 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     half_w = surf.width // 2
 
                     # Left half of screen: left genome (main renderer)
+                    renderer.bind_buffers()
                     renderer.render_tonemap(vp, surf.width, surf.height,
                                            brightness=frame.brightness,
                                            screen_rect=(0, 0, half_w, surf.height))
 
                     # Right half of screen: right genome (compare renderer)
+                    _compare_renderer.bind_buffers()
                     _compare_renderer.set_skew(_monitor_skew.get(name, 0.0))
                     _compare_renderer.render_tonemap(vp, surf.width, surf.height,
                                                       brightness=frame.brightness,
