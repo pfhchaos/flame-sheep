@@ -1059,7 +1059,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     renderer.upload_palette(frame.palette)
                     # Swap in left walker buffer
                     renderer._compare_left_walkers.bind_to_storage_buffer(1)
-                    renderer.clear_histogram(decay=0.3)
+                    renderer.clear_histogram(decay=0.0)
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
@@ -1073,7 +1073,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     renderer.upload_genome(right_g)
                     # Swap in right walker buffer
                     renderer._compare_right_walkers.bind_to_storage_buffer(1)
-                    renderer.clear_histogram(decay=0.3)
+                    renderer.clear_histogram(decay=0.0)
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
