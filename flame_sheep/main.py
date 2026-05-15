@@ -1116,6 +1116,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     ctx.copy_buffer(renderer.histogram_buf, renderer._compare_right_hist_save)
                     ctx.copy_buffer(renderer.walker_buf, renderer._compare_right_walker_save)
                     renderer.upload_genome(right_g)
+                    renderer.upload_palette(frame.palette)
                     renderer.clear_histogram(decay=0.3)
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
