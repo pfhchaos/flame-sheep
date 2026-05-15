@@ -274,6 +274,9 @@ class FlameSheepCore:
     def next_loop(self) -> None:
         self._genome_axis.next_loop()
 
+    def user_next(self) -> None:
+        self._genome_axis.user_next()
+
     def song_started(self) -> None:
         """Signal new song started — resets tempo, bands, drop detectors, mode.
         Injects a song_start event on the next tick via _pending_song_start.
@@ -785,10 +788,10 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             lib.rate('genome', gid, -1)
             log.debug(f'[ctl] disliked genome #{gid}')
             _maybe_evolve()
-        core.next_loop()
+        core.user_next()
 
     def _handle_next(event):
-        core.next_loop()
+        core.user_next()
         log.debug(f'[ctl] next loop #{core.active_loop_id}')
 
     def _handle_song(event):
@@ -839,6 +842,63 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         _vote_count = _votes_per_evolve  # pretend we have enough votes
         _maybe_evolve()
     orch.on_command('evolve', _handle_evolve)
+
+    # --- Compare mode ---
+    from .compare import CompareMode
+    _compare_mode: CompareMode | None = None
+    _compare_renderer: FlameRenderer | None = None
+    _comparing = False
+    _compare_needs_reset = False  # reset walkers on next pair change
+    COMPARE_ITERATIONS = 300     # fixed iteration count during compare
+
+    def _ensure_compare_renderer():
+        nonlocal _compare_renderer
+        if _compare_renderer is None:
+            _compare_renderer = FlameRenderer(ctx, canvas_w, canvas_h)
+            _compare_renderer.blur_radius = blur_radius
+            _compare_renderer.set_ppmm(canvas_ppmm)
+            log.info('[compare] created second renderer')
+
+    def _handle_compare(event):
+        nonlocal _compare_mode, _comparing, _compare_needs_reset
+        if _comparing:
+            return
+        _ensure_compare_renderer()
+        _compare_mode = CompareMode(lib)
+        _compare_mode.pick_pair()
+        _comparing = True
+        _compare_needs_reset = True
+        log.info('[ctl] entered compare mode')
+
+    def _handle_left(event):
+        nonlocal _compare_needs_reset
+        if _comparing and _compare_mode:
+            _compare_mode.on_left_wins()
+            _compare_needs_reset = True
+
+    def _handle_right(event):
+        nonlocal _compare_needs_reset
+        if _comparing and _compare_mode:
+            _compare_mode.on_right_wins()
+            _compare_needs_reset = True
+
+    def _handle_skip(event):
+        nonlocal _compare_needs_reset
+        if _comparing and _compare_mode:
+            _compare_mode.on_skip()
+            _compare_needs_reset = True
+
+    def _handle_wallpaper(event):
+        nonlocal _comparing
+        if _comparing:
+            _comparing = False
+            log.info('[ctl] exited compare mode')
+
+    orch.on_command('compare', _handle_compare)
+    orch.on_command('left', _handle_left)
+    orch.on_command('right', _handle_right)
+    orch.on_command('skip', _handle_skip)
+    orch.on_command('wallpaper', _handle_wallpaper)
 
     orch.start()
 
@@ -958,7 +1018,40 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             if orch.session.gpu_paused:
                 session.release_current()
                 continue
-            if not _test_pattern:
+
+            if _comparing and _compare_mode and _compare_renderer:
+                # --- Compare mode: two chaos games, split viewport ---
+                pair = _compare_mode.pair
+                if pair.left is not None and pair.right is not None:
+                    # Use rainbow palette for both to avoid color bias
+                    from .genome import _random_palette
+                    compare_palette = frame.palette  # shared palette
+
+                    # Left genome → main renderer
+                    renderer.upload_audio(frame.spectrum)
+                    renderer.upload_genome(pair.left)
+                    renderer.upload_palette(compare_palette)
+                    if _compare_needs_reset:
+                        renderer.reset_walkers()
+                    renderer.clear_histogram(decay=0.3)
+                    renderer.dispatch_chaos_game(iterations=COMPARE_ITERATIONS)
+                    ctx.memory_barrier()
+                    renderer.reduce_histogram_max()
+
+                    # Right genome → compare renderer
+                    _compare_renderer.upload_audio(frame.spectrum)
+                    _compare_renderer.upload_genome(pair.right)
+                    _compare_renderer.upload_palette(compare_palette)
+                    if _compare_needs_reset:
+                        _compare_renderer.reset_walkers()
+                        _compare_needs_reset = False
+                    _compare_renderer.clear_histogram(decay=0.3)
+                    _compare_renderer.dispatch_chaos_game(iterations=COMPARE_ITERATIONS)
+                    ctx.memory_barrier()
+                    _compare_renderer.reduce_histogram_max()
+
+            elif not _test_pattern:
+                # --- Normal mode: single chaos game ---
                 renderer.upload_audio(frame.spectrum)
                 renderer.upload_genome(frame.genome)
                 renderer.upload_palette(frame.palette)
@@ -978,6 +1071,26 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 renderer.set_skew(_monitor_skew.get(name, 0.0))
                 if _test_pattern:
                     renderer.render_test_pattern(viewports[name], surf.width, surf.height)
+                elif _comparing and _compare_renderer:
+                    # Split screen: left half shows left genome, right half shows right genome.
+                    # Each renderer has its own full-canvas histogram.
+                    # Use GL viewport to clip output to each screen half.
+                    vp = viewports[name]
+                    half_screen = surf.width // 2
+
+                    # Left half of screen: left genome (main renderer)
+                    ctx.viewport = (0, 0, half_screen, surf.height)
+                    renderer.render_tonemap(vp, half_screen, surf.height,
+                                           brightness=frame.brightness)
+
+                    # Right half of screen: right genome (compare renderer)
+                    ctx.viewport = (half_screen, 0, surf.width - half_screen, surf.height)
+                    _compare_renderer.set_skew(_monitor_skew.get(name, 0.0))
+                    _compare_renderer.render_tonemap(vp, surf.width - half_screen, surf.height,
+                                                      brightness=frame.brightness)
+
+                    # Restore full viewport for next frame
+                    ctx.viewport = (0, 0, surf.width, surf.height)
                 elif _blur_comparison and surf.width >= 3000:
                     renderer.render_blur_comparison(viewports[name], surf.width, surf.height,
                                                     brightness=frame.brightness,
