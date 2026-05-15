@@ -1164,11 +1164,16 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 elif _comparing and name == _compare_surf_name:
                     # Split the center monitor: left FBO + right histogram
                     from .renderer import _bind_default_framebuffer
-                    _bind_default_framebuffer()
                     vp = viewports[name]
                     half_w = surf.width // 2
 
-                    # Left half: blit pre-rendered left FBO
+                    # Right half: tonemap right histogram (currently in renderer's buffers)
+                    renderer.render_tonemap(vp, surf.width, surf.height,
+                                           brightness=frame.brightness,
+                                           screen_rect=(half_w, 0, surf.width - half_w, surf.height))
+
+                    # Left half: blit pre-rendered left FBO texture
+                    _bind_default_framebuffer()
                     ctx.viewport = (0, 0, half_w, surf.height)
                     renderer._compare_left_tex.use(location=0)
                     bp = renderer.blur_program
@@ -1176,21 +1181,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     bp['u_direction'] = (0.0, 0.0)
                     bp['u_radius'] = 0.0
                     renderer.blur_vao.render(moderngl.TRIANGLES)
-
-                    # Right half: tonemap right histogram (still bound from compute)
-                    renderer._compare_right_hist.bind_to_storage_buffer(0)
-                    renderer._compare_right_max.bind_to_storage_buffer(8)
-                    renderer.render_tonemap(vp, surf.width, surf.height,
-                                           brightness=frame.brightness,
-                                           screen_rect=(half_w, 0, surf.width - half_w, surf.height))
-
-                    # Restore normal histogram for other surfaces
-                    renderer.histogram_buf.bind_to_storage_buffer(0)
-                    renderer._max_buf.bind_to_storage_buffer(8)
                 elif _comparing:
-                    # Non-center monitors: render left genome normally
-                    renderer.histogram_buf.bind_to_storage_buffer(0)
-                    renderer._max_buf.bind_to_storage_buffer(8)
+                    # Non-center monitors: render right genome (in renderer's histogram)
                     renderer.render_tonemap(viewports[name], surf.width, surf.height,
                                            brightness=frame.brightness)
                 elif _blur_comparison and surf.width >= 3000:
