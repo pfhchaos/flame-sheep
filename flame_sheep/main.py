@@ -882,6 +882,9 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         nonlocal _comparing
         if _comparing:
             _comparing = False
+            # Restore normal walker buffer
+            renderer.walker_buf.bind_to_storage_buffer(1)
+            renderer.reset_walkers()
             log.info('[ctl] exited compare mode')
 
     orch.on_command('compare', _handle_compare)
@@ -1032,12 +1035,30 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                         renderer._compare_left_fbo = ctx.framebuffer(
                             color_attachments=[renderer._compare_left_tex])
 
+                    # Ensure separate walker buffers for left/right
+                    if not hasattr(renderer, '_compare_right_walkers'):
+                        import numpy as _np
+                        from .renderer import N_WALKERS
+                        renderer._compare_left_walkers = ctx.buffer(
+                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
+                        renderer._compare_right_walkers = ctx.buffer(
+                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
+
+                    if _compare_needs_reset:
+                        from .renderer import N_WALKERS
+                        import numpy as _np
+                        renderer._compare_left_walkers.write(
+                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
+                        renderer._compare_right_walkers.write(
+                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
+                        _compare_needs_reset = False
+
                     # --- Left genome ---
                     renderer.upload_audio(frame.spectrum)
                     renderer.upload_genome(left_g)
                     renderer.upload_palette(frame.palette)
-                    if _compare_needs_reset:
-                        renderer.reset_walkers()
+                    # Swap in left walker buffer
+                    renderer._compare_left_walkers.bind_to_storage_buffer(1)
                     renderer.clear_histogram(decay=0.3)
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
@@ -1050,12 +1071,12 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
                     # --- Right genome (reuse same renderer) ---
                     renderer.upload_genome(right_g)
-                    renderer.reset_walkers()
+                    # Swap in right walker buffer
+                    renderer._compare_right_walkers.bind_to_storage_buffer(1)
                     renderer.clear_histogram(decay=0.3)
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
-                    _compare_needs_reset = False
 
             elif not _test_pattern:
                 # --- Normal mode: single chaos game ---
