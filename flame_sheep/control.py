@@ -153,7 +153,7 @@ class ControlPipe:
         args = parts[1:]
         
         # Validate known commands
-        valid_commands = {'swap', 'song', 'tempo', 'like', 'dislike', 'next', 'pause', 'resume', 'seek', 'quit', 'evolve'}
+        valid_commands = {'swap', 'song', 'tempo', 'like', 'dislike', 'next', 'pause', 'resume', 'seek', 'quit', 'evolve', 'compare', 'left', 'right', 'skip', 'wallpaper'}
         if command not in valid_commands:
             log.warning(f' unknown command: {command}')
             return None
