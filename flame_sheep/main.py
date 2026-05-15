@@ -1044,13 +1044,14 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
                     # Right genome → compare renderer
                     _compare_renderer.bind_buffers()
+                    ctx.memory_barrier()
                     _compare_renderer.upload_audio(frame.spectrum)
                     _compare_renderer.upload_genome(right_g)
                     _compare_renderer.upload_palette(frame.palette)
                     if _compare_needs_reset:
                         _compare_renderer.reset_walkers()
                         _compare_needs_reset = False
-                    _compare_renderer.clear_histogram(decay=0.3)
+                    _compare_renderer.clear_histogram(decay=0.0)  # full clear, no decay
                     _compare_renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     _compare_renderer.reduce_histogram_max()
