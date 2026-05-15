@@ -1011,13 +1011,26 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
             if _comparing and _compare_mode:
                 # --- Compare mode: single renderer, two sequential dispatches ---
-                # Render left genome, snapshot to FBO, render right genome, snapshot.
-                # Composite both halves during tonemap pass.
+                # Render left genome → tonemap → FBO snapshot.
+                # Then render right genome → histogram stays for tonemap pass.
                 pair = _compare_mode.pair
                 if pair.left is not None and pair.right is not None:
                     rot = core._genome_axis._rotation_phase
                     left_g = pair.left.rotated(rot) if rot != 0.0 else pair.left
                     right_g = pair.right.rotated(rot) if rot != 0.0 else pair.right
+
+                    # Find the widest monitor for compare split
+                    _compare_surf_name = max(viewports, key=lambda n: viewports[n].w)
+                    _compare_vp = viewports[_compare_surf_name]
+                    _compare_surf = surfaces.get(_compare_surf_name, first_surf)
+                    _cw, _ch = _compare_surf.width, _compare_surf.height
+
+                    # Ensure FBO for left side snapshot
+                    if not hasattr(renderer, '_compare_left_fbo') or \
+                       renderer._compare_left_fbo.size != (_cw // 2, _ch):
+                        renderer._compare_left_tex = ctx.texture((_cw // 2, _ch), 4)
+                        renderer._compare_left_fbo = ctx.framebuffer(
+                            color_attachments=[renderer._compare_left_tex])
 
                     # --- Left genome ---
                     renderer.upload_audio(frame.spectrum)
@@ -1030,23 +1043,16 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
 
-                    # Snapshot left into FBO
-                    if not hasattr(renderer, '_compare_left_fbo') or \
-                       renderer._compare_left_fbo.size != (first_surf.width, first_surf.height):
-                        renderer._compare_left_tex = ctx.texture(
-                            (first_surf.width, first_surf.height), 4)
-                        renderer._compare_left_fbo = ctx.framebuffer(
-                            color_attachments=[renderer._compare_left_tex])
-                    vp = viewports[list(ready.keys())[0]] if ready else viewports[list(viewports.keys())[0]]
+                    # Tonemap left genome into FBO
                     renderer._compare_left_fbo.use()
-                    ctx.viewport = (0, 0, first_surf.width, first_surf.height)
-                    renderer.render_tonemap(vp, first_surf.width, first_surf.height,
+                    ctx.viewport = (0, 0, _cw // 2, _ch)
+                    renderer.render_tonemap(_compare_vp, _cw // 2, _ch,
                                            brightness=frame.brightness)
 
                     # --- Right genome (reuse same renderer) ---
                     renderer.upload_genome(right_g)
-                    renderer.reset_walkers()  # must reset — different attractor
-                    renderer.clear_histogram(decay=0.0)  # full clear
+                    renderer.reset_walkers()
+                    renderer.clear_histogram(decay=0.3)
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
@@ -1073,26 +1079,30 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 renderer.set_skew(_monitor_skew.get(name, 0.0))
                 if _test_pattern:
                     renderer.render_test_pattern(viewports[name], surf.width, surf.height)
-                elif _comparing:
-                    # Right genome is in the histogram now — tonemap to right half.
-                    # Left genome was pre-rendered to _compare_left_fbo.
+                elif _comparing and name == _compare_surf_name:
+                    # Split the center monitor: left FBO + right histogram
+                    from .renderer import _bind_default_framebuffer
+                    _bind_default_framebuffer()
                     vp = viewports[name]
                     half_w = surf.width // 2
+
+                    # Left half: blit pre-rendered left FBO
+                    ctx.viewport = (0, 0, half_w, surf.height)
+                    renderer._compare_left_tex.use(location=0)
+                    bp = renderer.blur_program
+                    bp['u_texture'] = 0
+                    bp['u_direction'] = (0.0, 0.0)
+                    bp['u_radius'] = 0.0
+                    renderer.blur_vao.render(moderngl.TRIANGLES)
 
                     # Right half: tonemap current histogram (right genome)
                     renderer.render_tonemap(vp, surf.width, surf.height,
                                            brightness=frame.brightness,
                                            screen_rect=(half_w, 0, surf.width - half_w, surf.height))
-
-                    # Left half: blit from the pre-rendered FBO
-                    if hasattr(renderer, '_compare_left_fbo'):
-                        ctx.viewport = (0, 0, half_w, surf.height)
-                        renderer._compare_left_tex.use(location=0)
-                        bp = renderer.blur_program
-                        bp['u_texture'] = 0
-                        bp['u_direction'] = (0.0, 0.0)
-                        bp['u_radius'] = 0.0
-                        renderer.blur_vao.render(moderngl.TRIANGLES)
+                elif _comparing:
+                    # Non-center monitors: render normally during compare mode
+                    renderer.render_tonemap(viewports[name], surf.width, surf.height,
+                                           brightness=frame.brightness)
                 elif _blur_comparison and surf.width >= 3000:
                     renderer.render_blur_comparison(viewports[name], surf.width, surf.height,
                                                     brightness=frame.brightness,
