@@ -1044,10 +1044,9 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     renderer.reduce_histogram_max()
 
                     # Tonemap left genome into FBO
-                    renderer._compare_left_fbo.use()
-                    ctx.viewport = (0, 0, _cw // 2, _ch)
                     renderer.render_tonemap(_compare_vp, _cw // 2, _ch,
-                                           brightness=frame.brightness)
+                                           brightness=frame.brightness,
+                                           target_fbo=renderer._compare_left_fbo)
 
                     # --- Right genome (reuse same renderer) ---
                     renderer.upload_genome(right_g)

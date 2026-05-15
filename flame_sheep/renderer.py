@@ -497,7 +497,8 @@ class FlameRenderer:
 
     def render_tonemap(self, viewport: Viewport, surface_w: int, surface_h: int,
                        brightness: float = 6.0, dt: float = 1/60,
-                       screen_rect: tuple[int, int, int, int] | None = None) -> None:
+                       screen_rect: tuple[int, int, int, int] | None = None,
+                       target_fbo: 'moderngl.Framebuffer | None' = None) -> None:
         """
         Render the tonemap pass for one window's viewport slice,
         optionally with gaussian blur and temporal blend.
@@ -551,7 +552,7 @@ class FlameRenderer:
 
         if self.blur_radius <= 0:
             # No spatial blur — tonemap directly
-            target = current_fbo if use_temporal else None
+            target = current_fbo if use_temporal else target_fbo
             if target:
                 target.use()
             else:
@@ -607,6 +608,9 @@ class FlameRenderer:
             if use_temporal:
                 current_fbo.use()
                 self.ctx.viewport = (0, 0, surface_w, surface_h)
+            elif target_fbo:
+                target_fbo.use()
+                self.ctx.viewport = _gl_viewport
             else:
                 _bind_default_framebuffer()
                 self.ctx.viewport = _gl_viewport
@@ -631,8 +635,11 @@ class FlameRenderer:
             tp['u_comparison'] = 0
             self._temporal_mix_vao.render(moderngl.TRIANGLES)
 
-            # Blit blend result to screen
-            _bind_default_framebuffer()
+            # Blit blend result to screen/target
+            if target_fbo:
+                target_fbo.use()
+            else:
+                _bind_default_framebuffer()
             self.ctx.viewport = _gl_viewport
             blend_tex.use(location=0)
             bp = self.blur_program
