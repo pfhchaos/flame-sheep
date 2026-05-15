@@ -1057,10 +1057,43 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                             _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
                         _compare_needs_reset = False
 
-                    # --- Left genome (uses renderer's own histogram/walkers) ---
-                    renderer.histogram_buf.bind_to_storage_buffer(0)
-                    renderer.walker_buf.bind_to_storage_buffer(1)
-                    renderer._max_buf.bind_to_storage_buffer(8)
+                    # Save left histogram + walker state to side buffers
+                    if not hasattr(renderer, '_compare_left_hist_save'):
+                        import numpy as _np
+                        n_pixels = renderer.canvas_w * renderer.canvas_h
+                        from .renderer import N_WALKERS
+                        renderer._compare_left_hist_save = ctx.buffer(reserve=n_pixels * 2 * 4)
+                        renderer._compare_left_walker_save = ctx.buffer(reserve=N_WALKERS * 3 * 4)
+                        renderer._compare_right_hist_save = ctx.buffer(reserve=n_pixels * 2 * 4)
+                        renderer._compare_right_walker_save = ctx.buffer(reserve=N_WALKERS * 3 * 4)
+                        # Initialize with random walkers
+                        renderer._compare_left_walker_save.write(
+                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
+                        renderer._compare_right_walker_save.write(
+                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
+                        renderer._compare_left_hist_save.write(
+                            _np.zeros(n_pixels * 2, dtype=_np.uint32).tobytes())
+                        renderer._compare_right_hist_save.write(
+                            _np.zeros(n_pixels * 2, dtype=_np.uint32).tobytes())
+
+                    if _compare_needs_reset:
+                        import numpy as _np
+                        from .renderer import N_WALKERS
+                        renderer._compare_left_walker_save.write(
+                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
+                        renderer._compare_right_walker_save.write(
+                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
+                        n_pixels = renderer.canvas_w * renderer.canvas_h
+                        renderer._compare_left_hist_save.write(
+                            _np.zeros(n_pixels * 2, dtype=_np.uint32).tobytes())
+                        renderer._compare_right_hist_save.write(
+                            _np.zeros(n_pixels * 2, dtype=_np.uint32).tobytes())
+                        _compare_needs_reset = False
+
+                    # --- Left genome ---
+                    # Restore left state into renderer's buffers
+                    ctx.copy_buffer(renderer.histogram_buf, renderer._compare_left_hist_save)
+                    ctx.copy_buffer(renderer.walker_buf, renderer._compare_left_walker_save)
                     renderer.upload_audio(frame.spectrum)
                     renderer.upload_genome(left_g)
                     renderer.upload_palette(frame.palette)
@@ -1068,36 +1101,27 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
-
-                    # Debug: read back histogram stats
-                    if _frame % 60 == 0:
-                        import numpy as _np
-                        left_max = _np.frombuffer(renderer._max_buf.read(), dtype=_np.uint32)[0]
-                        left_hist = _np.frombuffer(renderer.histogram_buf.read(4 * 100), dtype=_np.uint32)
-                        left_nonzero = _np.count_nonzero(left_hist)
-                        log.info(f'[compare debug] LEFT max_hits={left_max} first100_nonzero={left_nonzero} rot={rot:.3f} iters={frame.iterations}')
+                    # Save left state back
+                    ctx.copy_buffer(renderer._compare_left_hist_save, renderer.histogram_buf)
+                    ctx.copy_buffer(renderer._compare_left_walker_save, renderer.walker_buf)
 
                     # Tonemap left genome into FBO
                     renderer.render_tonemap(_compare_vp, _cw // 2, _ch,
                                            brightness=frame.brightness,
                                            target_fbo=renderer._compare_left_fbo)
 
-                    # --- Right genome (swap in right-side buffers) ---
-                    renderer._compare_right_hist.bind_to_storage_buffer(0)
-                    renderer._compare_right_walkers.bind_to_storage_buffer(1)
-                    renderer._compare_right_max.bind_to_storage_buffer(8)
+                    # --- Right genome ---
+                    # Restore right state into renderer's buffers
+                    ctx.copy_buffer(renderer.histogram_buf, renderer._compare_right_hist_save)
+                    ctx.copy_buffer(renderer.walker_buf, renderer._compare_right_walker_save)
                     renderer.upload_genome(right_g)
                     renderer.clear_histogram(decay=0.3)
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
-
-                    # Debug: read back right histogram stats
-                    if _frame % 60 == 0:
-                        right_max = _np.frombuffer(renderer._compare_right_max.read(), dtype=_np.uint32)[0]
-                        right_hist = _np.frombuffer(renderer._compare_right_hist.read(4 * 100), dtype=_np.uint32)
-                        right_nonzero = _np.count_nonzero(right_hist)
-                        log.info(f'[compare debug] RIGHT max_hits={right_max} first100_nonzero={right_nonzero}')
+                    # Save right state back
+                    ctx.copy_buffer(renderer._compare_right_hist_save, renderer.histogram_buf)
+                    ctx.copy_buffer(renderer._compare_right_walker_save, renderer.walker_buf)
 
             elif not _test_pattern:
                 # --- Normal mode: single chaos game ---
