@@ -1021,32 +1021,35 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
             if _comparing and _compare_mode and _compare_renderer:
                 # --- Compare mode: two chaos games, split viewport ---
+                # core.tick() already ran above — use its brightness, iterations,
+                # and rotation phase for both genomes.
                 pair = _compare_mode.pair
                 if pair.left is not None and pair.right is not None:
-                    # Use rainbow palette for both to avoid color bias
-                    from .genome import _random_palette
-                    compare_palette = frame.palette  # shared palette
+                    # Apply rotation from the genome axis to both compare genomes
+                    rot = core._genome_axis._rotation_phase
+                    left_g = pair.left.rotated(rot) if rot != 0.0 else pair.left
+                    right_g = pair.right.rotated(rot) if rot != 0.0 else pair.right
 
                     # Left genome → main renderer
                     renderer.upload_audio(frame.spectrum)
-                    renderer.upload_genome(pair.left)
-                    renderer.upload_palette(compare_palette)
+                    renderer.upload_genome(left_g)
+                    renderer.upload_palette(frame.palette)
                     if _compare_needs_reset:
                         renderer.reset_walkers()
                     renderer.clear_histogram(decay=0.3)
-                    renderer.dispatch_chaos_game(iterations=COMPARE_ITERATIONS)
+                    renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
 
                     # Right genome → compare renderer
                     _compare_renderer.upload_audio(frame.spectrum)
-                    _compare_renderer.upload_genome(pair.right)
-                    _compare_renderer.upload_palette(compare_palette)
+                    _compare_renderer.upload_genome(right_g)
+                    _compare_renderer.upload_palette(frame.palette)
                     if _compare_needs_reset:
                         _compare_renderer.reset_walkers()
                         _compare_needs_reset = False
                     _compare_renderer.clear_histogram(decay=0.3)
-                    _compare_renderer.dispatch_chaos_game(iterations=COMPARE_ITERATIONS)
+                    _compare_renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     _compare_renderer.reduce_histogram_max()
 
