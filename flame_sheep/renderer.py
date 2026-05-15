@@ -358,6 +358,24 @@ class FlameRenderer:
         self.transform_hits_buf.write(np.zeros(n, dtype=np.uint32).tobytes())
         self.ctx.memory_barrier()
 
+    def bind_buffers(self) -> None:
+        """Rebind all SSBOs to their binding points.
+
+        Required when multiple FlameRenderer instances share a GL context
+        (e.g. compare mode), since bind_to_storage_buffer is global state.
+        """
+        self.histogram_buf.bind_to_storage_buffer(0)
+        self.walker_buf.bind_to_storage_buffer(1)
+        self.affines_buf.bind_to_storage_buffer(2)
+        self.active_vars_buf.bind_to_storage_buffer(3)
+        self.colors_buf.bind_to_storage_buffer(4)
+        self.weights_buf.bind_to_storage_buffer(5)
+        self.color_speeds_buf.bind_to_storage_buffer(6)
+        self.transform_hits_buf.bind_to_storage_buffer(7)
+        self._max_buf.bind_to_storage_buffer(8)
+        self.post_affines_buf.bind_to_storage_buffer(9)
+        self.pre_vars_buf.bind_to_storage_buffer(10)
+
     def dispatch_chaos_game(self, iterations: int = N_ITERS) -> None:
         self.compute_shader['u_iterations'] = iterations
         self.compute_shader['u_rng_seed'] = self._rng_frame_counter
