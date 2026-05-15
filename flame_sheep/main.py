@@ -1091,7 +1091,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                         _compare_needs_reset = False
 
                     # --- Left genome ---
-                    # Restore left state into renderer's buffers
+                    # Restore left state into renderer's buffers (dst, src)
                     ctx.copy_buffer(renderer.histogram_buf, renderer._compare_left_hist_save)
                     ctx.copy_buffer(renderer.walker_buf, renderer._compare_left_walker_save)
                     renderer.upload_audio(frame.spectrum)
@@ -1101,17 +1101,17 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
-                    # Save left state back
-                    ctx.copy_buffer(renderer._compare_left_hist_save, renderer.histogram_buf)
-                    ctx.copy_buffer(renderer._compare_left_walker_save, renderer.walker_buf)
-
-                    # Tonemap left genome into FBO
+                    # Tonemap left genome into FBO (histogram still has left data)
                     renderer.render_tonemap(_compare_vp, _cw // 2, _ch,
                                            brightness=frame.brightness,
                                            target_fbo=renderer._compare_left_fbo)
 
+                    # Save left state (dst, src)
+                    ctx.copy_buffer(renderer._compare_left_hist_save, renderer.histogram_buf)
+                    ctx.copy_buffer(renderer._compare_left_walker_save, renderer.walker_buf)
+
                     # --- Right genome ---
-                    # Restore right state into renderer's buffers
+                    # Restore right state into renderer's buffers (dst, src)
                     ctx.copy_buffer(renderer.histogram_buf, renderer._compare_right_hist_save)
                     ctx.copy_buffer(renderer.walker_buf, renderer._compare_right_walker_save)
                     renderer.upload_genome(right_g)
@@ -1119,7 +1119,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
-                    # Save right state back
+                    # Save right state back (dst, src)
                     ctx.copy_buffer(renderer._compare_right_hist_save, renderer.histogram_buf)
                     ctx.copy_buffer(renderer._compare_right_walker_save, renderer.walker_buf)
 
