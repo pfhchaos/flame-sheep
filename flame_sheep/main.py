@@ -1069,6 +1069,14 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
 
+                    # Debug: read back histogram stats
+                    if _frame % 60 == 0:
+                        import numpy as _np
+                        left_max = _np.frombuffer(renderer._max_buf.read(), dtype=_np.uint32)[0]
+                        left_hist = _np.frombuffer(renderer.histogram_buf.read(4 * 100), dtype=_np.uint32)
+                        left_nonzero = _np.count_nonzero(left_hist)
+                        log.info(f'[compare debug] LEFT max_hits={left_max} first100_nonzero={left_nonzero} rot={rot:.3f} iters={frame.iterations}')
+
                     # Tonemap left genome into FBO
                     renderer.render_tonemap(_compare_vp, _cw // 2, _ch,
                                            brightness=frame.brightness,
@@ -1083,6 +1091,13 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
+
+                    # Debug: read back right histogram stats
+                    if _frame % 60 == 0:
+                        right_max = _np.frombuffer(renderer._compare_right_max.read(), dtype=_np.uint32)[0]
+                        right_hist = _np.frombuffer(renderer._compare_right_hist.read(4 * 100), dtype=_np.uint32)
+                        right_nonzero = _np.count_nonzero(right_hist)
+                        log.info(f'[compare debug] RIGHT max_hits={right_max} first100_nonzero={right_nonzero}')
 
             elif not _test_pattern:
                 # --- Normal mode: single chaos game ---
