@@ -1074,23 +1074,19 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 elif _comparing and _compare_renderer:
                     # Split screen: left half shows left genome, right half shows right genome.
                     # Each renderer has its own full-canvas histogram.
-                    # Use GL viewport to clip output to each screen half.
                     vp = viewports[name]
-                    half_screen = surf.width // 2
+                    half_w = surf.width // 2
 
                     # Left half of screen: left genome (main renderer)
-                    ctx.viewport = (0, 0, half_screen, surf.height)
-                    renderer.render_tonemap(vp, half_screen, surf.height,
-                                           brightness=frame.brightness)
+                    renderer.render_tonemap(vp, surf.width, surf.height,
+                                           brightness=frame.brightness,
+                                           screen_rect=(0, 0, half_w, surf.height))
 
                     # Right half of screen: right genome (compare renderer)
-                    ctx.viewport = (half_screen, 0, surf.width - half_screen, surf.height)
                     _compare_renderer.set_skew(_monitor_skew.get(name, 0.0))
-                    _compare_renderer.render_tonemap(vp, surf.width - half_screen, surf.height,
-                                                      brightness=frame.brightness)
-
-                    # Restore full viewport for next frame
-                    ctx.viewport = (0, 0, surf.width, surf.height)
+                    _compare_renderer.render_tonemap(vp, surf.width, surf.height,
+                                                      brightness=frame.brightness,
+                                                      screen_rect=(half_w, 0, surf.width - half_w, surf.height))
                 elif _blur_comparison and surf.width >= 3000:
                     renderer.render_blur_comparison(viewports[name], surf.width, surf.height,
                                                     brightness=frame.brightness,
