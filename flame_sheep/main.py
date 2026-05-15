@@ -1102,21 +1102,10 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
 
-                    if _frame % 60 == 0:
-                        import numpy as _np
-                        lmax = _np.frombuffer(renderer._max_buf.read(), dtype=_np.uint32)[0]
-                        log.info(f'[cmp] LEFT max={lmax} rot={rot:.3f} iters={frame.iterations}')
-
                     # Tonemap left genome into FBO (histogram still has left data)
                     renderer.render_tonemap(_compare_vp, _cw // 2, _ch,
                                            brightness=frame.brightness,
                                            target_fbo=renderer._compare_left_fbo)
-
-                    # Read back FBO to verify it's not blank
-                    if _frame % 60 == 0:
-                        fbo_data = renderer._compare_left_fbo.read(components=4)
-                        fbo_arr = _np.frombuffer(fbo_data[:400], dtype=_np.uint8)
-                        log.info(f'[cmp] LEFT FBO first100bytes max={fbo_arr.max()} nonzero={_np.count_nonzero(fbo_arr)}')
 
                     # Save left state (dst, src)
                     ctx.copy_buffer(renderer._compare_left_hist_save, renderer.histogram_buf)
@@ -1131,11 +1120,6 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     renderer.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
                     renderer.reduce_histogram_max()
-
-                    if _frame % 60 == 0:
-                        rmax = _np.frombuffer(renderer._max_buf.read(), dtype=_np.uint32)[0]
-                        log.info(f'[cmp] RIGHT max={rmax}')
-
                     # Save right state back (dst, src)
                     ctx.copy_buffer(renderer._compare_right_hist_save, renderer.histogram_buf)
                     ctx.copy_buffer(renderer._compare_right_walker_save, renderer.walker_buf)
