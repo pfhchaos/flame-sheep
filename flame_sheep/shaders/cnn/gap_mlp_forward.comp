@@ -21,7 +21,7 @@ layout(local_size_x = 32) in;
 
 layout(std430, binding = 0) readonly  buffer InputBuf   { float input_data[]; };
 layout(std430, binding = 1) readonly  buffer WeightBuf  { float weights[]; };
-layout(std430, binding = 2) writeonly buffer PooledBuf  { float pooled[]; };     // [B, C]
+layout(std430, binding = 2)           buffer PooledBuf  { float pooled[]; };     // [B, C] read+write
 layout(std430, binding = 3) writeonly buffer OutputBuf  { float output_data[]; }; // [B]
 layout(std430, binding = 5) writeonly buffer HiddenBuf  { float hidden[]; };     // [B, hidden_dim]
 
