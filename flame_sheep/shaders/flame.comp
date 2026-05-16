@@ -103,7 +103,7 @@ layout(std430, binding = 10) readonly buffer PreVariations {
 };
 
 uniform int   u_n_transforms;
-uniform float u_zoom;
+uniform vec2  u_zoom;
 uniform float u_cos_rot;      // precomputed cos(rotation)
 uniform float u_sin_rot;      // precomputed sin(rotation)
 uniform vec2  u_center;
@@ -112,6 +112,8 @@ uniform int   u_height;
 uniform int   u_iterations;   // chaos game steps per invocation
 uniform int   u_has_final_xform;  // 0 or 1
 uniform uint  u_rng_seed;    // changes each dispatch for different random sequences
+uniform uint  u_hist_offset;  // offset into histogram[] for compare mode (0 = normal)
+uniform uint  u_hist_stride;  // distance from hits to colors (n_pixels normal, 2*n_pixels compare)
 
 // Color scaling factor for uint accumulator
 #define COLOR_SCALE 1000000u
@@ -231,10 +233,13 @@ void main() {
             pixel.y < 0 || pixel.y >= u_height) continue;
 
         // 7. Accumulate into histogram (atomic — safe from all threads)
-        uint idx = uint(pixel.y * u_width + pixel.x);
-        uint n_pixels = uint(u_width * u_height);
-        atomicAdd(histogram[idx],            1u);                          // hit_count
-        atomicAdd(histogram[n_pixels + idx], uint(plot_c * float(COLOR_SCALE))); // color_acc
+        uint px_idx = uint(pixel.y * u_width + pixel.x);
+        // u_hist_offset: 0 for left/normal, n_pixels for right in compare mode
+        // u_hist_stride: n_pixels normal, 2*n_pixels compare (gap between hits and colors)
+        uint hit_idx = u_hist_offset + px_idx;
+        uint col_idx = u_hist_stride + u_hist_offset + px_idx;
+        atomicAdd(histogram[hit_idx], 1u);
+        atomicAdd(histogram[col_idx], uint(plot_c * float(COLOR_SCALE)));
 #ifdef SCORING_MODE
         atomicAdd(transform_hits[idx * uint(MAX_TRANSFORMS) + uint(tidx)], 1u);
 #endif

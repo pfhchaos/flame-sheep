@@ -261,6 +261,16 @@ class FlameRenderer:
         # Temporal decay tracking for tonemap normalization
         self._decay = 0.0  # set by clear_histogram()
 
+        # Histogram offset/stride for compare mode (default: normal single-genome)
+        n_pixels = self.canvas_w * self.canvas_h
+        self._hist_offset = 0
+        self.compute_shader['u_hist_offset'] = 0
+        self.compute_shader['u_hist_stride'] = n_pixels
+        self.clear_shader['u_hist_offset'] = 0
+        self.reduce_max_shader['u_hist_offset'] = 0
+        self.tonemap_program['u_hist_offset'] = 0
+        self.tonemap_program['u_hist_stride'] = n_pixels
+
         # Debug overlay (lazy init)
         self._debug_circle_prog = None
         self._debug_circle_vao = None
@@ -338,6 +348,34 @@ class FlameRenderer:
             x_new = np.linspace(0, 1, tex_width)
             spectrum = np.interp(x_new, x_old, spectrum).astype(np.float32)
         self.audio_tex.write(spectrum.astype(np.float32).tobytes())
+
+    def ensure_double_histogram(self) -> None:
+        """Double the histogram buffer for compare mode.
+
+        Layout: [hits_L(n_px), hits_R(n_px), colors_L(n_px), colors_R(n_px)]
+        Stride (hits → colors) = 2*n_px instead of n_px.
+        Left offset = 0, right offset = n_px.
+        """
+        n_pixels = self.canvas_w * self.canvas_h
+        if self.histogram_buf.size >= n_pixels * 4 * 4:
+            return  # already doubled
+        new_buf = self.ctx.buffer(np.zeros(n_pixels * 4, dtype=np.uint32).tobytes())
+        new_buf.bind_to_storage_buffer(0)
+        self.histogram_buf = new_buf
+        # Update stride to account for doubled hits region
+        stride = n_pixels * 2
+        self.compute_shader['u_hist_stride'] = stride
+        self.clear_shader['u_hist_offset'] = 0
+        self.reduce_max_shader['u_hist_offset'] = 0
+        self.tonemap_program['u_hist_stride'] = stride
+
+    def set_histogram_offset(self, offset: int) -> None:
+        """Set histogram offset for compare mode (0 = left/normal, n_pixels = right)."""
+        self._hist_offset = offset
+        self.compute_shader['u_hist_offset'] = offset
+        self.clear_shader['u_hist_offset'] = offset
+        self.reduce_max_shader['u_hist_offset'] = offset
+        self.tonemap_program['u_hist_offset'] = offset
 
     def clear_histogram(self, decay: float = 0.0) -> None:
         """Clear or decay the histogram.
