@@ -10,6 +10,33 @@ Also: daemon should forward `song_started`, `reset_tempo`, `hint_tempo`, `reset_
 
 ---
 
+## Separate blob storage from genomes table
+
+The genomes table stores render PNGs (render_static, render_swept) and histogram blobs (hist_static, hist_swept, hist_transform, hist_first_hit) inline. At ~350KB per genome compressed, 2400 genomes = ~840MB of blobs in the main table.
+
+This causes:
+- Slow table scans (compare mode `_build_candidates()` stalls the render loop scanning 2400 rows of blob metadata)
+- SQLite page cache pollution (blob pages evict index/score pages)
+- Backup/vacuum operations are slow
+
+Fix: move blobs to a separate `genome_blobs` table joined by genome_id. The main genomes table stays lean (scores, params, metadata). Queries that don't need blobs (fitness ranking, transition lookup, candidate selection) skip the blob table entirely.
+
+```sql
+CREATE TABLE genome_blobs (
+    genome_id   INTEGER PRIMARY KEY REFERENCES genomes(id) ON DELETE CASCADE,
+    render_static BLOB,
+    render_swept  BLOB,
+    hist_static   BLOB,
+    hist_swept    BLOB,
+    hist_transform BLOB,
+    hist_first_hit BLOB
+);
+```
+
+Migration: `INSERT INTO genome_blobs SELECT id, render_static, ... FROM genomes`, then drop blob columns from genomes.
+
+---
+
 ## Vulkan Migration: GPU issues to fix
 
 ### SSBO binding cache (Mesa/Arc)
