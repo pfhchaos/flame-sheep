@@ -674,17 +674,6 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # Bind context to first surface and create the moderngl wrapper
     session.make_current(first_surf)
     ctx = session.create_moderngl_context()
-    # Create compare renderer FIRST so main renderer's SSBO bindings win
-    from .renderer import N_WALKERS
-    _center_name = max(viewports, key=lambda n: viewports[n].w)
-    _center_surf = surfaces.get(_center_name, first_surf)
-    _CMP_SCALE = 2
-    _cmp_w = _center_surf.width // 2 // _CMP_SCALE
-    _cmp_h = _center_surf.height // _CMP_SCALE
-    _compare_renderer = FlameRenderer(ctx, _cmp_w, _cmp_h)
-    _compare_renderer.set_ppmm(canvas_ppmm / _CMP_SCALE)
-    log.info(f'[compare] pre-created renderer at {_cmp_w}x{_cmp_h}')
-    # Main renderer created last — its SSBO bindings take effect
     renderer = FlameRenderer(ctx, canvas_w, canvas_h)
     renderer.blur_radius = blur_radius
     renderer.set_ppmm(canvas_ppmm)
@@ -857,15 +846,32 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
     # --- Compare mode ---
     from .compare import CompareMode
+    from .renderer import N_WALKERS
     _compare_mode: CompareMode | None = None
-    # _compare_renderer already created above (before main renderer)
+    _compare_renderer: FlameRenderer | None = None
     _comparing = False
     _compare_needs_reset = False
+    _CMP_SCALE = 2
+
+    def _ensure_compare_renderer():
+        nonlocal _compare_renderer
+        if _compare_renderer is not None:
+            return
+        center_name = max(viewports, key=lambda n: viewports[n].w)
+        center_surf = surfaces.get(center_name, first_surf)
+        cmp_w = center_surf.width // 2 // _CMP_SCALE
+        cmp_h = center_surf.height // _CMP_SCALE
+        _compare_renderer = FlameRenderer(ctx, cmp_w, cmp_h)
+        _compare_renderer.set_ppmm(canvas_ppmm / _CMP_SCALE)
+        # Restore main renderer's bindings
+        renderer.bind_buffers()
+        log.info(f'[compare] created renderer at {cmp_w}x{cmp_h}')
 
     def _handle_compare(event):
         nonlocal _compare_mode, _comparing, _compare_needs_reset
         if _comparing:
             return
+        _ensure_compare_renderer()
         _compare_mode = CompareMode(lib)
         _compare_mode.pick_pair()
         _comparing = True
