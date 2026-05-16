@@ -856,23 +856,19 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     _CMP_SCALE = 2  # divisor: canvas/2 each axis = 1/4 pixels
     _CMP_WALKERS = N_WALKERS // 4  # match walker density to pixel count
 
+    # Pre-create compare renderer at startup to avoid shader compilation stall
+    _center_name = max(viewports, key=lambda n: viewports[n].w)
+    _center_surf = surfaces.get(_center_name, first_surf)
+    _cmp_w = _center_surf.width // 2 // _CMP_SCALE
+    _cmp_h = _center_surf.height // _CMP_SCALE
+    _compare_renderer = FlameRenderer(ctx, _cmp_w, _cmp_h)
+    _compare_renderer.set_ppmm(canvas_ppmm / _CMP_SCALE)
+    log.info(f'[compare] pre-created renderer at {_cmp_w}x{_cmp_h}')
+
     def _handle_compare(event):
-        nonlocal _compare_mode, _compare_renderer, _comparing, _compare_needs_reset
+        nonlocal _compare_mode, _comparing, _compare_needs_reset
         if _comparing:
             return
-        if _compare_renderer is None:
-            # Size compare canvas to match half the center monitor's aspect ratio
-            center_name = max(viewports, key=lambda n: viewports[n].w)
-            center_surf = surfaces.get(center_name, first_surf)
-            half_w = center_surf.width // 2
-            half_h = center_surf.height
-            # Scale down for performance
-            cmp_w = half_w // _CMP_SCALE
-            cmp_h = half_h // _CMP_SCALE
-            _compare_renderer = FlameRenderer(ctx, cmp_w, cmp_h)
-            _compare_renderer.set_ppmm(canvas_ppmm / _CMP_SCALE)
-            log.info(f'[compare] created renderer at {cmp_w}x{cmp_h} '
-                     f'(half-screen {half_w}x{half_h})')
         _compare_mode = CompareMode(lib)
         _compare_mode.pick_pair()
         _comparing = True
