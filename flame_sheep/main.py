@@ -870,6 +870,14 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         _compare_mode.pick_pair()
         _comparing = True
         _compare_needs_reset = True
+        # Reclaim compare renderer's SSBO bindings after main renderer's exit rebind
+        if _compare_renderer is not None:
+            _compare_renderer.bind_buffers()
+            # CPU-side zero to ensure clean state regardless of binding cache
+            import numpy as _np
+            n_px = _compare_renderer.canvas_w * _compare_renderer.canvas_h
+            _compare_renderer.histogram_buf.write(
+                _np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
         log.info('[ctl] entered compare mode')
 
     def _handle_left(event):
