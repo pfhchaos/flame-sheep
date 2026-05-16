@@ -861,11 +861,18 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         if _comparing:
             return
         if _compare_renderer is None:
-            cmp_w = canvas_w // _CMP_SCALE
-            cmp_h = canvas_h // _CMP_SCALE
+            # Size compare canvas to match half the center monitor's aspect ratio
+            center_name = max(viewports, key=lambda n: viewports[n].w)
+            center_surf = surfaces.get(center_name, first_surf)
+            half_w = center_surf.width // 2
+            half_h = center_surf.height
+            # Scale down for performance
+            cmp_w = half_w // _CMP_SCALE
+            cmp_h = half_h // _CMP_SCALE
             _compare_renderer = FlameRenderer(ctx, cmp_w, cmp_h)
             _compare_renderer.set_ppmm(canvas_ppmm / _CMP_SCALE)
-            log.info(f'[compare] created renderer at {cmp_w}x{cmp_h}')
+            log.info(f'[compare] created renderer at {cmp_w}x{cmp_h} '
+                     f'(half-screen {half_w}x{half_h})')
         _compare_mode = CompareMode(lib)
         _compare_mode.pick_pair()
         _comparing = True
@@ -1145,8 +1152,10 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     # Split the center monitor: left FBO + right histogram
                     from .renderer import _bind_default_framebuffer
                     cr = _compare_renderer
-                    vp = viewports[name]
                     half_w = surf.width // 2
+
+                    # Clear screen to black first (eliminates white bars)
+                    ctx.clear(0.0, 0.0, 0.0, 1.0)
 
                     # Right half: tonemap right histogram (compare renderer's full canvas)
                     _cr_vp = Viewport(0, 0, cr.canvas_w, cr.canvas_h)
@@ -1165,9 +1174,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     bp['u_radius'] = 0.0
                     cr.blur_vao.render(moderngl.TRIANGLES)
                 elif _comparing:
-                    # Non-center monitors: normal wallpaper
-                    renderer.render_tonemap(viewports[name], surf.width, surf.height,
-                                           brightness=frame.brightness)
+                    # Side monitors: black during compare mode
+                    ctx.clear(0.0, 0.0, 0.0, 1.0)
                 elif _blur_comparison and surf.width >= 3000:
                     renderer.render_blur_comparison(viewports[name], surf.width, surf.height,
                                                     brightness=frame.brightness,
