@@ -22,7 +22,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-RENDER_VERSION = 3  # v3: re-render with corrected zoom formula
+RENDER_VERSION = 4  # v4: always store histograms + first-hit iteration response
 
 COLOR_SCALE = 1_000_000.0
 
@@ -49,7 +49,6 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
 
     render_size = getattr(getattr(cfg, 'scoring', None), 'render_size', 512)
     render_sleep = getattr(getattr(cfg, 'scoring', None), 'render_sleep', 2.0)
-    store_histograms = getattr(getattr(cfg, 'scoring', None), 'store_histograms', False)
 
     # Create standalone GPU context
     os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
@@ -83,8 +82,9 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
         else:         _rainbow[i] = [c, 0, x]
     _gray_palette = np.tile(
         np.linspace(0, 1, 256, dtype=np.float32), (3, 1)).T.copy()
+    from .scoring_channels import pack_histogram, pack_static_histogram
     log.info(f'GPU render worker started ({render_size}x{render_size}, '
-             f'sleep={render_sleep}s, histograms={store_histograms})')
+             f'sleep={render_sleep}s)')
 
     conn = sqlite3.connect(db_path)
     conn.execute('PRAGMA busy_timeout=5000')
@@ -116,30 +116,45 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
             try:
                 genome = _genome_from_json(params_json)
 
-                # --- Static render ---
+                # --- Static render with first-hit snapshots ---
                 renderer.upload_genome(genome)
                 renderer.upload_palette(_rainbow)
                 renderer.reset_walkers()
                 renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
-                if store_histograms:
-                    renderer.clear_transform_hits()
+                renderer.clear_transform_hits()
 
-                for _ in range(n_frames):
+                # First-hit iteration response: track when each pixel first appears.
+                # Take 16 snapshots across the iteration range (100-500 iters).
+                n_snapshots = 16
+                snap_iters = np.linspace(
+                    N_ITERS * 2, N_ITERS * n_frames, n_snapshots, dtype=int)
+                first_hit = None
+                total_dispatched = 0
+
+                for frame_i in range(n_frames):
                     renderer.clear_histogram()
                     renderer.dispatch_chaos_game(iterations=N_ITERS)
                     ctx.memory_barrier()
+                    total_dispatched += N_ITERS
+
+                    # Check if we hit a snapshot point
+                    for snap_idx, target in enumerate(snap_iters):
+                        if total_dispatched >= target and (
+                                snap_idx == 0 or total_dispatched - N_ITERS < target):
+                            hits, _ = renderer.histogram_data()
+                            if first_hit is None:
+                                first_hit = np.full(hits.shape, 255, dtype=np.uint8)
+                            mapped = snap_idx * 255 // max(n_snapshots - 1, 1)
+                            first_hit[(hits > 0) & (first_hit == 255)] = mapped
 
                 render_static = renderer.snapshot_png()
 
-                # Read histogram data for centroid (and optionally store)
+                # Read histogram data
                 hit_counts, color_accs = renderer.histogram_data()
-                hist_static_blob = None
-                hist_transform_blob = None
-                if store_histograms:
-                    hist_static_blob = zlib.compress(
-                        hit_counts.tobytes() + color_accs.tobytes())
-                    transform_hits = renderer.transform_hits_data()
-                    hist_transform_blob = zlib.compress(transform_hits.tobytes())
+                hist_static_blob = pack_static_histogram(hit_counts, color_accs)
+                transform_hits = renderer.transform_hits_data()
+                hist_transform_blob = pack_histogram(transform_hits)
+                hist_first_hit_blob = pack_histogram(first_hit) if first_hit is not None else None
 
                 # --- Swept render ---
                 renderer.upload_genome(genome)
@@ -162,9 +177,7 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 renderer.upload_palette(_gray_palette)
                 render_swept = renderer.snapshot_png()
 
-                hist_swept_blob = None
-                if store_histograms:
-                    hist_swept_blob = zlib.compress(swept_hits.tobytes())
+                hist_swept_blob = pack_histogram(swept_hits)
 
                 # Compute swept centroid + balance
                 swept_hit_grid = swept_hits.astype(np.float64)
@@ -181,11 +194,13 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                     '''UPDATE genomes
                        SET render_static=?, render_swept=?,
                            hist_static=?, hist_swept=?, hist_transform=?,
+                           hist_first_hit=?,
                            centroid_x=?, centroid_y=?, balance=?,
                            render_version=?
                        WHERE id=?''',
                     (render_static, render_swept,
                      hist_static_blob, hist_swept_blob, hist_transform_blob,
+                     hist_first_hit_blob,
                      swept_scores.get('centroid_offset_x'),
                      swept_scores.get('centroid_offset_y'),
                      swept_scores.get('balance'),

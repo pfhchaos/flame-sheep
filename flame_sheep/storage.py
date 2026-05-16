@@ -143,7 +143,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} REAL')
     for col in ('render_static', 'render_swept',
-                'hist_static', 'hist_swept', 'hist_transform'):
+                'hist_static', 'hist_swept', 'hist_transform', 'hist_first_hit'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} BLOB')
     for col in ('score_version', 'render_version'):
@@ -176,6 +176,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute('''
         CREATE INDEX IF NOT EXISTS idx_transitions_a
         ON genome_transitions(genome_a, distance)
+    ''')
+
+    # Pairwise comparison ratings
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS pairwise_ratings (
+            id          INTEGER PRIMARY KEY,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            winner_id   INTEGER NOT NULL,
+            loser_id    INTEGER NOT NULL,
+            source      TEXT DEFAULT 'compare'
+        )
     ''')
 
     conn.commit()
@@ -776,7 +787,10 @@ class Library:
     # -- Transitions --
 
     def store_transition(self, genome_a: int, genome_b: int, distance: float) -> None:
-        """Cache a pairwise transition distance (both directions)."""
+        """Cache a pairwise transition distance (both directions).
+        Skips zero-distance self-transitions — no useful information."""
+        if distance <= 0 or genome_a == genome_b:
+            return
         self.conn.execute(
             'INSERT OR REPLACE INTO genome_transitions (genome_a, genome_b, distance) VALUES (?, ?, ?)',
             (genome_a, genome_b, distance),
@@ -961,6 +975,62 @@ class Library:
             (loop_id,),
         ).fetchall()
         return [r[0] for r in rows]
+
+    def all_genome_ids_in_loops(self) -> list[int]:
+        """Return all unique genome IDs that appear in at least one loop."""
+        rows = self.conn.execute(
+            'SELECT DISTINCT genome_id FROM loop_items'
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def nearest_loop_transitions(self, genome_id: int,
+                                  exclude_loop: int | None = None,
+                                  exclude_loops: set[int] | None = None,
+                                  n: int = 3) -> list[tuple[int, float, float, int]]:
+        """Find nearest loops via the transition graph in a single query.
+
+        Returns [(loop_id, fitness, transition_distance, entry_genome_id)]
+        sorted by distance, deduplicated to one entry per loop.
+        """
+        exclude = set(exclude_loops or ())
+        if exclude_loop is not None:
+            exclude.add(exclude_loop)
+
+        # Join transitions → loop_items → loops to find reachable loops.
+        rows = self.conn.execute(
+            '''SELECT li.loop_id, l.fitness, gt.distance, gt.genome_b
+               FROM genome_transitions gt
+               JOIN loop_items li ON li.genome_id = gt.genome_b
+               JOIN loops l ON l.id = li.loop_id
+               WHERE gt.genome_a = ?
+               ORDER BY gt.distance ASC''',
+            (genome_id,),
+        ).fetchall()
+
+        # Deduplicate: keep closest entry per loop, skip excluded
+        seen = set()
+        result = []
+        for lid, fitness, dist, entry_gid in rows:
+            if lid in exclude or lid in seen:
+                continue
+            seen.add(lid)
+            result.append((lid, fitness or 0.0, dist, entry_gid))
+            if len(result) >= n:
+                break
+
+        return result
+
+    def loops_containing(self, genome_id: int) -> list[tuple[int, float]]:
+        """Find loops that contain a genome. Returns [(loop_id, fitness)]."""
+        rows = self.conn.execute(
+            '''SELECT DISTINCT li.loop_id, l.fitness
+               FROM loop_items li
+               JOIN loops l ON l.id = li.loop_id
+               WHERE li.genome_id = ?
+               ORDER BY l.fitness DESC''',
+            (genome_id,),
+        ).fetchall()
+        return [(r[0], r[1] or 0.0) for r in rows]
 
     def delete_loop(self, loop_id: int) -> None:
         """Delete a loop and its items (CASCADE)."""
