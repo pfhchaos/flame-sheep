@@ -910,11 +910,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         nonlocal _comparing
         if _comparing:
             _comparing = False
-            # Force main renderer to reclaim its SSBO bindings and clear state.
-            # CPU-side buffer write bypasses Mesa's SSBO binding cache.
-            import numpy as _np
-            n_px = renderer.canvas_w * renderer.canvas_h
-            renderer.histogram_buf.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
+            # Restore main renderer to normal mode
+            renderer.set_histogram_offset(0)
             renderer.bind_buffers()
             renderer.reset_walkers()
             core.needs_walker_reset = True
@@ -1046,79 +1043,41 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 continue
 
             if _comparing and _compare_mode and _compare_renderer:
-                # --- Compare mode: quarter-res renderer, copy-swap state ---
+                # --- Compare mode: offset-based dual dispatch, no buffer swapping ---
                 pair = _compare_mode.pair
                 cr = _compare_renderer
                 if pair.left is not None and pair.right is not None:
                     rot = core._genome_axis._rotation_phase
                     left_g = pair.left.rotated(rot) if rot != 0.0 else pair.left
                     right_g = pair.right.rotated(rot) if rot != 0.0 else pair.right
+                    n_px = cr.canvas_w * cr.canvas_h
 
-                    # Find the widest monitor for compare split
                     _compare_surf_name = max(viewports, key=lambda n: viewports[n].w)
-                    _compare_vp = viewports[_compare_surf_name]
-                    _compare_surf = surfaces.get(_compare_surf_name, first_surf)
-                    _cw, _ch = _compare_surf.width, _compare_surf.height
-
-                    # Ensure save buffers (match renderer's actual buffer sizes)
-                    if not hasattr(cr, '_left_hist_save'):
-                        import numpy as _np
-                        n_px = cr.canvas_w * cr.canvas_h
-                        n_walkers = cr.walker_buf.size // (3 * 4)  # actual walker count
-                        cr._n_walkers = n_walkers
-                        cr._left_hist_save = ctx.buffer(reserve=n_px * 2 * 4)
-                        cr._left_walker_save = ctx.buffer(reserve=n_walkers * 3 * 4)
-                        cr._right_hist_save = ctx.buffer(reserve=n_px * 2 * 4)
-                        cr._right_walker_save = ctx.buffer(reserve=n_walkers * 3 * 4)
-                        cr._left_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
-                        cr._right_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
-                        cr._left_walker_save.write(
-                            _np.random.uniform(-1, 1, (n_walkers, 3)).astype(_np.float32).tobytes())
-                        cr._right_walker_save.write(
-                            _np.random.uniform(-1, 1, (n_walkers, 3)).astype(_np.float32).tobytes())
 
                     if _compare_needs_reset:
+                        cr.ensure_double_histogram()
                         import numpy as _np
-                        n_px = cr.canvas_w * cr.canvas_h
-                        cr._left_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
-                        cr._right_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
-                        cr._left_walker_save.write(
-                            _np.random.uniform(-1, 1, (cr._n_walkers, 3)).astype(_np.float32).tobytes())
-                        cr._right_walker_save.write(
-                            _np.random.uniform(-1, 1, (cr._n_walkers, 3)).astype(_np.float32).tobytes())
+                        cr.histogram_buf.write(
+                            _np.zeros(n_px * 4, dtype=_np.uint32).tobytes())
+                        cr.reset_walkers()
                         _compare_needs_reset = False
 
-                    # --- Left genome ---
-                    ctx.copy_buffer(cr.histogram_buf, cr._left_hist_save)
-                    ctx.copy_buffer(cr.walker_buf, cr._left_walker_save)
+                    # Left genome: offset=0
+                    cr.set_histogram_offset(0)
                     cr.upload_audio(frame.spectrum)
                     cr.upload_genome(left_g)
                     cr.upload_palette(frame.palette)
                     cr.clear_histogram(decay=0.3)
                     cr.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
-                    cr.reduce_histogram_max()
 
-                    # Tonemap left — just save histogram, render directly in surface loop
-                    pass  # left tonemap deferred to surface loop
-
-                    # Save left state
-                    ctx.copy_buffer(cr._left_hist_save, cr.histogram_buf)
-                    ctx.copy_buffer(cr._left_walker_save, cr.walker_buf)
-
-                    # --- Right genome ---
-                    ctx.copy_buffer(cr.histogram_buf, cr._right_hist_save)
-                    ctx.copy_buffer(cr.walker_buf, cr._right_walker_save)
+                    # Right genome: offset=n_pixels
+                    cr.set_histogram_offset(n_px)
                     cr.upload_genome(right_g)
                     cr.upload_palette(frame.palette)
                     cr.clear_histogram(decay=0.3)
                     cr.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
-                    cr.reduce_histogram_max()
-
-                    # Save right state
-                    ctx.copy_buffer(cr._right_hist_save, cr.histogram_buf)
-                    ctx.copy_buffer(cr._right_walker_save, cr.walker_buf)
 
             elif not _test_pattern:
                 # --- Normal mode: single chaos game ---
@@ -1144,17 +1103,18 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 elif _comparing and _compare_renderer and name == _compare_surf_name:
                     cr = _compare_renderer
                     half_w = surf.width // 2
+                    n_px = cr.canvas_w * cr.canvas_h
                     _cr_vp = Viewport(0, 0, cr.canvas_w, cr.canvas_h)
 
-                    # Left half: restore left histogram and tonemap directly
-                    ctx.copy_buffer(cr.histogram_buf, cr._left_hist_save)
+                    # Left half: offset=0
+                    cr.set_histogram_offset(0)
                     cr.reduce_histogram_max()
                     cr.render_tonemap(_cr_vp, surf.width, surf.height,
                                      brightness=frame.brightness,
                                      screen_rect=(0, 0, half_w, surf.height))
 
-                    # Right half: restore right histogram and tonemap
-                    ctx.copy_buffer(cr.histogram_buf, cr._right_hist_save)
+                    # Right half: offset=n_pixels
+                    cr.set_histogram_offset(n_px)
                     cr.reduce_histogram_max()
                     cr.render_tonemap(_cr_vp, surf.width, surf.height,
                                      brightness=frame.brightness,

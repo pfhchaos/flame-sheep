@@ -45,6 +45,8 @@ uniform int u_surface_h;      // actual EGL surface height (physical pixels)
 uniform float u_gamma;              // audio-driven gamma (lower = brighter/vivid, higher = ghostly)
 uniform float u_vibrancy  = 1.0;    // 0=desaturated, 1=full color
 uniform int u_linear_mode = 0;      // 1 = skip log (for post-DE data already in log domain)
+uniform uint u_hist_offset = 0u;   // offset into histogram[] for compare mode
+uniform uint u_hist_stride = 0u;   // distance from hits to colors (set by renderer)
 
 
 // Actual max hit count from GPU reduction pass (binding=8)
@@ -70,10 +72,10 @@ void main() {
 
     uint idx = uint(py * u_width + px);
 
-    // Read histogram — packed array, color_acc offset by n_pixels
-    uint n_pixels = uint(u_width * u_height);
-    uint hits  = histogram[idx];
-    uint color = histogram[n_pixels + idx];
+    // Read histogram — u_hist_stride separates hits from colors
+    uint oidx = u_hist_offset + idx;
+    uint hits  = histogram[oidx];
+    uint color = histogram[u_hist_stride + oidx];
 
     // Nothing hit this pixel — output black
     if (hits == 0u) {
