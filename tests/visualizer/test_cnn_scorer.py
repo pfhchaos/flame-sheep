@@ -69,6 +69,18 @@ class TestRgbToHsl:
 # Model architecture
 # ----------------------------------------------------------------
 
+def _model_config_ids():
+    """Generate pytest IDs for MODEL_CONFIGS entries."""
+    ids = []
+    for n_params, (layers, mlp_head) in AestheticNetVk.MODEL_CONFIGS.items():
+        head = 'mlp' if mlp_head else 'linear'
+        ids.append(f'{n_params}_{head}')
+    return ids
+
+
+_ALL_CONFIGS = list(AestheticNetVk.MODEL_CONFIGS.items())
+
+
 class TestAestheticNetVk:
     def test_default_is_25k(self):
         model = AestheticNetVk()
@@ -82,23 +94,51 @@ class TestAestheticNetVk:
             out = model(x)
         assert out.shape == (2,)
 
-    def test_55k_layers(self):
-        layers = AestheticNetVk.MODEL_CONFIGS[55141]
-        model = AestheticNetVk(layers=layers)
-        total = sum(p.numel() for p in model.parameters())
-        assert total == 55141
+    @pytest.mark.parametrize('expected_params,config', _ALL_CONFIGS, ids=_model_config_ids())
+    def test_param_count(self, expected_params, config):
+        """Every MODEL_CONFIGS entry must produce a model with the expected param count."""
+        layers, mlp_head = config
+        model = AestheticNetVk(layers=layers, mlp_head=mlp_head)
+        actual = sum(p.numel() for p in model.parameters())
+        assert actual == expected_params
 
-    def test_100k_layers(self):
-        layers = AestheticNetVk.MODEL_CONFIGS[97713]
-        model = AestheticNetVk(layers=layers)
-        total = sum(p.numel() for p in model.parameters())
-        assert total == 97713
+    @pytest.mark.parametrize('expected_params,config', _ALL_CONFIGS, ids=_model_config_ids())
+    def test_forward_pass(self, expected_params, config):
+        """Every MODEL_CONFIGS entry must produce a valid forward pass."""
+        layers, mlp_head = config
+        model = AestheticNetVk(layers=layers, mlp_head=mlp_head)
+        model.eval()
+        x = torch.randn(1, 4, 256, 256)
+        with torch.no_grad():
+            out = model(x)
+        assert out.shape == (1,)
+        assert torch.isfinite(out).all()
 
-    def test_all_configs_have_correct_param_count(self):
-        for expected_params, layers in AestheticNetVk.MODEL_CONFIGS.items():
-            model = AestheticNetVk(layers=layers)
-            actual = sum(p.numel() for p in model.parameters())
-            assert actual == expected_params, f'Config {expected_params}: got {actual}'
+    @pytest.mark.parametrize('expected_params,config', _ALL_CONFIGS, ids=_model_config_ids())
+    def test_weight_roundtrip(self, expected_params, config, tmp_path):
+        """Every MODEL_CONFIGS entry must survive save → load_vk_weights."""
+        layers, mlp_head = config
+        model = AestheticNetVk(layers=layers, mlp_head=mlp_head)
+        flat = np.concatenate([p.detach().numpy().ravel() for p in model.parameters()])
+        assert len(flat) == expected_params
+
+        path = tmp_path / f'test_{expected_params}.npy'
+        np.save(path, flat.astype(np.float32))
+        model2 = AestheticNetVk()  # default 25K linear
+        load_vk_weights(model2, path)
+
+        assert sum(p.numel() for p in model2.parameters()) == expected_params
+        assert model2._mlp_head == mlp_head
+
+    def test_mlp_head_has_hidden_layer(self):
+        layers, mlp_head = AestheticNetVk.MODEL_CONFIGS[25657]
+        model = AestheticNetVk(layers=layers, mlp_head=mlp_head)
+        assert isinstance(model.head, torch.nn.Sequential)
+        assert len(model.head) == 3  # Linear, ReLU, Linear
+
+    def test_linear_head_is_single_layer(self):
+        model = AestheticNetVk()
+        assert isinstance(model.head, torch.nn.Linear)
 
 
 # ----------------------------------------------------------------
@@ -128,12 +168,13 @@ class TestLoadVkWeights:
         total = sum(p.numel() for p in model.parameters())
         assert total == 55141
 
-    def test_load_100k_auto_reconfigures(self):
-        path = self._make_weights(97713)
-        model = AestheticNetVk()
-        load_vk_weights(model, path)
+    def test_load_mlp_auto_reconfigures(self):
+        path = self._make_weights(25657)
+        model = AestheticNetVk()  # starts as 25K linear
+        load_vk_weights(model, path)  # should reconfigure to 25K MLP
         total = sum(p.numel() for p in model.parameters())
-        assert total == 97713
+        assert total == 25657
+        assert model._mlp_head is True
 
     def test_unknown_size_raises(self):
         path = self._make_weights(12345)
