@@ -1103,7 +1103,9 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     ctx.memory_barrier()
                     cr.reduce_histogram_max()
 
-                    # Tonemap left into FBO — use compare renderer's full canvas as viewport
+                    # Tonemap left into FBO — clear first, then render
+                    cr._left_fbo.use()
+                    ctx.clear(0.0, 0.0, 0.0, 1.0)
                     _cr_vp = Viewport(0, 0, cr.canvas_w, cr.canvas_h)
                     cr.render_tonemap(_cr_vp, _cw // 2, _ch,
                                      brightness=frame.brightness,
