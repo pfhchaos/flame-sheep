@@ -29,12 +29,29 @@ log = logging.getLogger(__name__)
 SHADER_DIR = Path(__file__).resolve().parent.parent / 'flame_sheep' / 'shaders' / 'cnn'
 
 # Layer definitions: (in_channels, out_channels, kernel, stride, padding)
-LAYERS = [
-    (4,  8,  3, 2, 1),
-    (8,  16, 3, 2, 1),
-    (16, 32, 3, 2, 1),
-    (32, 64, 3, 2, 1),
-]
+MODEL_CONFIGS = {
+    '25k': [
+        (4,  8,  3, 2, 1),
+        (8,  16, 3, 2, 1),
+        (16, 32, 3, 2, 1),
+        (32, 64, 3, 2, 1),
+    ],
+    '55k': [
+        (4,  12, 3, 2, 1),
+        (12, 24, 3, 2, 1),
+        (24, 48, 3, 2, 1),
+        (48, 96, 3, 2, 1),
+    ],
+    '100k': [
+        (4,  16, 3, 2, 1),
+        (16, 32, 3, 2, 1),
+        (32, 64, 3, 2, 1),
+        (64, 128, 3, 2, 1),
+    ],
+}
+LAYERS = MODEL_CONFIGS['25k']  # default, overridden by --model-size
+MLP_HEAD = False  # overridden by --mlp-head
+MLP_HIDDEN = 16
 
 
 def spatial_size(h: int, layers: list) -> list[tuple[int, int]]:
@@ -46,13 +63,17 @@ def spatial_size(h: int, layers: list) -> list[tuple[int, int]]:
     return sizes
 
 
-def weight_counts(layers: list) -> list[int]:
+def weight_counts(layers: list, mlp_head: bool = False) -> list[int]:
     """Compute weight count per layer (weights + bias)."""
     counts = []
     for c_in, c_out, k, _, _ in layers:
         counts.append(c_out * c_in * k * k + c_out)  # kernel + bias
-    # Linear layer: 64 weights + 1 bias
-    counts.append(LAYERS[-1][1] + 1)
+    C = layers[-1][1]
+    if mlp_head:
+        # MLP: W1(C×H) + b1(H) + W2(H) + b2(1)
+        counts.append(C * MLP_HIDDEN + MLP_HIDDEN + MLP_HIDDEN + 1)
+    else:
+        counts.append(C + 1)
     return counts
 
 
@@ -64,9 +85,11 @@ class ImageStore:
     """
 
     def __init__(self, manifest_path: Path, image_dir: Path,
-                 image_size: int, cache_gb: float = 4.0):
+                 image_size: int, cache_gb: float = 4.0,
+                 channels: str = 'rgb'):
         self.image_dir = image_dir
         self.image_size = image_size
+        self._channels = channels
 
         self.entries = []
         with open(manifest_path) as f:
@@ -85,18 +108,30 @@ class ImageStore:
         return len(self.entries)
 
     def _load_one(self, idx: int) -> np.ndarray:
-        from flame_sheep.cnn_scorer import _build_4ch_hsl
-
         static, swept, _, _ = self.entries[idx]
         sz = self.image_size
+
+        if self._channels == 'domain':
+            from flame_sheep.scoring_channels import normalize_channels, load_raw_histograms
+            hist_name = static.replace('_static.png', '_hist.npz')
+            hist_path = self.image_dir / hist_name
+            if hist_path.exists():
+                raw = load_raw_histograms(str(hist_path))
+                return normalize_channels(
+                    raw['static_hits'], raw['static_colors'],
+                    raw['swept_hits'], raw.get('first_hit'),
+                    output_size=sz,
+                )
+            # Fall through to RGB if no .npz
+
         s_img = Image.open(self.image_dir / static).convert('RGB').resize(
             (sz, sz), Image.LANCZOS)
         w_img = Image.open(self.image_dir / swept).convert('L').resize(
             (sz, sz), Image.LANCZOS)
-        rgb = np.array(s_img, dtype=np.float32) / 255.0
-        swept_arr = np.array(w_img, dtype=np.float32) / 255.0
-        combined = _build_4ch_hsl(rgb, swept_arr)  # (sz, sz, 4)
-        return combined.transpose(2, 0, 1)  # (4, sz, sz)
+        img = np.zeros((4, sz, sz), dtype=np.float32)
+        img[:3] = np.array(s_img, dtype=np.float32).transpose(2, 0, 1) / 255.0
+        img[3] = np.array(w_img, dtype=np.float32) / 255.0
+        return img
 
     def get_batch(self, indices: list[int] | np.ndarray) -> np.ndarray:
         """Load a batch of images by index. Uses LRU cache."""
@@ -138,34 +173,61 @@ def load_images(manifest_path: Path, image_dir: Path,
     return images, entries
 
 
-def sample_pairs(entries: list, n_pairs: int, min_gap: int = 0,
+def sample_pairs(entries: list, n_pairs: int, min_gap: float = 0.5,
                  exclude_gen: int | None = None) -> list[tuple[int, int]]:
-    """Sample within-generation pairwise comparisons."""
+    """Sample pairwise comparisons using composite scoring.
+
+    Composite score = generation_rank + normalized_within_gen_rating.
+    Later generations are globally better (that's what selection pressure means).
+    Cross-generation pairs give strong signal; within-generation pairs add local detail.
+    """
     rng = np.random.default_rng()
+
+    # Build generation rank (sorted by generation number)
     gen_map: dict[int, list[int]] = {}
     for i, (_, _, _, gen) in enumerate(entries):
         if gen != exclude_gen:
             gen_map.setdefault(gen, []).append(i)
 
-    pairs = []
-    gens = list(gen_map.keys())
-    per_gen = max(1, n_pairs // len(gens))
+    sorted_gens = sorted(gen_map.keys())
+    gen_rank = {g: rank for rank, g in enumerate(sorted_gens)}
 
-    for gen in gens:
-        indices = gen_map[gen]
-        n = len(indices)
-        if n < 2:
+    # Compute composite score for each entry:
+    #   composite = generation_rank + normalized_within_gen_rating
+    # Within a generation, ratings are normalized to [0, 1]
+    composites = np.zeros(len(entries), dtype=np.float64)
+    for gen, indices in gen_map.items():
+        ratings = np.array([entries[i][2] for i in indices], dtype=np.float64)
+        rmin, rmax = ratings.min(), ratings.max()
+        if rmax > rmin:
+            norm = (ratings - rmin) / (rmax - rmin)
+        else:
+            norm = np.full(len(ratings), 0.5)
+        rank = gen_rank[gen]
+        for j, idx in enumerate(indices):
+            composites[idx] = rank + norm[j]
+
+    # Sample pairs: winner has higher composite score
+    all_indices = []
+    for indices in gen_map.values():
+        all_indices.extend(indices)
+    all_indices = np.array(all_indices)
+    n_total = len(all_indices)
+
+    pairs = []
+    for _ in range(n_pairs * 2):  # oversample, filter by gap
+        a, b = rng.choice(n_total, 2, replace=False)
+        ia, ib = all_indices[a], all_indices[b]
+        ca, cb = composites[ia], composites[ib]
+        gap = abs(ca - cb)
+        if gap < min_gap:
             continue
-        ratings = np.array([entries[i][2] for i in indices])
-        for _ in range(per_gen):
-            a, b = rng.choice(n, 2, replace=False)
-            ra, rb = ratings[a], ratings[b]
-            if abs(ra - rb) <= min_gap:
-                continue
-            if ra > rb:
-                pairs.append((indices[a], indices[b]))
-            else:
-                pairs.append((indices[b], indices[a]))
+        if ca > cb:
+            pairs.append((ia, ib))
+        else:
+            pairs.append((ib, ia))
+        if len(pairs) >= n_pairs:
+            break
 
     rng.shuffle(pairs)
     return pairs
@@ -180,8 +242,9 @@ class VkTrainer:
         self.batch_size = batch_size
 
         self.sizes = spatial_size(image_size, LAYERS)
-        self.w_counts = weight_counts(LAYERS)
+        self.w_counts = weight_counts(LAYERS, MLP_HEAD)
         self.total_weights = sum(self.w_counts)
+        self.mlp_head = MLP_HEAD
 
         log.info('Model: %d params across %d layers', self.total_weights,
                  len(LAYERS) + 1)
@@ -205,10 +268,14 @@ class VkTrainer:
             size = B * c_out * h_out * w_out * 4
             self.act_bufs.append(self.gpu.create_buffer(size))
 
-        # GAP pooled + output
+        # GAP pooled + output + optional hidden (MLP)
         final_c = LAYERS[-1][1]
         self.pooled_buf = self.gpu.create_buffer(B * final_c * 4)
         self.output_buf = self.gpu.create_buffer(B * 4)
+        if MLP_HEAD:
+            self.hidden_buf = self.gpu.create_buffer(B * MLP_HIDDEN * 4)
+        else:
+            self.hidden_buf = None
 
         # Weights and gradients (flat, all layers concatenated)
         self.weights_buf = self.gpu.create_buffer(self.total_weights * 4)
@@ -227,13 +294,28 @@ class VkTrainer:
             offset += n_w
             weights[offset:offset + c_out] = 0.0  # bias
             offset += c_out
-        # Linear layer
+        # Head (linear or MLP)
         fan_in = LAYERS[-1][1]
-        std = np.sqrt(2.0 / fan_in)
-        n_lin = fan_in
-        weights[offset:offset + n_lin] = rng.standard_normal(n_lin).astype(np.float32) * std
-        offset += n_lin
-        weights[offset] = 0.0  # bias
+        if MLP_HEAD:
+            # W1: (C × hidden)
+            std = np.sqrt(2.0 / fan_in)
+            n_w1 = fan_in * MLP_HIDDEN
+            weights[offset:offset + n_w1] = rng.standard_normal(n_w1).astype(np.float32) * std
+            offset += n_w1
+            weights[offset:offset + MLP_HIDDEN] = 0.0  # b1
+            offset += MLP_HIDDEN
+            # W2: (hidden)
+            std = np.sqrt(2.0 / MLP_HIDDEN)
+            weights[offset:offset + MLP_HIDDEN] = rng.standard_normal(MLP_HIDDEN).astype(np.float32) * std
+            offset += MLP_HIDDEN
+            weights[offset] = 0.0  # b2
+            offset += 1
+        else:
+            std = np.sqrt(2.0 / fan_in)
+            weights[offset:offset + fan_in] = rng.standard_normal(fan_in).astype(np.float32) * std
+            offset += fan_in
+            weights[offset] = 0.0  # bias
+            offset += 1
         self.gpu.upload(self.weights_buf, weights)
 
         # Gradient activation buffer (for backward pass, reused per layer)
@@ -313,28 +395,37 @@ class VkTrainer:
             kernel_buf.destroy()
             bias_buf.destroy()
 
-        # GAP + linear
+        # GAP + head (linear or MLP)
         final_c = LAYERS[-1][1]
         h_final, w_final = self.sizes[-1]
 
-        # Extract linear weights
-        lin_offset = sum(self.w_counts[:-1]) * 4
+        # Extract head weights
+        head_offset = sum(self.w_counts[:-1]) * 4
         all_w = self.gpu.download(self.weights_buf, np.uint8, self.total_weights * 4)
-        lin_w = np.frombuffer(all_w[lin_offset:], dtype=np.float32)
+        head_w = np.frombuffer(all_w[head_offset:], dtype=np.float32)
 
-        lin_buf = self.gpu.create_buffer(len(lin_w) * 4)
-        self.gpu.upload(lin_buf, lin_w)
+        head_buf = self.gpu.create_buffer(len(head_w) * 4)
+        self.gpu.upload(head_buf, head_w)
 
-        gap_pipeline = self.gpu.create_pipeline(
-            str(SHADER_DIR / 'gap_linear_forward.comp'),
-            buffers=[self.act_bufs[-1], lin_buf, self.pooled_buf, self.output_buf],
-            push_constant_size=16,
-        )
-        push = struct.pack('4i', B, final_c, h_final, w_final)
+        if self.mlp_head:
+            gap_pipeline = self.gpu.create_pipeline(
+                str(SHADER_DIR / 'gap_mlp_forward.comp'),
+                buffers=[self.act_bufs[-1], head_buf, self.pooled_buf,
+                         self.output_buf, None, self.hidden_buf],
+                push_constant_size=20,
+            )
+            push = struct.pack('5i', B, final_c, h_final, w_final, MLP_HIDDEN)
+        else:
+            gap_pipeline = self.gpu.create_pipeline(
+                str(SHADER_DIR / 'gap_linear_forward.comp'),
+                buffers=[self.act_bufs[-1], head_buf, self.pooled_buf, self.output_buf],
+                push_constant_size=16,
+            )
+            push = struct.pack('4i', B, final_c, h_final, w_final)
         self.gpu.dispatch(gap_pipeline, (B + 31) // 32, push_constants=push)
 
         gap_pipeline.destroy()
-        lin_buf.destroy()
+        head_buf.destroy()
 
         return self.gpu.download(self.output_buf, np.float32, B)
 
@@ -343,14 +434,15 @@ class VkTrainer:
         """One training step: forward both, compute loss, backward, update."""
         # Forward pass for winners
         w_scores = self.forward(winner_images)
-        # Save winner activations (we need them for backward)
         w_acts = [self.gpu.download(buf, np.float32) for buf in self.act_bufs]
         w_pooled = self.gpu.download(self.pooled_buf, np.float32)
+        w_hidden = self.gpu.download(self.hidden_buf, np.float32) if self.mlp_head else None
 
         # Forward pass for losers
         l_scores = self.forward(loser_images)
         l_acts = [self.gpu.download(buf, np.float32) for buf in self.act_bufs]
         l_pooled = self.gpu.download(self.pooled_buf, np.float32)
+        l_hidden = self.gpu.download(self.hidden_buf, np.float32) if self.mlp_head else None
 
         # Margin ranking loss: max(0, margin - (w_score - l_score))
         B = len(winner_images)
@@ -369,10 +461,10 @@ class VkTrainer:
         self.gpu.zero_buffer(self.grads_buf)
 
         # Backward for winners (accumulates into shared grads_buf)
-        self._backward(winner_images, w_acts, w_pooled, d_w_scores)
+        self._backward(winner_images, w_acts, w_pooled, d_w_scores, w_hidden)
 
         # Backward for losers (accumulates into same grads_buf)
-        self._backward(loser_images, l_acts, l_pooled, d_l_scores)
+        self._backward(loser_images, l_acts, l_pooled, d_l_scores, l_hidden)
 
         # SGD update
         sgd_pipeline = self.gpu.create_pipeline(
@@ -388,59 +480,69 @@ class VkTrainer:
         return float(loss)
 
     def _backward(self, images: np.ndarray, fwd_acts: list[np.ndarray],
-                  fwd_pooled: np.ndarray, d_scores: np.ndarray):
+                  fwd_pooled: np.ndarray, d_scores: np.ndarray,
+                  fwd_hidden: np.ndarray | None = None):
         """Backward pass through all layers, accumulating weight gradients."""
         B = len(images)
         final_c = LAYERS[-1][1]
         h_final, w_final = self.sizes[-1]
 
-        # --- GAP + linear backward ---
+        # --- GAP + head backward ---
         d_out_buf = self.gpu.create_buffer(B * 4)
         self.gpu.upload(d_out_buf, d_scores.astype(np.float32))
 
         pooled_buf = self.gpu.create_buffer(fwd_pooled.nbytes)
         self.gpu.upload(pooled_buf, fwd_pooled)
 
-        # Linear weights (for computing grad_input through linear)
-        lin_offset = sum(self.w_counts[:-1]) * 4
+        # Head weights
+        head_offset = sum(self.w_counts[:-1]) * 4
         all_w = self.gpu.download(self.weights_buf, np.uint8, self.total_weights * 4)
-        lin_w = np.frombuffer(all_w[lin_offset:], dtype=np.float32)
-        lin_buf = self.gpu.create_buffer(len(lin_w) * 4)
-        self.gpu.upload(lin_buf, lin_w)
+        head_w = np.frombuffer(all_w[head_offset:], dtype=np.float32)
+        head_buf = self.gpu.create_buffer(len(head_w) * 4)
+        self.gpu.upload(head_buf, head_w)
 
-        # Grad buffer for linear weights (offset into flat grads)
-        lin_grad_offset = sum(self.w_counts[:-1])
-        lin_grad_size = self.w_counts[-1]
+        head_grad_offset = sum(self.w_counts[:-1])
+        head_grad_size = self.w_counts[-1]
+        head_grad_buf = self.gpu.create_buffer(head_grad_size * 4)
+        self.gpu.zero_buffer(head_grad_buf)
 
-        # Create a temp buffer for linear weight grads, then copy to flat grads
-        lin_grad_buf = self.gpu.create_buffer(lin_grad_size * 4)
-        self.gpu.zero_buffer(lin_grad_buf)
-
-        # d_input for gap+linear = the gradient flowing into the last conv layer's output
         d_act_buf = self.gpu.create_buffer(B * final_c * h_final * w_final * 4)
 
-        gap_bw_pipeline = self.gpu.create_pipeline(
-            str(SHADER_DIR / 'gap_linear_backward.comp'),
-            buffers=[d_out_buf, pooled_buf, lin_buf, d_act_buf, lin_grad_buf],
-            push_constant_size=16,
-        )
-        push = struct.pack('4i', B, final_c, h_final, w_final)
+        if self.mlp_head:
+            hidden_buf = self.gpu.create_buffer(fwd_hidden.nbytes)
+            self.gpu.upload(hidden_buf, fwd_hidden)
+            gap_bw_pipeline = self.gpu.create_pipeline(
+                str(SHADER_DIR / 'gap_mlp_backward.comp'),
+                buffers=[d_out_buf, pooled_buf, head_buf, d_act_buf,
+                         head_grad_buf, hidden_buf],
+                push_constant_size=20,
+            )
+            push = struct.pack('5i', B, final_c, h_final, w_final, MLP_HIDDEN)
+        else:
+            gap_bw_pipeline = self.gpu.create_pipeline(
+                str(SHADER_DIR / 'gap_linear_backward.comp'),
+                buffers=[d_out_buf, pooled_buf, head_buf, d_act_buf, head_grad_buf],
+                push_constant_size=16,
+            )
+            push = struct.pack('4i', B, final_c, h_final, w_final)
         gx = (w_final + 7) // 8
         gy = (h_final + 7) // 8
         gz = B * final_c
         self.gpu.dispatch(gap_bw_pipeline, gx, gy, gz, push)
 
-        # Accumulate linear grads into flat grad buffer (add, not replace)
-        lin_grads_f = np.frombuffer(
-            self.gpu.download(lin_grad_buf, np.uint8, lin_grad_size * 4).tobytes(),
+        # Accumulate head grads into flat grad buffer
+        head_grads_f = np.frombuffer(
+            self.gpu.download(head_grad_buf, np.uint8, head_grad_size * 4).tobytes(),
             dtype=np.float32)
         flat_grads_f = np.frombuffer(
             self.gpu.download(self.grads_buf, np.uint8, self.total_weights * 4).tobytes(),
             dtype=np.float32).copy()
-        flat_grads_f[lin_grad_offset:lin_grad_offset + lin_grad_size] += lin_grads_f
+        flat_grads_f[head_grad_offset:head_grad_offset + head_grad_size] += head_grads_f
         self.gpu.upload(self.grads_buf, np.frombuffer(flat_grads_f.tobytes(), dtype=np.uint32))
 
         gap_bw_pipeline.destroy()
+        if self.mlp_head:
+            hidden_buf.destroy()
         d_out_buf.destroy()
         pooled_buf.destroy()
         lin_buf.destroy()
@@ -554,7 +656,21 @@ def main():
     parser.add_argument('--cache-gb', type=float, default=4.0,
                         help='Image cache size in GB (default: 4.0)')
     parser.add_argument('--output', type=str, default=None)
+    parser.add_argument('--model-size', type=str, default='25k',
+                        choices=['25k', '55k', '100k'],
+                        help='Model size: 25k / 55k / 100k')
+    parser.add_argument('--mlp-head', action='store_true',
+                        help='Use MLP head (Linear→ReLU→Linear) instead of single Linear')
+    parser.add_argument('--channels', type=str, default='rgb',
+                        choices=['rgb', 'domain'],
+                        help='Input channels: rgb (RGB+swept) or domain (histogram-based H/S/L/A)')
+    parser.add_argument('--init-weights', type=str, default=None,
+                        help='Load initial weights from .npy file (for resuming or fine-tuning)')
     args = parser.parse_args()
+
+    global LAYERS, MLP_HEAD
+    LAYERS = MODEL_CONFIGS[args.model_size]
+    MLP_HEAD = args.mlp_head
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s',
                         datefmt='%H:%M:%S')
@@ -564,7 +680,7 @@ def main():
 
     # Streaming image store (loads from disk on demand)
     store = ImageStore(data_dir / 'manifest.csv', data_dir, args.image_size,
-                       cache_gb=args.cache_gb)
+                       cache_gb=args.cache_gb, channels=args.channels)
     entries = store.entries
     log.info('Dataset: %d genomes, image cache: %.1f GB (%d images)',
              len(entries), args.cache_gb, store.max_cache)
@@ -575,10 +691,18 @@ def main():
 
     trainer = VkTrainer(gpu, args.image_size, args.batch_size)
 
-    # Validation pairs (within val_gen only)
-    val_pairs = sample_pairs(entries, 2000, min_gap=10, exclude_gen=None)
+    # Load initial weights if provided (resume or fine-tune)
+    if args.init_weights:
+        init_w = np.load(args.init_weights).astype(np.float32)
+        gpu.upload(trainer.weights_buf, init_w)
+        log.info('Loaded initial weights: %d params from %s', len(init_w), args.init_weights)
+
+    # Validation pairs — cross-gen composite, same method as training.
+    # Hold out val_gen from training; val uses cross-gen pairs involving val_gen.
+    val_pairs = sample_pairs(entries, 2000, min_gap=0.5, exclude_gen=None)
+    # Keep only pairs where at least one side is from val_gen
     val_pairs = [(w, l) for w, l in val_pairs
-                 if entries[w][3] == args.val_gen and entries[l][3] == args.val_gen]
+                 if entries[w][3] == args.val_gen or entries[l][3] == args.val_gen]
     log.info('Validation pairs: %d (gen %d)', len(val_pairs), args.val_gen)
 
     best_val_acc = 0.0

@@ -131,23 +131,40 @@ class AestheticNetVk(nn.Module):
      100K: 4→16→32→64→128, linear 128→1
     """
 
+    # Map param count → (layers, mlp_head)
     MODEL_CONFIGS = {
-        24665: [( 4,  8, 3, 2, 1), ( 8, 16, 3, 2, 1), (16, 32, 3, 2, 1), (32,  64, 3, 2, 1)],
-        55141: [( 4, 12, 3, 2, 1), (12, 24, 3, 2, 1), (24, 48, 3, 2, 1), (48,  96, 3, 2, 1)],
-        97713: [( 4, 16, 3, 2, 1), (16, 32, 3, 2, 1), (32, 64, 3, 2, 1), (64, 128, 3, 2, 1)],
+        # Linear head
+        24665: ([( 4,  8, 3, 2, 1), ( 8, 16, 3, 2, 1), (16, 32, 3, 2, 1), (32,  64, 3, 2, 1)], False),
+        55141: ([( 4, 12, 3, 2, 1), (12, 24, 3, 2, 1), (24, 48, 3, 2, 1), (48,  96, 3, 2, 1)], False),
+        97713: ([( 4, 16, 3, 2, 1), (16, 32, 3, 2, 1), (32, 64, 3, 2, 1), (64, 128, 3, 2, 1)], False),
+        # MLP head (Linear→ReLU→Linear, hidden=16)
+        25657: ([( 4,  8, 3, 2, 1), ( 8, 16, 3, 2, 1), (16, 32, 3, 2, 1), (32,  64, 3, 2, 1)], True),
+        56613: ([( 4, 12, 3, 2, 1), (12, 24, 3, 2, 1), (24, 48, 3, 2, 1), (48,  96, 3, 2, 1)], True),
+        99665: ([( 4, 16, 3, 2, 1), (16, 32, 3, 2, 1), (32, 64, 3, 2, 1), (64, 128, 3, 2, 1)], True),
     }
 
-    def __init__(self, layers=None):
+    MLP_HIDDEN = 16
+
+    def __init__(self, layers=None, mlp_head=False):
         super().__init__()
         if layers is None:
-            layers = self.MODEL_CONFIGS[24665]  # default 25K
+            layers = self.MODEL_CONFIGS[24665][0]  # default 25K linear
         self.LAYERS = layers
+        self._mlp_head = mlp_head
         convs = []
         for c_in, c_out, k, s, p in layers:
             convs.append(nn.Conv2d(c_in, c_out, k, stride=s, padding=p))
             convs.append(nn.ReLU(inplace=True))
         self.features = nn.Sequential(*convs)
-        self.head = nn.Linear(layers[-1][1], 1)
+        final_c = layers[-1][1]
+        if mlp_head:
+            self.head = nn.Sequential(
+                nn.Linear(final_c, self.MLP_HIDDEN),
+                nn.ReLU(),
+                nn.Linear(self.MLP_HIDDEN, 1),
+            )
+        else:
+            self.head = nn.Linear(final_c, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass. x: (B, 4, 256, 256) → (B,) scores."""
@@ -159,23 +176,22 @@ class AestheticNetVk(nn.Module):
 def load_vk_weights(model: AestheticNetVk, npy_path: str | Path) -> None:
     """Load flat .npy weights from Vulkan trainer into AestheticNetVk.
 
-    Auto-detects model size from weight count and reconfigures the model
-    if needed. Weight layout: [conv0_w, conv0_b, conv1_w, conv1_b, ..., linear_w, linear_b]
+    Auto-detects model size (linear vs MLP head) from weight count.
+    Weight layout:
+      Linear: [...conv..., W(C), b(1)]
+      MLP:    [...conv..., W1(C×16), b1(16), W2(16), b2(1)]
     """
     flat = np.load(npy_path).astype(np.float32)
     n_params = len(flat)
 
-    # Auto-detect and reconfigure model if size doesn't match
     if n_params not in AestheticNetVk.MODEL_CONFIGS:
         raise ValueError(f'Unknown model size: {n_params} params. '
                          f'Expected one of {list(AestheticNetVk.MODEL_CONFIGS.keys())}')
-    layers = AestheticNetVk.MODEL_CONFIGS[n_params]
-    expected = sum(co*ci*k*k + co for ci,co,k,_,_ in layers) + layers[-1][1] + 1
-    assert n_params == expected, f'Param count mismatch: {n_params} vs {expected}'
+    layers, mlp_head = AestheticNetVk.MODEL_CONFIGS[n_params]
 
-    # Rebuild model if layer config changed
-    if model.LAYERS != layers:
-        model.__init__(layers=layers)
+    # Rebuild model if config changed
+    if model.LAYERS != layers or model._mlp_head != mlp_head:
+        model.__init__(layers=layers, mlp_head=mlp_head)
 
     state = {}
     offset = 0
@@ -191,13 +207,29 @@ def load_vk_weights(model: AestheticNetVk, npy_path: str | Path) -> None:
             flat[offset:offset + c_out].copy())
         offset += c_out
 
-    # Linear head
-    n_linear = model.LAYERS[-1][1]
-    state['head.weight'] = torch.from_numpy(
-        flat[offset:offset + n_linear].reshape(1, n_linear).copy())
-    offset += n_linear
-    state['head.bias'] = torch.from_numpy(flat[offset:offset + 1].copy())
-    offset += 1
+    final_c = model.LAYERS[-1][1]
+    H = AestheticNetVk.MLP_HIDDEN
+
+    if mlp_head:
+        # MLP: W1(C×H), b1(H), W2(H), b2(1)
+        state['head.0.weight'] = torch.from_numpy(
+            flat[offset:offset + final_c * H].reshape(H, final_c).copy())
+        offset += final_c * H
+        state['head.0.bias'] = torch.from_numpy(
+            flat[offset:offset + H].copy())
+        offset += H
+        state['head.2.weight'] = torch.from_numpy(
+            flat[offset:offset + H].reshape(1, H).copy())
+        offset += H
+        state['head.2.bias'] = torch.from_numpy(flat[offset:offset + 1].copy())
+        offset += 1
+    else:
+        # Linear: W(C), b(1)
+        state['head.weight'] = torch.from_numpy(
+            flat[offset:offset + final_c].reshape(1, final_c).copy())
+        offset += final_c
+        state['head.bias'] = torch.from_numpy(flat[offset:offset + 1].copy())
+        offset += 1
 
     assert offset == n_params, f'Weight offset mismatch: {offset} vs {n_params}'
     model.load_state_dict(state)
@@ -353,16 +385,16 @@ def _default_weights_path() -> Path:
 
 
 def _prepare_input(static_png: bytes, swept_png: bytes) -> torch.Tensor:
-    """Convert rendered PNGs to model input tensor (1, 4, 256, 256) in HSL."""
+    """Convert rendered PNGs to model input tensor (1, 4, 256, 256) as RGB+swept."""
     from PIL import Image
 
     static_img = Image.open(io.BytesIO(static_png)).convert('RGB').resize((256, 256), Image.LANCZOS)
     swept_img = Image.open(io.BytesIO(swept_png)).convert('L').resize((256, 256), Image.LANCZOS)
 
-    rgb = np.array(static_img, dtype=np.float32) / 255.0
+    static_arr = np.array(static_img, dtype=np.float32) / 255.0
     swept_arr = np.array(swept_img, dtype=np.float32) / 255.0
 
-    combined = _build_4ch_hsl(rgb, swept_arr)
+    combined = np.concatenate([static_arr, swept_arr[:, :, None]], axis=2)
     return torch.from_numpy(combined.transpose(2, 0, 1)).unsqueeze(0)
 
 
