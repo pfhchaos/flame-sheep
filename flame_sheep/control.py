@@ -126,10 +126,12 @@ class ControlPipe:
         
     def _read_loop(self) -> None:
         """Background thread: read lines from pipe, parse, queue."""
+        log.info(f'[pipe] reader thread started, path={self.pipe_path}')
         while self._running:
             try:
-                # Opening a FIFO blocks until a writer connects
+                log.debug('[pipe] waiting for writer...')
                 with open(self.pipe_path, 'r') as f:
+                    log.debug('[pipe] writer connected')
                     for line in f:
                         if not self._running:
                             break
@@ -140,9 +142,9 @@ class ControlPipe:
                         event = self._parse_line(line)
                         if event:
                             self._queue.put(event)
+                    log.debug('[pipe] writer disconnected')
             except Exception as e:
-                if self._running:
-                    log.warning(f' pipe error: {e}')
+                log.warning(f'[pipe] error: {e}', exc_info=True)
                     
     def _parse_line(self, line: str) -> ControlEvent | None:
         """Parse a command line into a ControlEvent."""
