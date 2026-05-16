@@ -136,9 +136,9 @@ class ControlPipe:
                         line = line.strip()
                         if not line:
                             continue
+                        log.info(f'[pipe] raw: {line!r}')
                         event = self._parse_line(line)
                         if event:
-                            log.info(f'[pipe] received: {event.command}')
                             self._queue.put(event)
             except Exception as e:
                 if self._running:
