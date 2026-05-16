@@ -129,9 +129,9 @@ class ControlPipe:
         log.info(f'[pipe] reader thread started, path={self.pipe_path}')
         while self._running:
             try:
-                log.debug('[pipe] waiting for writer...')
+                log.info('[pipe] waiting for writer...')
                 with open(self.pipe_path, 'r') as f:
-                    log.debug('[pipe] writer connected')
+                    log.info('[pipe] writer connected')
                     for line in f:
                         if not self._running:
                             break
@@ -142,9 +142,10 @@ class ControlPipe:
                         event = self._parse_line(line)
                         if event:
                             self._queue.put(event)
-                    log.debug('[pipe] writer disconnected')
+                    log.info('[pipe] writer disconnected')
             except Exception as e:
                 log.warning(f'[pipe] error: {e}', exc_info=True)
+        log.info('[pipe] reader thread exiting (_running=False)')
                     
     def _parse_line(self, line: str) -> ControlEvent | None:
         """Parse a command line into a ControlEvent."""
