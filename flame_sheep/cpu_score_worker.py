@@ -27,6 +27,8 @@ SCORE_VERSION = 8  # v8: + CNN aesthetic score
 def _score_genome(render_static: bytes, render_swept: bytes | None,
                   hist_static: bytes | None = None,
                   hist_transform: bytes | None = None,
+                  hist_swept: bytes | None = None,
+                  hist_first_hit: bytes | None = None,
                   render_size: int = 512,
                   cnn_model=None,
                   ) -> dict[str, float]:
@@ -50,15 +52,23 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
     # Experimental metrics
     scores.update(score_all(static_img, swept_img))
 
-    # CNN aesthetic score
-    if cnn_model is not None and render_swept is not None:
+    # CNN aesthetic score — prefer domain-native histograms over PNG
+    if cnn_model is not None:
         try:
             import torch
-            from .cnn_scorer import _prepare_input
 
-            tensor = _prepare_input(render_static, render_swept)
-            with torch.no_grad():
-                scores['cnn_score'] = cnn_model(tensor).item()
+            if hist_static is not None and hist_swept is not None:
+                from .cnn_scorer import _prepare_input_domain
+                tensor = _prepare_input_domain(hist_static, hist_swept, hist_first_hit)
+            elif render_swept is not None:
+                from .cnn_scorer import _prepare_input
+                tensor = _prepare_input(render_static, render_swept)
+            else:
+                tensor = None
+
+            if tensor is not None:
+                with torch.no_grad():
+                    scores['cnn_score'] = cnn_model(tensor).item()
         except Exception:
             pass  # non-fatal: other scores still valid
 
@@ -173,7 +183,8 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
 
             row = conn.execute(
                 '''SELECT id, render_static, render_swept,
-                          hist_static, hist_transform
+                          hist_static, hist_transform,
+                          hist_swept, hist_first_hit
                    FROM genomes
                    WHERE render_version >= ?
                      AND (score_version IS NULL OR score_version < ?)
@@ -197,10 +208,14 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
             render_swept = row[2]
             hist_static = row[3]
             hist_transform = row[4]
+            hist_swept = row[5]
+            hist_first_hit = row[6]
 
             try:
                 scores = _score_genome(render_static, render_swept,
                                        hist_static, hist_transform,
+                                       hist_swept=hist_swept,
+                                       hist_first_hit=hist_first_hit,
                                        cnn_model=cnn_model)
 
                 # Build SET clause dynamically from available scores

@@ -125,59 +125,63 @@ class AestheticNet(nn.Module):
 class AestheticNetVk(nn.Module):
     """No-batchnorm variant matching the Vulkan compute trainer.
 
-    Same architecture as AestheticNet but without BatchNorm2d layers.
-    24,665 parameters total. Weights stored as a flat float32 .npy array.
+    Architecture auto-detected from weight file size. Supports:
+      25K: 4→8→16→32→64, linear 64→1
+      55K: 4→12→24→48→96, linear 96→1
+     100K: 4→16→32→64→128, linear 128→1
     """
 
-    # Weight layout in the flat array (contiguous float32):
-    #   Layer 0:  8× 4×3×3 kernel +  8 bias =    296
-    #   Layer 1: 16× 8×3×3 kernel + 16 bias =  1,168
-    #   Layer 2: 32×16×3×3 kernel + 32 bias =  4,640
-    #   Layer 3: 64×32×3×3 kernel + 64 bias = 18,496
-    #   Linear:  64 weights + 1 bias          =     65
-    #   Total:                                  24,665
-    LAYERS = [
-        (4,  8,  3, 2, 1),
-        (8,  16, 3, 2, 1),
-        (16, 32, 3, 2, 1),
-        (32, 64, 3, 2, 1),
-    ]
+    MODEL_CONFIGS = {
+        24665: [( 4,  8, 3, 2, 1), ( 8, 16, 3, 2, 1), (16, 32, 3, 2, 1), (32,  64, 3, 2, 1)],
+        55141: [( 4, 12, 3, 2, 1), (12, 24, 3, 2, 1), (24, 48, 3, 2, 1), (48,  96, 3, 2, 1)],
+        97713: [( 4, 16, 3, 2, 1), (16, 32, 3, 2, 1), (32, 64, 3, 2, 1), (64, 128, 3, 2, 1)],
+    }
 
-    def __init__(self):
+    def __init__(self, layers=None):
         super().__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(4, 8, 3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(8, 16, 3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 32, 3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-        )
-        self.head = nn.Linear(64, 1)
+        if layers is None:
+            layers = self.MODEL_CONFIGS[24665]  # default 25K
+        self.LAYERS = layers
+        convs = []
+        for c_in, c_out, k, s, p in layers:
+            convs.append(nn.Conv2d(c_in, c_out, k, stride=s, padding=p))
+            convs.append(nn.ReLU(inplace=True))
+        self.features = nn.Sequential(*convs)
+        self.head = nn.Linear(layers[-1][1], 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass. x: (B, 4, 256, 256) → (B,) scores."""
         x = self.features(x)
-        x = x.mean(dim=(2, 3))  # global average pool → (B, 64)
+        x = x.mean(dim=(2, 3))  # global average pool
         return self.head(x).squeeze(-1)
 
 
 def load_vk_weights(model: AestheticNetVk, npy_path: str | Path) -> None:
     """Load flat .npy weights from Vulkan trainer into AestheticNetVk.
 
-    The .npy file contains 24,665 float32 values laid out as:
-    [conv0_weight, conv0_bias, conv1_weight, conv1_bias, ..., linear_weight, linear_bias]
+    Auto-detects model size from weight count and reconfigures the model
+    if needed. Weight layout: [conv0_w, conv0_b, conv1_w, conv1_b, ..., linear_w, linear_b]
     """
     flat = np.load(npy_path).astype(np.float32)
-    assert flat.shape == (24665,), f'Expected 24665 weights, got {flat.shape}'
+    n_params = len(flat)
+
+    # Auto-detect and reconfigure model if size doesn't match
+    if n_params not in AestheticNetVk.MODEL_CONFIGS:
+        raise ValueError(f'Unknown model size: {n_params} params. '
+                         f'Expected one of {list(AestheticNetVk.MODEL_CONFIGS.keys())}')
+    layers = AestheticNetVk.MODEL_CONFIGS[n_params]
+    expected = sum(co*ci*k*k + co for ci,co,k,_,_ in layers) + layers[-1][1] + 1
+    assert n_params == expected, f'Param count mismatch: {n_params} vs {expected}'
+
+    # Rebuild model if layer config changed
+    if model.LAYERS != layers:
+        model.__init__(layers=layers)
 
     state = {}
     offset = 0
 
     # Conv layers: features.0, features.2, features.4, features.6 (skip ReLU indices)
-    for i, (c_in, c_out, k, _, _) in enumerate(AestheticNetVk.LAYERS):
+    for i, (c_in, c_out, k, _, _) in enumerate(model.LAYERS):
         key_prefix = f'features.{i * 2}'
         n_w = c_out * c_in * k * k
         state[f'{key_prefix}.weight'] = torch.from_numpy(
@@ -188,14 +192,14 @@ def load_vk_weights(model: AestheticNetVk, npy_path: str | Path) -> None:
         offset += c_out
 
     # Linear head
-    n_linear = AestheticNetVk.LAYERS[-1][1]  # 64
+    n_linear = model.LAYERS[-1][1]
     state['head.weight'] = torch.from_numpy(
         flat[offset:offset + n_linear].reshape(1, n_linear).copy())
     offset += n_linear
     state['head.bias'] = torch.from_numpy(flat[offset:offset + 1].copy())
     offset += 1
 
-    assert offset == 24665, f'Weight offset mismatch: {offset}'
+    assert offset == n_params, f'Weight offset mismatch: {offset} vs {n_params}'
     model.load_state_dict(state)
 
 
@@ -337,9 +341,14 @@ class PairSampler:
 # ---------------------------------------------------------------------------
 
 def _default_weights_path() -> Path:
-    """Resolve bundled weights via importlib.resources."""
+    """Resolve bundled weights via importlib.resources.
+
+    Prefers personal fine-tuned weights if available, falls back to base.
+    """
+    personal = importlib.resources.files('flame_sheep.data').joinpath('cnn_scorer_personal_vk.npy')
+    if Path(str(personal)).exists():
+        return Path(str(personal))
     ref = importlib.resources.files('flame_sheep.data').joinpath('cnn_scorer_vk.npy')
-    # as_posix works for both installed and editable installs
     return Path(str(ref))
 
 
@@ -355,6 +364,25 @@ def _prepare_input(static_png: bytes, swept_png: bytes) -> torch.Tensor:
 
     combined = _build_4ch_hsl(rgb, swept_arr)
     return torch.from_numpy(combined.transpose(2, 0, 1)).unsqueeze(0)
+
+
+def _prepare_input_domain(hist_static: bytes, hist_swept: bytes,
+                          hist_first_hit: bytes | None = None) -> torch.Tensor:
+    """Convert histogram DB blobs to model input tensor (1, 4, 256, 256).
+
+    Uses scoring_channels.normalize_channels() for domain-native representation:
+    H=palette index, S=swept density, L=hit count structure, A=first-hit emergence.
+    """
+    from .scoring_channels import (
+        unpack_static_histogram, unpack_histogram, normalize_channels,
+    )
+
+    hits, colors = unpack_static_histogram(hist_static)
+    swept = unpack_histogram(hist_swept)
+    first_hit = unpack_histogram(hist_first_hit, dtype=np.uint8) if hist_first_hit else None
+
+    channels = normalize_channels(hits, colors, swept, first_hit, output_size=256)
+    return torch.from_numpy(channels).unsqueeze(0)  # (1, 4, 256, 256)
 
 
 def score_genome(static_png: bytes, swept_png: bytes,
