@@ -106,10 +106,18 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
     # Transform-based clustering (if stored)
     if hist_static is not None and hist_transform is not None:
         from .cluster_scorer import score_from_transform_hits
+        import struct as _struct
 
         tf_raw = zlib.decompress(hist_transform)
-        # Determine n_transforms from blob size
-        n_total = len(tf_raw) // 4  # uint32
+        # v4+ blobs have an 8-byte dimension header from pack_histogram().
+        # Detect by checking if first 8 bytes decode to plausible dimensions.
+        try:
+            hdr_h, hdr_w = _struct.unpack('II', tf_raw[:8])
+            if hdr_h == render_size and hdr_w == render_size:
+                tf_raw = tf_raw[8:]
+        except _struct.error:
+            pass
+        n_total = len(tf_raw) // 4
         n_transforms = n_total // (render_size * render_size)
         transform_hits = np.frombuffer(tf_raw, dtype=np.uint32
                                        ).reshape(render_size, render_size, n_transforms)
