@@ -1085,8 +1085,9 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     ctx.memory_barrier()
                     cr.reduce_histogram_max()
 
-                    # Tonemap left into FBO
-                    cr.render_tonemap(_compare_vp, _cw // 2, _ch,
+                    # Tonemap left into FBO — use compare renderer's full canvas as viewport
+                    _cr_vp = Viewport(0, 0, cr.canvas_w, cr.canvas_h)
+                    cr.render_tonemap(_cr_vp, _cw // 2, _ch,
                                      brightness=frame.brightness,
                                      target_fbo=cr._left_fbo)
 
@@ -1136,8 +1137,9 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     vp = viewports[name]
                     half_w = surf.width // 2
 
-                    # Right half: tonemap right histogram (in compare renderer)
-                    cr.render_tonemap(vp, surf.width, surf.height,
+                    # Right half: tonemap right histogram (compare renderer's full canvas)
+                    _cr_vp = Viewport(0, 0, cr.canvas_w, cr.canvas_h)
+                    cr.render_tonemap(_cr_vp, surf.width, surf.height,
                                      brightness=frame.brightness,
                                      screen_rect=(half_w, 0, surf.width - half_w, surf.height))
 
