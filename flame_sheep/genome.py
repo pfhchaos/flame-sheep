@@ -278,11 +278,25 @@ class Genome:
         in_display = np.sum((np.abs(xs_arr) < display_bound) & (np.abs(ys_arr) < display_bound))
         coverage = float(in_display / len(xs_arr))
 
+        # Grid-based cell coverage: how many 64×64 cells have at least one hit.
+        # Flying dots occupy <10 cells, real fractals occupy 50+.
+        grid_size = 64
+        display_mask = (np.abs(xs_arr) < display_bound) & (np.abs(ys_arr) < display_bound)
+        if display_mask.any():
+            gx = np.clip(((xs_arr[display_mask] + display_bound) / (2 * display_bound) * grid_size).astype(int),
+                         0, grid_size - 1)
+            gy = np.clip(((ys_arr[display_mask] + display_bound) / (2 * display_bound) * grid_size).astype(int),
+                         0, grid_size - 1)
+            occupied_cells = len(set(zip(gx.tolist(), gy.tolist())))
+        else:
+            occupied_cells = 0
+
         return {
             'centroid_x': centroid_x, 'centroid_y': centroid_y,
             'bbox_min_x': bbox_min_x, 'bbox_min_y': bbox_min_y,
             'bbox_max_x': bbox_max_x, 'bbox_max_y': bbox_max_y,
             'coverage': coverage,
+            'occupied_cells': occupied_cells,
             'in_viewport': coverage > 0.1,
         }
 
@@ -313,10 +327,13 @@ class Genome:
         self.zoom = float(np.clip(target_zoom, 0.1, 1.5))
 
     def check_stability(self, n_angles: int = 8, n_test: int = 3000,
-                        max_bbox_ratio: float = 10.0) -> bool:
+                        max_bbox_ratio: float = 10.0,
+                        min_cells: int = 20) -> bool:
         """Check attractor stability across rotation angles.
 
-        Rejects flying dots (tiny bbox) and pulsars (bbox ratio > threshold).
+        Rejects:
+          - Flying dots: occupied_cells < min_cells (tiny attractors)
+          - Pulsars: bbox area ratio > max_bbox_ratio across angles
         Fails early on first bad angle for speed.
         """
         base_rotation = self.rotation
@@ -332,21 +349,24 @@ class Genome:
             self.rotation = original
 
             if not survey.get('in_viewport', False) or 'bbox_min_x' not in survey:
-                return False  # no coverage at this angle
+                return False
+
+            # Cell coverage check — flying dots hit <10 cells
+            if survey.get('occupied_cells', 0) < min_cells:
+                return False
 
             extent_x = survey['bbox_max_x'] - survey['bbox_min_x']
             extent_y = survey['bbox_max_y'] - survey['bbox_min_y']
             area = extent_x * extent_y
 
             if area < 0.01:
-                return False  # flying dot — fail fast
+                return False
 
             min_area = min(min_area, area)
             max_area = max(max_area, area)
 
-            # Early ratio check — if already exceeded, no point continuing
             if min_area > 0 and max_area / min_area > max_bbox_ratio:
-                return False  # pulsar — fail fast
+                return False
 
         return True
 
