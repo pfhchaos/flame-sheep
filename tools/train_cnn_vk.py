@@ -545,8 +545,8 @@ class VkTrainer:
             hidden_buf.destroy()
         d_out_buf.destroy()
         pooled_buf.destroy()
-        lin_buf.destroy()
-        lin_grad_buf.destroy()
+        head_buf.destroy()
+        head_grad_buf.destroy()
 
         # --- Conv layers backward (reverse order) ---
         d_upstream = self.gpu.download(d_act_buf, np.float32)
