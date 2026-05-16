@@ -375,12 +375,12 @@ def compose_loops_graph(
     node_scores: dict[int, float] = {}
     if cnn_floor is not None:
         score_rows = lib.conn.execute(
-            'SELECT id, cnn_score FROM genomes WHERE cnn_score IS NOT NULL AND cnn_score >= ?',
+            'SELECT id, cnn_score FROM genomes WHERE cnn_score IS NOT NULL AND cnn_score >= ? AND COALESCE(archived, 0) = 0',
             (cnn_floor,),
         ).fetchall()
     else:
         score_rows = lib.conn.execute(
-            'SELECT id, COALESCE(cnn_score, 0) FROM genomes WHERE id IN (SELECT DISTINCT genome_a FROM genome_transitions WHERE genome_a != genome_b)'
+            'SELECT id, COALESCE(cnn_score, 0) FROM genomes WHERE COALESCE(archived, 0) = 0 AND id IN (SELECT DISTINCT genome_a FROM genome_transitions WHERE genome_a != genome_b)'
         ).fetchall()
     node_scores = {r[0]: r[1] for r in score_rows}
 
@@ -1125,7 +1125,7 @@ def explore_breed(
     transition_counts = lib.genome_transition_counts()
     rows = lib.conn.execute(
         '''SELECT id, cnn_score FROM genomes
-           WHERE cnn_score IS NOT NULL
+           WHERE cnn_score IS NOT NULL AND COALESCE(archived, 0) = 0
            ORDER BY cnn_score DESC
            LIMIT 200'''
     ).fetchall()

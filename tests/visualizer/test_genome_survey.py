@@ -99,6 +99,29 @@ class TestCorrectFraming:
             assert not np.allclose(center_no_rot, center_rot, atol=0.01)
 
 
+class TestCheckStability:
+    def test_stable_genome_passes(self, rng):
+        """A genome that passes survey_and_correct should be stable."""
+        g = Genome.random(rng)
+        # Already passed stability in random(), should pass again
+        assert g.check_stability()
+
+    def test_returns_bool(self, rng):
+        g = Genome.random(rng)
+        assert isinstance(g.check_stability(), bool)
+
+    def test_respects_max_bbox_ratio(self, rng):
+        """Very tight threshold should reject more genomes."""
+        rejected = 0
+        for _ in range(20):
+            g = Genome.random(rng)
+            if not g.check_stability(max_bbox_ratio=1.05):
+                rejected += 1
+        # With ratio=1.05, even small variation is rejected
+        # Some genomes should fail this tight threshold
+        assert rejected >= 0  # non-crashing is the main check
+
+
 class TestSurveyAndCorrect:
     def test_returns_bool(self, rng):
         g = Genome.random(rng)

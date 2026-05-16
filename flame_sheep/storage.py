@@ -168,6 +168,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if 'framing_version' not in existing:
         conn.execute('ALTER TABLE genomes ADD COLUMN framing_version INTEGER DEFAULT 0')
 
+    if 'archived' not in existing:
+        conn.execute('ALTER TABLE genomes ADD COLUMN archived INTEGER DEFAULT 0')
+
     # Transition cache table
     conn.execute('''
         CREATE TABLE IF NOT EXISTS genome_transitions (
@@ -757,7 +760,7 @@ class Library:
             '''SELECT id, coverage, entropy, color_entropy, balance, complexity,
                       cnn_score
                FROM genomes
-               WHERE coverage >= ?
+               WHERE coverage >= ? AND COALESCE(archived, 0) = 0
                ORDER BY COALESCE(cnn_score, -999) DESC,
                         (entropy + color_entropy + balance * 0.5 + complexity) DESC
                LIMIT ?''',

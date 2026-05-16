@@ -93,6 +93,7 @@ class Transform:
             t.var_params.update(params)
 
         t.color = float(rng.uniform(0, 1))
+        t.color_speed = float(rng.uniform(0.0, 1.0))
         t.weight = float(rng.uniform(0.5, 2.0))
 
         # ~25% chance of post_affine (near-identity, contractive)
@@ -311,12 +312,55 @@ class Genome:
         target_zoom = 2.0 / (extent * margin)
         self.zoom = float(np.clip(target_zoom, 0.1, 1.5))
 
+    def check_stability(self, n_angles: int = 8, n_test: int = 3000,
+                        max_bbox_ratio: float = 10.0) -> bool:
+        """Check attractor stability across rotation angles.
+
+        Rejects flying dots (tiny bbox) and pulsars (bbox ratio > threshold).
+        Fails early on first bad angle for speed.
+        """
+        base_rotation = self.rotation
+        angles = np.linspace(0, 2 * np.pi, n_angles, endpoint=False) + base_rotation
+
+        min_area = float('inf')
+        max_area = 0.0
+
+        for angle in angles:
+            original = self.rotation
+            self.rotation = float(angle)
+            survey = self.survey_attractor(n_test=n_test)
+            self.rotation = original
+
+            if not survey.get('in_viewport', False) or 'bbox_min_x' not in survey:
+                return False  # no coverage at this angle
+
+            extent_x = survey['bbox_max_x'] - survey['bbox_min_x']
+            extent_y = survey['bbox_max_y'] - survey['bbox_min_y']
+            area = extent_x * extent_y
+
+            if area < 0.01:
+                return False  # flying dot — fail fast
+
+            min_area = min(min_area, area)
+            max_area = max(max_area, area)
+
+            # Early ratio check — if already exceeded, no point continuing
+            if min_area > 0 and max_area / min_area > max_bbox_ratio:
+                return False  # pulsar — fail fast
+
+        return True
+
     def survey_and_correct(self) -> bool:
-        """Survey the attractor and correct framing. Returns False if not in viewport."""
+        """Survey the attractor, correct framing, and check stability.
+
+        Returns False if attractor is not in viewport or fails stability check.
+        """
         survey = self.survey_attractor()
         if not survey['in_viewport']:
             return False
         self.correct_framing(survey)
+        if not self.check_stability():
+            return False
         return True
 
     def jitter(self, rng: np.random.Generator, scale: float = 0.1) -> 'Genome':
@@ -335,6 +379,9 @@ class Genome:
         for tr in g.transforms:
             if tr.var_params:
                 tr.var_params = jitter_var_params(tr.var_params, rng, scale=scale)
+            # Jitter color_speed
+            tr.color_speed = float(np.clip(
+                tr.color_speed + rng.normal(0, scale * 0.5), 0.0, 1.0))
             # Jitter post_affine coefficients
             if tr.post_affine is not None:
                 tr.post_affine = tr.post_affine + rng.normal(0, scale * 0.3, 6).astype(np.float32)
@@ -696,7 +743,56 @@ class Genome:
                 hit_grid[gy, gx] += 1.0
                 color_grid[gy, gx] += c
 
-        return _score_from_histogram(hit_grid, color_grid)
+        scores = _score_from_histogram(hit_grid, color_grid)
+
+        # Coverage stability: run chaos game at multiple rotation angles
+        # and measure how much coverage varies. Low variance = stable wallpaper.
+        n_angles = 8
+        n_per_angle = max(500, n_test // n_angles)
+        coverages = []
+        for ai in range(n_angles):
+            angle = self.rotation + (2.0 * np.pi * ai / n_angles)
+            cos_r, sin_r = np.cos(angle), np.sin(angle)
+            mini_grid = np.zeros((grid_size, grid_size), dtype=np.float64)
+            rx, ry = 0.0, 0.0
+            for i in range(fuse + n_per_angle):
+                r = rng.random()
+                tidx = min(int(np.searchsorted(cumw, r)), len(self.transforms) - 1)
+                tr = self.transforms[tidx]
+                nx, ny = rx, ry
+                if tr.pre_variations is not None:
+                    nx, ny = apply_variations_cpu(tr.pre_variations, nx, ny, tr.affine)
+                a, b, cc, d, e, f = tr.affine
+                nx, ny = a * nx + b * ny + cc, d * nx + e * ny + f
+                nx, ny = apply_variations_cpu(tr.variations, nx, ny, tr.affine)
+                if tr.post_affine is not None:
+                    pa, pb, pc_, pd, pe, pf = tr.post_affine
+                    nx, ny = pa * nx + pb * ny + pc_, pd * nx + pe * ny + pf
+                rx, ry = nx, ny
+                if not (np.isfinite(rx) and np.isfinite(ry)):
+                    break
+                if i >= fuse:
+                    # Apply rotation before viewport mapping
+                    px = cos_r * rx - sin_r * ry
+                    py = sin_r * rx + cos_r * ry
+                    if abs(px) < bound and abs(py) < bound:
+                        gx = int((px + bound) / (2 * bound) * grid_size)
+                        gy = int((py + bound) / (2 * bound) * grid_size)
+                        gx = max(0, min(grid_size - 1, gx))
+                        gy = max(0, min(grid_size - 1, gy))
+                        mini_grid[gy, gx] += 1.0
+            cov = float(np.count_nonzero(mini_grid)) / (grid_size * grid_size)
+            coverages.append(cov)
+
+        mean_cov = np.mean(coverages)
+        if mean_cov > 0:
+            # Coefficient of variation: std/mean. Low = stable. Invert to 0-1 scale.
+            cv = float(np.std(coverages) / mean_cov)
+            scores['coverage_stability'] = 1.0 / (1.0 + cv * 5.0)
+        else:
+            scores['coverage_stability'] = 0.0
+
+        return scores
 
     def _aesthetic_score_gpu(self, renderer: FlameRenderer) -> dict[str, float]:
         """
