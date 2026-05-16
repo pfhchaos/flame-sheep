@@ -870,6 +870,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             cmp_w = half_w // _CMP_SCALE
             cmp_h = half_h // _CMP_SCALE
             _compare_renderer = FlameRenderer(ctx, cmp_w, cmp_h)
+            _compare_renderer.blur_radius = 0.0  # no blur in compare mode
             _compare_renderer.set_ppmm(canvas_ppmm / _CMP_SCALE)
             log.info(f'[compare] created renderer at {cmp_w}x{cmp_h} '
                      f'(half-screen {half_w}x{half_h})')
