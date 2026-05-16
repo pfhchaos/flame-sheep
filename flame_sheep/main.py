@@ -863,6 +863,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     _cmp_h = _center_surf.height // _CMP_SCALE
     _compare_renderer = FlameRenderer(ctx, _cmp_w, _cmp_h)
     _compare_renderer.set_ppmm(canvas_ppmm / _CMP_SCALE)
+    # Restore main renderer's SSBO bindings (compare renderer's init overwrote them)
+    renderer.bind_buffers()
     log.info(f'[compare] pre-created renderer at {_cmp_w}x{_cmp_h}')
 
     def _handle_compare(event):
