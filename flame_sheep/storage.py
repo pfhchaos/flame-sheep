@@ -170,6 +170,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
     if 'archived' not in existing:
         conn.execute('ALTER TABLE genomes ADD COLUMN archived INTEGER DEFAULT 0')
+    if 'pruner_checked' not in existing:
+        conn.execute('ALTER TABLE genomes ADD COLUMN pruner_checked INTEGER DEFAULT 0')
 
     # Transition cache table
     conn.execute('''

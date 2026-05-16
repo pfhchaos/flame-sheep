@@ -756,13 +756,16 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # kills desktop performance. Run separately: python -m flame_sheep.gpu_render_worker
     from .cpu_score_worker import BackgroundCpuScorer
     from .transition_worker import BackgroundTransitionScorer
+    from .pruner_worker import BackgroundPruner
     from .storage import _db_path
     db = str(_db_path())
     cpu_scorer = BackgroundCpuScorer(db_path=db)
     transition_scorer = BackgroundTransitionScorer(db_path=db)
+    pruner = BackgroundPruner(db_path=db)
     if lib is not None:
         cpu_scorer.start()
         transition_scorer.start()
+        pruner.start()
 
     # --- Register command handlers on orchestrator ---
     quit_requested = False
@@ -1157,6 +1160,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             feature_logger.close()
         cpu_scorer.stop()
         transition_scorer.stop()
+        pruner.stop()
         orch.stop()
         session.destroy()
 
