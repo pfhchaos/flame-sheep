@@ -148,6 +148,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} BLOB')
     if 'cnn_weights_hash' not in existing:
         conn.execute('ALTER TABLE genomes ADD COLUMN cnn_weights_hash TEXT')
+    if 'cnn_scores_detail' not in existing:
+        conn.execute('ALTER TABLE genomes ADD COLUMN cnn_scores_detail TEXT')
     for col in ('score_version', 'render_version'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} INTEGER DEFAULT 0')
@@ -785,6 +787,27 @@ class Library:
                GROUP BY genome_a'''
         ).fetchall()
         return {r[0]: r[1] for r in rows}
+
+    def cnn_disagreement(self, min_models: int = 2) -> list[tuple[int, float]]:
+        """Genomes with max score spread across model versions.
+
+        Requires store_cnn_detail to be enabled. Returns
+        (genome_id, max_score - min_score) sorted by disagreement descending.
+        """
+        import json
+        rows = self.conn.execute(
+            'SELECT id, cnn_scores_detail FROM genomes WHERE cnn_scores_detail IS NOT NULL'
+        ).fetchall()
+        results = []
+        for gid, detail_json in rows:
+            detail = json.loads(detail_json)
+            if len(detail) < min_models:
+                continue
+            scores = list(detail.values())
+            spread = max(scores) - min(scores)
+            results.append((gid, spread))
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results
 
     # -- Transitions --
 

@@ -69,6 +69,7 @@ DEFAULTS = {
         'render_sleep': 2.0,        # seconds between genomes in GPU render worker
         'render_size': 512,         # render resolution for scoring
         'store_cluster_detail': False,
+        'store_cnn_detail': False,  # dev-only: accumulate scores from multiple model versions
     },
     'debug': {
         'panels': ['header', 'timeline', 'spectrum', 'band_metrics', 'break'],

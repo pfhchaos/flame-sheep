@@ -143,7 +143,8 @@ def _refresh_loop_fitness(conn: sqlite3.Connection, log: logging.Logger) -> None
         log.exception('Failed to refresh loop fitness')
 
 
-def _rescore_cnn(conn, row, cnn_model, weights_hash, log):
+def _rescore_cnn(conn, row, cnn_model, weights_hash, log,
+                 store_detail: bool = False):
     """Re-score a single genome with CNN only (heuristics unchanged)."""
     import torch
 
@@ -168,9 +169,20 @@ def _rescore_cnn(conn, row, cnn_model, weights_hash, log):
         with torch.no_grad():
             score = cnn_model(tensor).item()
 
-        conn.execute(
-            'UPDATE genomes SET cnn_score=?, cnn_weights_hash=? WHERE id=?',
-            (score, weights_hash, gid))
+        if store_detail:
+            import json
+            existing = conn.execute(
+                'SELECT cnn_scores_detail FROM genomes WHERE id=?', (gid,)
+            ).fetchone()
+            detail = json.loads(existing[0]) if existing and existing[0] else {}
+            detail[weights_hash] = score
+            conn.execute(
+                'UPDATE genomes SET cnn_score=?, cnn_weights_hash=?, cnn_scores_detail=? WHERE id=?',
+                (score, weights_hash, json.dumps(detail), gid))
+        else:
+            conn.execute(
+                'UPDATE genomes SET cnn_score=?, cnn_weights_hash=? WHERE id=?',
+                (score, weights_hash, gid))
         conn.commit()
         log.debug(f'CNN rescore genome #{gid}: {score:.3f}')
     except Exception:
@@ -222,6 +234,12 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     except Exception:
         log.exception('Failed to load CNN scorer — CNN scoring disabled')
 
+    cnn_weights_mtime = weights_path.stat().st_mtime if (cnn_model and weights_path.exists()) else 0
+
+    # Config for multi-model detail tracking
+    from .config import cfg
+    store_cnn_detail = getattr(getattr(cfg, 'scoring', None), 'store_cnn_detail', False)
+
     was_scoring = False  # track when we transition from scoring → idle
 
     try:
@@ -257,7 +275,8 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                         (RENDER_VERSION, cnn_weights_hash),
                     ).fetchone()
                     if cnn_row is not None:
-                        _rescore_cnn(conn, cnn_row, cnn_model, cnn_weights_hash, log)
+                        _rescore_cnn(conn, cnn_row, cnn_model, cnn_weights_hash, log,
+                                     store_detail=store_cnn_detail)
                         was_scoring = True
                         continue
 
@@ -265,6 +284,21 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                 if was_scoring:
                     _refresh_loop_fitness(conn, log)
                     was_scoring = False
+
+                # Hot-reload weights if file changed
+                if weights_path and weights_path.exists():
+                    try:
+                        current_mtime = weights_path.stat().st_mtime
+                        if current_mtime != cnn_weights_mtime:
+                            cnn_model = load_model()
+                            cnn_weights_hash = hashlib.sha256(
+                                weights_path.read_bytes()).hexdigest()[:16]
+                            cnn_weights_mtime = current_mtime
+                            log.info('CNN weights reloaded (hash=%s)', cnn_weights_hash)
+                            was_scoring = True  # trigger rescore pass
+                            continue
+                    except Exception:
+                        log.exception('Failed to reload CNN weights, keeping previous')
 
                 stop_event.wait(BackgroundCpuScorer.IDLE_CHECK_INTERVAL)
                 continue
@@ -323,6 +357,16 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                 if 'cnn_score' in scores and cnn_weights_hash:
                     set_parts.append('cnn_weights_hash=?')
                     values.append(cnn_weights_hash)
+                    # Multi-model detail tracking
+                    if store_cnn_detail:
+                        import json
+                        existing = conn.execute(
+                            'SELECT cnn_scores_detail FROM genomes WHERE id=?', (gid,)
+                        ).fetchone()
+                        detail = json.loads(existing[0]) if existing and existing[0] else {}
+                        detail[cnn_weights_hash] = scores['cnn_score']
+                        set_parts.append('cnn_scores_detail=?')
+                        values.append(json.dumps(detail))
                 values.append(gid)
 
                 sql = f'UPDATE genomes SET {", ".join(set_parts)} WHERE id=?'
