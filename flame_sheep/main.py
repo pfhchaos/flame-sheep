@@ -1046,20 +1046,22 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                         cr._left_tex = ctx.texture((_cw // 2, _ch), 4)
                         cr._left_fbo = ctx.framebuffer(color_attachments=[cr._left_tex])
 
-                    # Ensure save buffers (quarter-size)
+                    # Ensure save buffers (match renderer's actual buffer sizes)
                     if not hasattr(cr, '_left_hist_save'):
                         import numpy as _np
                         n_px = cr.canvas_w * cr.canvas_h
+                        n_walkers = cr.walker_buf.size // (3 * 4)  # actual walker count
+                        cr._n_walkers = n_walkers
                         cr._left_hist_save = ctx.buffer(reserve=n_px * 2 * 4)
-                        cr._left_walker_save = ctx.buffer(reserve=_CMP_WALKERS * 3 * 4)
+                        cr._left_walker_save = ctx.buffer(reserve=n_walkers * 3 * 4)
                         cr._right_hist_save = ctx.buffer(reserve=n_px * 2 * 4)
-                        cr._right_walker_save = ctx.buffer(reserve=_CMP_WALKERS * 3 * 4)
+                        cr._right_walker_save = ctx.buffer(reserve=n_walkers * 3 * 4)
                         cr._left_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
                         cr._right_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
                         cr._left_walker_save.write(
-                            _np.random.uniform(-1, 1, (_CMP_WALKERS, 3)).astype(_np.float32).tobytes())
+                            _np.random.uniform(-1, 1, (n_walkers, 3)).astype(_np.float32).tobytes())
                         cr._right_walker_save.write(
-                            _np.random.uniform(-1, 1, (_CMP_WALKERS, 3)).astype(_np.float32).tobytes())
+                            _np.random.uniform(-1, 1, (n_walkers, 3)).astype(_np.float32).tobytes())
 
                     if _compare_needs_reset:
                         import numpy as _np
@@ -1067,9 +1069,9 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                         cr._left_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
                         cr._right_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
                         cr._left_walker_save.write(
-                            _np.random.uniform(-1, 1, (_CMP_WALKERS, 3)).astype(_np.float32).tobytes())
+                            _np.random.uniform(-1, 1, (cr._n_walkers, 3)).astype(_np.float32).tobytes())
                         cr._right_walker_save.write(
-                            _np.random.uniform(-1, 1, (_CMP_WALKERS, 3)).astype(_np.float32).tobytes())
+                            _np.random.uniform(-1, 1, (cr._n_walkers, 3)).astype(_np.float32).tobytes())
                         _compare_needs_reset = False
 
                     # --- Left genome ---
