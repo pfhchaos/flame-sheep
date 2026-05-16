@@ -135,6 +135,44 @@ def _refresh_loop_fitness(conn: sqlite3.Connection, log: logging.Logger) -> None
         log.exception('Failed to refresh loop fitness')
 
 
+def _rescore_cnn(conn, row, cnn_model, weights_hash, log):
+    """Re-score a single genome with CNN only (heuristics unchanged)."""
+    import torch
+
+    gid = row[0]
+    render_static, render_swept = row[1], row[2]
+    hist_static, hist_swept, hist_first_hit = row[3], row[4], row[5]
+
+    try:
+        if hist_static is not None and hist_swept is not None:
+            from .cnn_scorer import _prepare_input_domain
+            tensor = _prepare_input_domain(hist_static, hist_swept, hist_first_hit)
+        elif render_swept is not None:
+            from .cnn_scorer import _prepare_input
+            tensor = _prepare_input(render_static, render_swept)
+        else:
+            conn.execute(
+                'UPDATE genomes SET cnn_weights_hash=? WHERE id=?',
+                (weights_hash, gid))
+            conn.commit()
+            return
+
+        with torch.no_grad():
+            score = cnn_model(tensor).item()
+
+        conn.execute(
+            'UPDATE genomes SET cnn_score=?, cnn_weights_hash=? WHERE id=?',
+            (score, weights_hash, gid))
+        conn.commit()
+        log.debug(f'CNN rescore genome #{gid}: {score:.3f}')
+    except Exception:
+        log.exception(f'CNN rescore failed for genome #{gid}')
+        conn.execute(
+            'UPDATE genomes SET cnn_weights_hash=? WHERE id=?',
+            (weights_hash, gid))
+        conn.commit()
+
+
 def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
     """Entry point for the CPU score subprocess."""
     # Clear inherited handlers from fork (parent's setup_logging adds to named loggers)
@@ -159,14 +197,17 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     conn.execute('PRAGMA busy_timeout=5000')
     _ensure_schema(conn)
 
-    # Load CNN model once (if weights available)
+    # Load CNN model once (if weights available) + compute weights hash
     cnn_model = None
+    cnn_weights_hash = None
     try:
+        import hashlib
         from .cnn_scorer import load_model, _default_weights_path
         weights_path = _default_weights_path()
         if weights_path.exists():
             cnn_model = load_model()
-            log.info('CNN scorer loaded from %s', weights_path)
+            cnn_weights_hash = hashlib.sha256(weights_path.read_bytes()).hexdigest()[:16]
+            log.info('CNN scorer loaded from %s (hash=%s)', weights_path, cnn_weights_hash)
         else:
             log.warning('CNN weights not found at %s — CNN scoring disabled',
                         weights_path)
@@ -195,9 +236,26 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
 
             if row is None:
                 if was_scoring:
-                    # Just finished a scoring pass — refresh loop fitnesses
                     _refresh_loop_fitness(conn, log)
                     was_scoring = False
+
+                # CNN-only re-score: find genomes with stale weights hash
+                if cnn_model is not None and cnn_weights_hash:
+                    cnn_row = conn.execute(
+                        '''SELECT id, render_static, render_swept,
+                                  hist_static, hist_swept, hist_first_hit
+                           FROM genomes
+                           WHERE render_version >= ?
+                             AND render_static IS NOT NULL
+                             AND (cnn_weights_hash IS NULL OR cnn_weights_hash != ?)
+                           LIMIT 1''',
+                        (RENDER_VERSION, cnn_weights_hash),
+                    ).fetchone()
+                    if cnn_row is not None:
+                        _rescore_cnn(conn, cnn_row, cnn_model, cnn_weights_hash, log)
+                        was_scoring = True
+                        continue
+
                 stop_event.wait(BackgroundCpuScorer.IDLE_CHECK_INTERVAL)
                 continue
 
@@ -252,6 +310,9 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
 
                 set_parts.append('score_version=?')
                 values.append(SCORE_VERSION)
+                if 'cnn_score' in scores and cnn_weights_hash:
+                    set_parts.append('cnn_weights_hash=?')
+                    values.append(cnn_weights_hash)
                 values.append(gid)
 
                 sql = f'UPDATE genomes SET {", ".join(set_parts)} WHERE id=?'

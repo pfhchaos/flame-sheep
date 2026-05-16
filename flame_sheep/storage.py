@@ -146,6 +146,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 'hist_static', 'hist_swept', 'hist_transform', 'hist_first_hit'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} BLOB')
+    if 'cnn_weights_hash' not in existing:
+        conn.execute('ALTER TABLE genomes ADD COLUMN cnn_weights_hash TEXT')
     for col in ('score_version', 'render_version'):
         if col not in existing:
             conn.execute(f'ALTER TABLE genomes ADD COLUMN {col} INTEGER DEFAULT 0')
