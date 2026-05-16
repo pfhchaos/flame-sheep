@@ -872,9 +872,17 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         nonlocal _compare_mode, _comparing, _compare_needs_reset
         if _comparing:
             return
+        import time as _time
+        _t0 = _time.perf_counter()
         _ensure_compare_renderer()
+        _t1 = _time.perf_counter()
+        log.info(f'[compare] renderer: {(_t1-_t0)*1000:.0f}ms')
         _compare_mode = CompareMode(lib)
+        _t2 = _time.perf_counter()
+        log.info(f'[compare] CompareMode init: {(_t2-_t1)*1000:.0f}ms')
         _compare_mode.pick_pair()
+        _t3 = _time.perf_counter()
+        log.info(f'[compare] pick_pair: {(_t3-_t2)*1000:.0f}ms')
         _comparing = True
         _compare_needs_reset = True
         # Reclaim compare renderer's SSBO bindings after main renderer's exit rebind
