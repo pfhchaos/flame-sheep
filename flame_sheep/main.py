@@ -1060,11 +1060,6 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     _compare_surf = surfaces.get(_compare_surf_name, first_surf)
                     _cw, _ch = _compare_surf.width, _compare_surf.height
 
-                    # Ensure FBO for left side snapshot
-                    if not hasattr(cr, '_left_fbo') or cr._left_fbo.size != (_cw // 2, _ch):
-                        cr._left_tex = ctx.texture((_cw // 2, _ch), 4)
-                        cr._left_fbo = ctx.framebuffer(color_attachments=[cr._left_tex])
-
                     # Ensure save buffers (match renderer's actual buffer sizes)
                     if not hasattr(cr, '_left_hist_save'):
                         import numpy as _np
@@ -1104,13 +1099,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     ctx.memory_barrier()
                     cr.reduce_histogram_max()
 
-                    # Tonemap left into FBO — clear first, then render
-                    cr._left_fbo.use()
-                    ctx.clear(0.0, 0.0, 0.0, 1.0)
-                    _cr_vp = Viewport(0, 0, cr.canvas_w, cr.canvas_h)
-                    cr.render_tonemap(_cr_vp, _cw // 2, _ch,
-                                     brightness=frame.brightness,
-                                     target_fbo=cr._left_fbo)
+                    # Tonemap left — just save histogram, render directly in surface loop
+                    pass  # left tonemap deferred to surface loop
 
                     # Save left state
                     ctx.copy_buffer(cr._left_hist_save, cr.histogram_buf)
@@ -1152,30 +1142,23 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 if _test_pattern:
                     renderer.render_test_pattern(viewports[name], surf.width, surf.height)
                 elif _comparing and _compare_renderer and name == _compare_surf_name:
-                    # Split the center monitor: left FBO + right histogram
-                    from .renderer import _bind_default_framebuffer
                     cr = _compare_renderer
                     half_w = surf.width // 2
-
-                    # Clear screen to black first (eliminates white bars)
-                    ctx.clear(0.0, 0.0, 0.0, 1.0)
-
-                    # Right half: tonemap right histogram (compare renderer's full canvas)
                     _cr_vp = Viewport(0, 0, cr.canvas_w, cr.canvas_h)
+
+                    # Left half: restore left histogram and tonemap directly
+                    ctx.copy_buffer(cr.histogram_buf, cr._left_hist_save)
+                    cr.reduce_histogram_max()
+                    cr.render_tonemap(_cr_vp, surf.width, surf.height,
+                                     brightness=frame.brightness,
+                                     screen_rect=(0, 0, half_w, surf.height))
+
+                    # Right half: restore right histogram and tonemap
+                    ctx.copy_buffer(cr.histogram_buf, cr._right_hist_save)
+                    cr.reduce_histogram_max()
                     cr.render_tonemap(_cr_vp, surf.width, surf.height,
                                      brightness=frame.brightness,
                                      screen_rect=(half_w, 0, surf.width - half_w, surf.height))
-
-                    # Left half: blit pre-rendered left FBO texture
-                    _bind_default_framebuffer()
-                    ctx.viewport = (0, 0, half_w, surf.height)
-                    cr._left_tex.use(location=0)
-                    # Use compare renderer's blur program for the blit
-                    bp = cr.blur_program
-                    bp['u_texture'] = 0
-                    bp['u_direction'] = (0.0, 0.0)
-                    bp['u_radius'] = 0.0
-                    cr.blur_vao.render(moderngl.TRIANGLES)
                 elif _comparing:
                     # Side monitors: black during compare mode
                     ctx.clear(0.0, 0.0, 0.0, 1.0)
