@@ -109,19 +109,16 @@ class ControlPipe:
         return events
         
     def _ensure_pipe_exists(self) -> None:
-        """Create the named pipe if it doesn't exist."""
+        """Recreate the named pipe on every startup.
+
+        Always delete and recreate to avoid stale/corrupted FIFOs
+        that accept writes but deliver zero bytes to readers.
+        """
         self.pipe_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         if self.pipe_path.exists():
-            # Check if it's actually a pipe
-            if not stat.S_ISFIFO(os.stat(self.pipe_path).st_mode):
-                # It's a regular file, remove and recreate
-                self.pipe_path.unlink()
-                os.mkfifo(self.pipe_path)
-        else:
-            os.mkfifo(self.pipe_path)
-            
-        # Make it world-writable so any process can send commands
+            self.pipe_path.unlink()
+        os.mkfifo(self.pipe_path)
         os.chmod(self.pipe_path, 0o622)
         
     def _read_loop(self) -> None:
