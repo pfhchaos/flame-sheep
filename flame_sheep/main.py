@@ -846,14 +846,26 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
     # --- Compare mode ---
     from .compare import CompareMode
+    from .renderer import N_WALKERS
     _compare_mode: CompareMode | None = None
+    _compare_renderer: FlameRenderer | None = None
     _comparing = False
     _compare_needs_reset = False
 
+    # Compare renders at quarter resolution (half each dimension)
+    _CMP_SCALE = 2  # divisor: canvas/2 each axis = 1/4 pixels
+    _CMP_WALKERS = N_WALKERS // 4  # match walker density to pixel count
+
     def _handle_compare(event):
-        nonlocal _compare_mode, _comparing, _compare_needs_reset
+        nonlocal _compare_mode, _compare_renderer, _comparing, _compare_needs_reset
         if _comparing:
             return
+        if _compare_renderer is None:
+            cmp_w = canvas_w // _CMP_SCALE
+            cmp_h = canvas_h // _CMP_SCALE
+            _compare_renderer = FlameRenderer(ctx, cmp_w, cmp_h)
+            _compare_renderer.set_ppmm(canvas_ppmm / _CMP_SCALE)
+            log.info(f'[compare] created renderer at {cmp_w}x{cmp_h}')
         _compare_mode = CompareMode(lib)
         _compare_mode.pick_pair()
         _comparing = True
@@ -1014,11 +1026,10 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 session.release_current()
                 continue
 
-            if _comparing and _compare_mode:
-                # --- Compare mode: single renderer, two sequential dispatches ---
-                # Swap histogram + walker buffers between left/right dispatches.
-                # Same decay, iterations, brightness as normal mode.
+            if _comparing and _compare_mode and _compare_renderer:
+                # --- Compare mode: quarter-res renderer, copy-swap state ---
                 pair = _compare_mode.pair
+                cr = _compare_renderer
                 if pair.left is not None and pair.right is not None:
                     rot = core._genome_axis._rotation_phase
                     left_g = pair.left.rotated(rot) if rot != 0.0 else pair.left
@@ -1031,99 +1042,69 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     _cw, _ch = _compare_surf.width, _compare_surf.height
 
                     # Ensure FBO for left side snapshot
-                    if not hasattr(renderer, '_compare_left_fbo') or \
-                       renderer._compare_left_fbo.size != (_cw // 2, _ch):
-                        renderer._compare_left_tex = ctx.texture((_cw // 2, _ch), 4)
-                        renderer._compare_left_fbo = ctx.framebuffer(
-                            color_attachments=[renderer._compare_left_tex])
+                    if not hasattr(cr, '_left_fbo') or cr._left_fbo.size != (_cw // 2, _ch):
+                        cr._left_tex = ctx.texture((_cw // 2, _ch), 4)
+                        cr._left_fbo = ctx.framebuffer(color_attachments=[cr._left_tex])
 
-                    # Ensure separate histogram + walker buffers for right side
-                    if not hasattr(renderer, '_compare_right_hist'):
+                    # Ensure save buffers (quarter-size)
+                    if not hasattr(cr, '_left_hist_save'):
                         import numpy as _np
-                        from .renderer import N_WALKERS
-                        n_pixels = renderer.canvas_w * renderer.canvas_h
-                        renderer._compare_right_hist = ctx.buffer(
-                            _np.zeros(n_pixels * 2, dtype=_np.uint32).tobytes())
-                        renderer._compare_right_walkers = ctx.buffer(
-                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
-                        renderer._compare_right_max = ctx.buffer(
-                            _np.zeros(1, dtype=_np.uint32).tobytes())
-
-                    if _compare_needs_reset:
-                        import numpy as _np
-                        from .renderer import N_WALKERS
-                        renderer.reset_walkers()
-                        renderer._compare_right_walkers.write(
-                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
-                        _compare_needs_reset = False
-
-                    # Save left histogram + walker state to side buffers
-                    if not hasattr(renderer, '_compare_left_hist_save'):
-                        import numpy as _np
-                        n_pixels = renderer.canvas_w * renderer.canvas_h
-                        from .renderer import N_WALKERS
-                        renderer._compare_left_hist_save = ctx.buffer(reserve=n_pixels * 2 * 4)
-                        renderer._compare_left_walker_save = ctx.buffer(reserve=N_WALKERS * 3 * 4)
-                        renderer._compare_right_hist_save = ctx.buffer(reserve=n_pixels * 2 * 4)
-                        renderer._compare_right_walker_save = ctx.buffer(reserve=N_WALKERS * 3 * 4)
-                        # Initialize with random walkers
-                        renderer._compare_left_walker_save.write(
-                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
-                        renderer._compare_right_walker_save.write(
-                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
-                        renderer._compare_left_hist_save.write(
-                            _np.zeros(n_pixels * 2, dtype=_np.uint32).tobytes())
-                        renderer._compare_right_hist_save.write(
-                            _np.zeros(n_pixels * 2, dtype=_np.uint32).tobytes())
+                        n_px = cr.canvas_w * cr.canvas_h
+                        cr._left_hist_save = ctx.buffer(reserve=n_px * 2 * 4)
+                        cr._left_walker_save = ctx.buffer(reserve=_CMP_WALKERS * 3 * 4)
+                        cr._right_hist_save = ctx.buffer(reserve=n_px * 2 * 4)
+                        cr._right_walker_save = ctx.buffer(reserve=_CMP_WALKERS * 3 * 4)
+                        cr._left_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
+                        cr._right_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
+                        cr._left_walker_save.write(
+                            _np.random.uniform(-1, 1, (_CMP_WALKERS, 3)).astype(_np.float32).tobytes())
+                        cr._right_walker_save.write(
+                            _np.random.uniform(-1, 1, (_CMP_WALKERS, 3)).astype(_np.float32).tobytes())
 
                     if _compare_needs_reset:
                         import numpy as _np
-                        from .renderer import N_WALKERS
-                        renderer._compare_left_walker_save.write(
-                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
-                        renderer._compare_right_walker_save.write(
-                            _np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(_np.float32).tobytes())
-                        n_pixels = renderer.canvas_w * renderer.canvas_h
-                        renderer._compare_left_hist_save.write(
-                            _np.zeros(n_pixels * 2, dtype=_np.uint32).tobytes())
-                        renderer._compare_right_hist_save.write(
-                            _np.zeros(n_pixels * 2, dtype=_np.uint32).tobytes())
+                        n_px = cr.canvas_w * cr.canvas_h
+                        cr._left_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
+                        cr._right_hist_save.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
+                        cr._left_walker_save.write(
+                            _np.random.uniform(-1, 1, (_CMP_WALKERS, 3)).astype(_np.float32).tobytes())
+                        cr._right_walker_save.write(
+                            _np.random.uniform(-1, 1, (_CMP_WALKERS, 3)).astype(_np.float32).tobytes())
                         _compare_needs_reset = False
 
                     # --- Left genome ---
-                    # Restore left state into renderer's buffers (dst, src)
-                    ctx.copy_buffer(renderer.histogram_buf, renderer._compare_left_hist_save)
-                    ctx.copy_buffer(renderer.walker_buf, renderer._compare_left_walker_save)
-                    renderer.upload_audio(frame.spectrum)
-                    renderer.upload_genome(left_g)
-                    renderer.upload_palette(frame.palette)
-                    renderer.clear_histogram(decay=0.3)
-                    renderer.dispatch_chaos_game(iterations=frame.iterations)
+                    ctx.copy_buffer(cr.histogram_buf, cr._left_hist_save)
+                    ctx.copy_buffer(cr.walker_buf, cr._left_walker_save)
+                    cr.upload_audio(frame.spectrum)
+                    cr.upload_genome(left_g)
+                    cr.upload_palette(frame.palette)
+                    cr.clear_histogram(decay=0.3)
+                    cr.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
-                    renderer.reduce_histogram_max()
+                    cr.reduce_histogram_max()
 
-                    # Tonemap left genome into FBO (histogram still has left data)
-                    renderer.render_tonemap(_compare_vp, _cw // 2, _ch,
-                                           brightness=frame.brightness,
-                                           target_fbo=renderer._compare_left_fbo)
+                    # Tonemap left into FBO
+                    cr.render_tonemap(_compare_vp, _cw // 2, _ch,
+                                     brightness=frame.brightness,
+                                     target_fbo=cr._left_fbo)
 
-                    # Save left state (dst, src)
-                    ctx.copy_buffer(renderer._compare_left_hist_save, renderer.histogram_buf)
-                    ctx.copy_buffer(renderer._compare_left_walker_save, renderer.walker_buf)
+                    # Save left state
+                    ctx.copy_buffer(cr._left_hist_save, cr.histogram_buf)
+                    ctx.copy_buffer(cr._left_walker_save, cr.walker_buf)
 
                     # --- Right genome ---
-                    # Restore right state into renderer's buffers (dst, src)
-                    ctx.copy_buffer(renderer.histogram_buf, renderer._compare_right_hist_save)
-                    ctx.copy_buffer(renderer.walker_buf, renderer._compare_right_walker_save)
-                    renderer.upload_genome(right_g)
-                    renderer.upload_palette(frame.palette)
-                    renderer.clear_histogram(decay=0.3)
-                    renderer.dispatch_chaos_game(iterations=frame.iterations)
+                    ctx.copy_buffer(cr.histogram_buf, cr._right_hist_save)
+                    ctx.copy_buffer(cr.walker_buf, cr._right_walker_save)
+                    cr.upload_genome(right_g)
+                    cr.upload_palette(frame.palette)
+                    cr.clear_histogram(decay=0.3)
+                    cr.dispatch_chaos_game(iterations=frame.iterations)
                     ctx.memory_barrier()
-                    renderer.reduce_histogram_max()
-                    # Save right state back (dst, src)
-                    ctx.copy_buffer(renderer._compare_right_hist_save, renderer.histogram_buf)
-                    ctx.copy_buffer(renderer._compare_right_walker_save, renderer.walker_buf)
+                    cr.reduce_histogram_max()
+
+                    # Save right state
+                    ctx.copy_buffer(cr._right_hist_save, cr.histogram_buf)
+                    ctx.copy_buffer(cr._right_walker_save, cr.walker_buf)
 
             elif not _test_pattern:
                 # --- Normal mode: single chaos game ---
@@ -1146,28 +1127,30 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 renderer.set_skew(_monitor_skew.get(name, 0.0))
                 if _test_pattern:
                     renderer.render_test_pattern(viewports[name], surf.width, surf.height)
-                elif _comparing and name == _compare_surf_name:
+                elif _comparing and _compare_renderer and name == _compare_surf_name:
                     # Split the center monitor: left FBO + right histogram
                     from .renderer import _bind_default_framebuffer
+                    cr = _compare_renderer
                     vp = viewports[name]
                     half_w = surf.width // 2
 
-                    # Right half: tonemap right histogram (currently in renderer's buffers)
-                    renderer.render_tonemap(vp, surf.width, surf.height,
-                                           brightness=frame.brightness,
-                                           screen_rect=(half_w, 0, surf.width - half_w, surf.height))
+                    # Right half: tonemap right histogram (in compare renderer)
+                    cr.render_tonemap(vp, surf.width, surf.height,
+                                     brightness=frame.brightness,
+                                     screen_rect=(half_w, 0, surf.width - half_w, surf.height))
 
                     # Left half: blit pre-rendered left FBO texture
                     _bind_default_framebuffer()
                     ctx.viewport = (0, 0, half_w, surf.height)
-                    renderer._compare_left_tex.use(location=0)
-                    bp = renderer.blur_program
+                    cr._left_tex.use(location=0)
+                    # Use compare renderer's blur program for the blit
+                    bp = cr.blur_program
                     bp['u_texture'] = 0
                     bp['u_direction'] = (0.0, 0.0)
                     bp['u_radius'] = 0.0
-                    renderer.blur_vao.render(moderngl.TRIANGLES)
+                    cr.blur_vao.render(moderngl.TRIANGLES)
                 elif _comparing:
-                    # Non-center monitors: render right genome (in renderer's histogram)
+                    # Non-center monitors: normal wallpaper
                     renderer.render_tonemap(viewports[name], surf.width, surf.height,
                                            brightness=frame.brightness)
                 elif _blur_comparison and surf.width >= 3000:
