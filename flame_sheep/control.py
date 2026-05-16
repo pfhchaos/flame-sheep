@@ -129,25 +129,20 @@ class ControlPipe:
         log.info(f'[pipe] reader thread started, path={self.pipe_path}')
         while self._running:
             try:
-                log.info('[pipe] waiting for writer...')
-                fd = os.open(self.pipe_path, os.O_RDONLY)
-                log.info('[pipe] writer connected')
-                # Read raw bytes to diagnose empty-data issue
-                data = os.read(fd, 4096)
-                log.info(f'[pipe] raw bytes: {data!r} ({len(data)} bytes)')
-                os.close(fd)
-                if data:
-                    for line in data.decode('utf-8', errors='replace').splitlines():
+                with open(self.pipe_path, 'r') as f:
+                    for line in f:
+                        if not self._running:
+                            break
                         line = line.strip()
                         if not line:
                             continue
+                        log.info(f'[pipe] cmd: {line}')
                         event = self._parse_line(line)
                         if event:
                             self._queue.put(event)
-                log.info('[pipe] writer disconnected')
             except Exception as e:
-                log.warning(f'[pipe] error: {e}', exc_info=True)
-        log.info('[pipe] reader thread exiting (_running=False)')
+                if self._running:
+                    log.warning(f'[pipe] error: {e}')
                     
     def _parse_line(self, line: str) -> ControlEvent | None:
         """Parse a command line into a ControlEvent."""
