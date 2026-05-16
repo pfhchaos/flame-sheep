@@ -235,11 +235,8 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
             ).fetchone()
 
             if row is None:
-                if was_scoring:
-                    _refresh_loop_fitness(conn, log)
-                    was_scoring = False
-
                 # CNN-only re-score: find genomes with stale weights hash
+                cnn_row = None
                 if cnn_model is not None and cnn_weights_hash:
                     cnn_row = conn.execute(
                         '''SELECT id, render_static, render_swept,
@@ -255,6 +252,11 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                         _rescore_cnn(conn, cnn_row, cnn_model, cnn_weights_hash, log)
                         was_scoring = True
                         continue
+
+                # Both passes idle — refresh loop fitness once
+                if was_scoring:
+                    _refresh_loop_fitness(conn, log)
+                    was_scoring = False
 
                 stop_event.wait(BackgroundCpuScorer.IDLE_CHECK_INTERVAL)
                 continue
