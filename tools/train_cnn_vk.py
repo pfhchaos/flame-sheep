@@ -411,7 +411,7 @@ class VkTrainer:
             gap_pipeline = self.gpu.create_pipeline(
                 str(SHADER_DIR / 'gap_mlp_forward.comp'),
                 buffers=[self.act_bufs[-1], head_buf, self.pooled_buf,
-                         self.output_buf, None, self.hidden_buf],
+                         self.output_buf, self.hidden_buf],
                 push_constant_size=20,
             )
             push = struct.pack('5i', B, final_c, h_final, w_final, MLP_HIDDEN)

@@ -31,6 +31,7 @@ layout(std430, binding = 2) readonly  buffer WeightBuf    { float weights[];   }
 layout(std430, binding = 3) writeonly buffer GradInputBuf { float d_input[];   };  // [B, C, H, W]
 layout(std430, binding = 4) buffer          GradWeightBuf { uint d_weights_u[];};  // same size as weights, uint for CAS
 layout(std430, binding = 5) readonly  buffer HiddenBuf    { float hidden[];    };  // [B, hidden_dim] pre-ReLU
+// Note: binding 5 here (backward has 6 buffers: 0-5). Forward uses binding 4.
 
 layout(push_constant) uniform PushConstants {
     int batch_size;
