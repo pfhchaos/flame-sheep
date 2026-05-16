@@ -894,11 +894,14 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         nonlocal _comparing
         if _comparing:
             _comparing = False
-            # Restore normal buffers
-            renderer.histogram_buf.bind_to_storage_buffer(0)
-            renderer.walker_buf.bind_to_storage_buffer(1)
-            renderer._max_buf.bind_to_storage_buffer(8)
+            # Force main renderer to reclaim its SSBO bindings and clear state.
+            # CPU-side buffer write bypasses Mesa's SSBO binding cache.
+            import numpy as _np
+            n_px = renderer.canvas_w * renderer.canvas_h
+            renderer.histogram_buf.write(_np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
+            renderer.bind_buffers()
             renderer.reset_walkers()
+            core.needs_walker_reset = True
             log.info('[ctl] exited compare mode')
 
     orch.on_command('compare', _handle_compare)
