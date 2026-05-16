@@ -64,8 +64,8 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
 
                 if not stable:
                     conn.execute(
-                        'UPDATE genomes SET archived=1, pruner_checked=1 WHERE id=?',
-                        (gid,))
+                        'UPDATE genomes SET archived=1, pruner_checked=1, archive_reason=? WHERE id=?',
+                        ('stability', gid))
                     log.info('archived genome #%d (failed stability)', gid)
                 else:
                     conn.execute(
