@@ -862,6 +862,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         cmp_w = center_surf.width // 2 // _CMP_SCALE
         cmp_h = center_surf.height // _CMP_SCALE
         _compare_renderer = FlameRenderer(ctx, cmp_w, cmp_h)
+        _compare_renderer.blur_radius = 0.0
         _compare_renderer.set_ppmm(canvas_ppmm / _CMP_SCALE)
         # Restore main renderer's bindings
         renderer.bind_buffers()
