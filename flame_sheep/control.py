@@ -132,15 +132,15 @@ class ControlPipe:
                 log.info('[pipe] waiting for writer...')
                 fd = os.open(self.pipe_path, os.O_RDONLY)
                 log.info('[pipe] writer connected')
-                with os.fdopen(fd, 'r', buffering=1) as f:
-                    while self._running:
-                        line = f.readline()
-                        if not line:
-                            break  # EOF — writer closed
+                # Read raw bytes to diagnose empty-data issue
+                data = os.read(fd, 4096)
+                log.info(f'[pipe] raw bytes: {data!r} ({len(data)} bytes)')
+                os.close(fd)
+                if data:
+                    for line in data.decode('utf-8', errors='replace').splitlines():
                         line = line.strip()
                         if not line:
                             continue
-                        log.info(f'[pipe] raw: {line!r}')
                         event = self._parse_line(line)
                         if event:
                             self._queue.put(event)
