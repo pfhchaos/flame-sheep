@@ -185,12 +185,28 @@ def _rescore_cnn(conn, row, cnn_model, weights_hash, log,
                 (score, weights_hash, gid))
         conn.commit()
         log.debug(f'CNN rescore genome #{gid}: {score:.3f}')
+    except sqlite3.OperationalError as e:
+        if 'locked' in str(e):
+            log.debug(f'DB locked rescoring genome #{gid}, will retry')
+            # Don't mark as done — will retry next cycle
+        else:
+            log.exception(f'CNN rescore failed for genome #{gid}')
+            try:
+                conn.execute(
+                    'UPDATE genomes SET cnn_weights_hash=? WHERE id=?',
+                    (weights_hash, gid))
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
     except Exception:
         log.exception(f'CNN rescore failed for genome #{gid}')
-        conn.execute(
-            'UPDATE genomes SET cnn_weights_hash=? WHERE id=?',
-            (weights_hash, gid))
-        conn.commit()
+        try:
+            conn.execute(
+                'UPDATE genomes SET cnn_weights_hash=? WHERE id=?',
+                (weights_hash, gid))
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
 
 def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
@@ -214,7 +230,7 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     from .storage import _ensure_schema
 
     conn = sqlite3.connect(db_path)
-    conn.execute('PRAGMA busy_timeout=5000')
+    conn.execute('PRAGMA busy_timeout=30000')
     _ensure_schema(conn)
 
     # Load CNN model once (if weights available) + compute weights hash

@@ -39,7 +39,7 @@ def _transition_main(db_path: str, stop_event: multiprocessing.synchronize.Event
     )
 
     conn = sqlite3.connect(db_path)
-    conn.execute('PRAGMA busy_timeout=5000')
+    conn.execute('PRAGMA busy_timeout=30000')
     _ensure_schema(conn)
 
     try:
