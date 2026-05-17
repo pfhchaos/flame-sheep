@@ -70,6 +70,15 @@ DEFAULTS = {
         'render_size': 512,         # render resolution for scoring
         'store_cluster_detail': False,
         'store_cnn_detail': False,  # dev-only: accumulate scores from multiple model versions
+        # Walker density target. Scoring renders use a walker count that matches
+        # the walker-per-pixel density of an assumed live render, so the CNN
+        # sees attractor convergence matching what it'll score at runtime.
+        # Defaults target a 4K square display (1080² render at RENDER_SCALE=0.5)
+        # with the default N_WALKERS=65536 → ~14.6K scoring walkers at 512².
+        # TODO: derive from actual live canvas at startup instead of assuming.
+        'assumed_live_render_w': 1080,
+        'assumed_live_render_h': 1080,
+        'live_walkers': 65536,
     },
     'debug': {
         'panels': ['header', 'timeline', 'spectrum', 'band_metrics', 'break'],

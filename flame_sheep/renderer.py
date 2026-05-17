@@ -96,10 +96,11 @@ class FlameRenderer:
     """
 
     def __init__(self, ctx: moderngl.Context, canvas_w: int, canvas_h: int,
-                 scoring: bool = False):
-        self.ctx      = ctx
-        self.canvas_w = canvas_w
-        self.canvas_h = canvas_h
+                 scoring: bool = False, n_walkers: int = N_WALKERS):
+        self.ctx        = ctx
+        self.canvas_w   = canvas_w
+        self.canvas_h   = canvas_h
+        self.n_walkers  = n_walkers
 
         self._load_shaders(scoring=scoring)
         self._create_resources()
@@ -219,7 +220,7 @@ class FlameRenderer:
         self.pre_vars_buf.bind_to_storage_buffer(10)
 
         # Walker state SSBO (binding=1)
-        walker_data = np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(np.float32)
+        walker_data = np.random.uniform(-1, 1, (self.n_walkers, 3)).astype(np.float32)
         self.walker_buf = self.ctx.buffer(walker_data.tobytes())
         self.walker_buf.bind_to_storage_buffer(1)
 
@@ -286,7 +287,7 @@ class FlameRenderer:
     def reset_walkers(self) -> None:
         """Re-randomize walker positions. Call after a genome swap to avoid
         stuck walkers that escaped to infinity under a degenerate genome."""
-        walker_data = np.random.uniform(-1, 1, (N_WALKERS, 3)).astype(np.float32)
+        walker_data = np.random.uniform(-1, 1, (self.n_walkers, 3)).astype(np.float32)
         self.walker_buf.write(walker_data.tobytes())
 
     # ------------------------------------------------------------------
@@ -426,7 +427,7 @@ class FlameRenderer:
         self.compute_shader['u_iterations'] = iterations
         self.compute_shader['u_rng_seed'] = self._rng_frame_counter
         self._rng_frame_counter += 1
-        groups = N_WALKERS // 64
+        groups = self.n_walkers // 64
         self.compute_shader.run(group_x=groups)
 
     def reduce_histogram_max(self) -> None:

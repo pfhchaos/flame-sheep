@@ -849,7 +849,6 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
     # --- Compare mode ---
     from .compare import CompareMode
-    from .renderer import N_WALKERS
     _compare_mode: CompareMode | None = None
     _compare_renderer: FlameRenderer | None = None
     _comparing = False
