@@ -1181,7 +1181,7 @@ def _run_variation_benchmark() -> None:
     import moderngl
     from .genome import (Genome, Transform, Variation, NUM_VARIATIONS,
                          MAX_TRANSFORMS, MAX_VAR_PARAMS)
-    from .renderer import FlameRenderer
+    from .renderer import FlameRenderer, LIVE_ITER_MAX
 
     # Variation names for display
     var_names = {}
@@ -1200,16 +1200,16 @@ def _run_variation_benchmark() -> None:
     rng = np.random.default_rng(42)
 
     def _bench_genome(g: Genome) -> float:
-        """Returns ms/frame for a genome at 500 iterations."""
+        """Returns ms/frame for a genome at LIVE_ITER_MAX (worst-case live render)."""
         renderer.upload_genome(g)
         for _ in range(n_warmup):
             renderer.clear_histogram(decay=0.3)
-            renderer.dispatch_chaos_game(iterations=500)
+            renderer.dispatch_chaos_game(iterations=LIVE_ITER_MAX)
             ctx.finish()
         t0 = time.perf_counter()
         for _ in range(n_frames):
             renderer.clear_histogram(decay=0.3)
-            renderer.dispatch_chaos_game(iterations=500)
+            renderer.dispatch_chaos_game(iterations=LIVE_ITER_MAX)
             ctx.finish()
         return (time.perf_counter() - t0) / n_frames * 1000
 
