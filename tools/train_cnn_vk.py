@@ -689,13 +689,23 @@ def main():
     gpu = VkCompute()
     log.info('GPU: %s', gpu.device_name)
 
-    trainer = VkTrainer(gpu, args.image_size, args.batch_size)
+    from flame_sheep.wallpaper_ml import build_cnn_scorer
+    model = build_cnn_scorer(gpu, LAYERS, batch_size=args.batch_size,
+                              image_size=args.image_size, mlp_head=MLP_HEAD)
 
-    # Load initial weights if provided (resume or fine-tune)
     if args.init_weights:
         init_w = np.load(args.init_weights).astype(np.float32)
-        gpu.upload(trainer.weights_buf, init_w)
+        model.load_weights(init_w)
         log.info('Loaded initial weights: %d params from %s', len(init_w), args.init_weights)
+    else:
+        model.init_weights()
+
+    log.info('Model: %d params (%s head)', model.param_count(),
+             'MLP' if MLP_HEAD else 'linear')
+
+    # Input buffer for batch uploads
+    input_buf = gpu.create_buffer(args.batch_size * 4 * args.image_size * args.image_size * 4)
+    d_scores_buf = gpu.create_buffer(args.batch_size * 4)
 
     # Validation pairs — cross-gen composite, same method as training.
     # Hold out val_gen from training; val uses cross-gen pairs involving val_gen.
@@ -726,12 +736,55 @@ def main():
             batch = pair_arr[i:i + args.batch_size]
             if len(batch) < 2:
                 continue
+            B = len(batch)
             w_imgs = store.get_batch(batch[:, 0])
             l_imgs = store.get_batch(batch[:, 1])
-            loss = trainer.train_step(w_imgs, l_imgs, args.lr)
+
+            # Pad to batch_size if needed
+            if B < args.batch_size:
+                pad_shape = (args.batch_size - B, *w_imgs.shape[1:])
+                w_imgs = np.concatenate([w_imgs, np.zeros(pad_shape, dtype=np.float32)])
+                l_imgs = np.concatenate([l_imgs, np.zeros(pad_shape, dtype=np.float32)])
+
+            # Forward winner → backward winner → forward loser → backward loser
+            # This avoids saving/restoring activations between passes
+            model.zero_grad()
+
+            gpu.upload(input_buf, w_imgs)
+            w_out = model.forward(input_buf, args.batch_size, (4, args.image_size, args.image_size))
+            w_scores = gpu.download(w_out, np.float32, args.batch_size)[:B]
+
+            gpu.upload(input_buf, l_imgs)
+            l_out = model.forward(input_buf, args.batch_size, (4, args.image_size, args.image_size))
+            l_scores = gpu.download(l_out, np.float32, args.batch_size)[:B]
+
+            # Margin ranking loss
+            margin = 1.0
+            diff = w_scores - l_scores
+            losses = np.maximum(0, margin - diff)
+            loss = losses.mean()
             if np.isnan(loss):
                 log.warning('NaN loss at batch %d, skipping', i)
                 continue
+
+            active = (losses > 0).astype(np.float32)
+            d_l_scores = np.zeros(args.batch_size, dtype=np.float32)
+            d_l_scores[:B] = active / B
+
+            # Backward loser (state is from loser forward, which just ran)
+            gpu.upload(d_scores_buf, d_l_scores)
+            model.backward(d_scores_buf, args.batch_size)
+
+            # Re-forward winner to restore layer state, then backward
+            gpu.upload(input_buf, w_imgs)
+            model.forward(input_buf, args.batch_size, (4, args.image_size, args.image_size))
+            d_w_scores = np.zeros(args.batch_size, dtype=np.float32)
+            d_w_scores[:B] = -active / B
+            gpu.upload(d_scores_buf, d_w_scores)
+            model.backward(d_scores_buf, args.batch_size)
+
+            model.sgd_step(args.lr)
+
             epoch_loss += loss
             n_batches += 1
 
@@ -747,7 +800,10 @@ def main():
                 pad = np.zeros((args.batch_size - len(batch_imgs), *batch_imgs.shape[1:]),
                                dtype=np.float32)
                 batch_imgs = np.concatenate([batch_imgs, pad])
-            scores = trainer.forward(batch_imgs)
+            gpu.upload(input_buf, batch_imgs)
+            out = model.forward(input_buf, args.batch_size,
+                                (4, args.image_size, args.image_size))
+            scores = gpu.download(out, np.float32, args.batch_size)
             for j, idx in enumerate(batch_idx):
                 val_scores[idx] = scores[j]
 
@@ -761,7 +817,7 @@ def main():
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             patience = 0
-            weights = gpu.download(trainer.weights_buf, np.float32, trainer.total_weights)
+            weights = model.save_weights()
             np.save(str(output_path), weights)
             log.info('  -> saved (best val_acc=%.3f)', best_val_acc)
         else:
