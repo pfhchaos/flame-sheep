@@ -22,7 +22,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-RENDER_VERSION = 7  # v7: first-hit snap range driven by LIVE_ITER_MIN/MAX constants (100-500)
+RENDER_VERSION = 8  # v8: scoring walker count derived from assumed-live-render density (~14.6K at 512²)
 
 COLOR_SCALE = 1_000_000.0
 
@@ -47,8 +47,19 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
 
     from .config import cfg
 
-    render_size = getattr(getattr(cfg, 'scoring', None), 'render_size', 512)
-    render_sleep = getattr(getattr(cfg, 'scoring', None), 'render_sleep', 2.0)
+    scoring_cfg = getattr(cfg, 'scoring', None)
+    render_size = getattr(scoring_cfg, 'render_size', 512)
+    render_sleep = getattr(scoring_cfg, 'render_sleep', 2.0)
+
+    # Walker count: match the walker-per-pixel density of an assumed live render
+    # so the CNN sees attractor convergence matching what it scores at runtime.
+    live_w = getattr(scoring_cfg, 'assumed_live_render_w', 1080)
+    live_h = getattr(scoring_cfg, 'assumed_live_render_h', 1080)
+    live_walkers = getattr(scoring_cfg, 'live_walkers', 65536)
+    walker_density = live_walkers / (live_w * live_h)
+    scoring_walkers = max(64, int(walker_density * render_size * render_size))
+    # Round to multiple of 64 (workgroup size)
+    scoring_walkers = (scoring_walkers // 64) * 64
 
     # Create standalone GPU context
     os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
@@ -64,7 +75,8 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
     from flame_sheep_audio import N_BINS
     from .genome import _score_from_histogram
 
-    renderer = FlameRenderer(ctx, render_size, render_size, scoring=True)
+    renderer = FlameRenderer(ctx, render_size, render_size,
+                              scoring=True, n_walkers=scoring_walkers)
 
     # Fixed rainbow palette for scoring renders (genome doesn't own a palette)
     _hues = np.linspace(0, 1, 256, endpoint=False)
@@ -84,7 +96,7 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
         np.linspace(0, 1, 256, dtype=np.float32), (3, 1)).T.copy()
     from .scoring_channels import pack_histogram, pack_static_histogram
     log.info(f'GPU render worker started ({render_size}x{render_size}, '
-             f'sleep={render_sleep}s)')
+             f'{scoring_walkers} walkers, sleep={render_sleep}s)')
 
     conn = sqlite3.connect(db_path)
     conn.execute('PRAGMA busy_timeout=5000')
