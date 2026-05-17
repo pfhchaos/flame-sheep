@@ -14,7 +14,7 @@ from flame_sheep_audio import AudioState, SAMPLE_RATE
 from flame_sheep_audio.response import MelCentroid, Delta
 from flame_sheep.genome import _lerp_arr
 from flame_sheep.config import cfg
-from flame_sheep.role_mapper import RoleMapper, BACKBEAT
+from flame_sheep.role_mapper import RoleMapper, SUBDIVISION
 
 if TYPE_CHECKING:
     from flame_sheep.main import FlameSheepCore
@@ -62,10 +62,10 @@ class PaletteAxis:
             self.palette_speed   = self.DRIFT_MORPH_SPEED
 
         # Handle backbeat events (scaled by density)
-        backbeat_density = self._role.band_state(audio, BACKBEAT).onset_density
+        backbeat_density = self._role.band_state(audio, SUBDIVISION).onset_density
         density_scale = 1.0 / (1.0 + backbeat_density * self.DENSITY_DAMPING)
         for event in audio.events:
-            if event.kind == self._role.band_for_role(BACKBEAT):
+            if event.kind == self._role.band_for_role(SUBDIVISION):
                 self.palette_current = _lerp_arr(
                     self.palette_current, self.palette_target, self.palette_t)
                 next_palette = self._pick_next_palette(event.energy)

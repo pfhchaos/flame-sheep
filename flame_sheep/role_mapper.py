@@ -35,7 +35,9 @@ ENERGY = 'energy'
 
 ALL_ROLES = (DOWNBEAT, BACKBEAT, SUBDIVISION, ENERGY)
 
-# Default mapping (matches the default BandConfig)
+# Role → band mapping (musically correct).
+# low = kick = downbeat, mid = snare = backbeat, high = hihat = subdivision.
+# BeatNet will eventually identify these roles properly; for now band ≈ role.
 DEFAULT_MAPPING = {
     DOWNBEAT: 'low',
     BACKBEAT: 'mid',

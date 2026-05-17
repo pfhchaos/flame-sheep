@@ -241,8 +241,8 @@ class TestZoomPulse:
 
 class TestPaletteAxis:
 
-    def test_palette_changes_on_mid_interval(self, core, clock):
-        """Palette target should change ~every 1.0s (mid-band interval)."""
+    def test_palette_changes_on_subdivision(self, core, clock):
+        """Palette target should change on subdivision (hi-hat) events."""
         dt = 1.0 / 60
         palette_changes = 0
         prev_palette = core.palette_target.copy()
@@ -254,8 +254,9 @@ class TestPaletteAxis:
                 palette_changes += 1
                 prev_palette = core.palette_target.copy()
 
-        assert 2 <= palette_changes <= 8, \
-            f"Expected ~5 palette changes in 5s, got {palette_changes}"
+        # Hi-hats are frequent — expect many palette changes in 5s
+        assert palette_changes >= 2, \
+            f"Expected at least 2 palette changes in 5s, got {palette_changes}"
 
 
 # ----------------------------------------------------------------

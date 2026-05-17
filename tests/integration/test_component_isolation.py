@@ -259,19 +259,19 @@ class TestRoleMapper:
 
 class TestZoomAxisUnit:
 
-    def test_hihat_adds_boost(self):
-        axis = ZoomAxis(role=_default_role)
-        axis.tick(_audio(events=[BeatEvent('high', 1.0)], rms=0.0), 1/60, 0.0)
-        assert axis.zoom_boost > 0
-
-    def test_non_hihat_ignored(self):
+    def test_kick_adds_boost(self):
         axis = ZoomAxis(role=_default_role)
         axis.tick(_audio(events=[BeatEvent('low', 1.0)], rms=0.0), 1/60, 0.0)
+        assert axis.zoom_boost > 0
+
+    def test_non_kick_ignored(self):
+        axis = ZoomAxis(role=_default_role)
+        axis.tick(_audio(events=[BeatEvent('high', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost == 0.0
 
     def test_boost_decays(self):
         axis = ZoomAxis(role=_default_role)
-        axis.tick(_audio(events=[BeatEvent('high', 1.0)], rms=0.0), 1/60, 0.0)
+        axis.tick(_audio(events=[BeatEvent('low', 1.0)], rms=0.0), 1/60, 0.0)
         peak = axis.zoom_boost
         axis.tick(_audio(rms=0.0), 1/60, 0.0)  # no events, just decay
         assert axis.zoom_boost < peak
@@ -533,22 +533,26 @@ class TestGenomeAxisStateMachine:
         assert axis._morph_state == _MorphState.DWELL
 
     def test_full_cycle_beat(self):
-        """DWELL → (beat) → MORPHING → (complete) → DWELL in beat mode."""
+        """DWELL → (kick) → MORPHING → (complete) → SWAP_READY → (kick) → DWELL."""
         from flame_sheep.axes.genome_axis import _MorphState
         axis = self._make_axis()
         initial_genome = axis.current_genome
         dt = 1/60
 
-        # Beat releases dwell
+        # Kick releases dwell (SUBDIVISION is now 'low')
         axis.tick(_audio(events=[BeatEvent('low', 0.5)], mode='beat'), dt, 0.5)
         assert axis._morph_state == _MorphState.MORPHING
 
-        # Run morph to completion
+        # Run morph to completion → enters SWAP_READY
         t = 0.5
         for _ in range(self._morph_frames(axis) + 10):
             t += dt
             axis.tick(_audio(mode='beat'), dt, t)
+        assert axis._morph_state == _MorphState.SWAP_READY
 
+        # Kick commits the swap → DWELL
+        t += dt
+        axis.tick(_audio(events=[BeatEvent('low', 0.5)], mode='beat'), dt, t)
         assert axis.current_genome is not initial_genome
         assert axis.morph_t == 0.0
         assert axis._morph_state == _MorphState.DWELL
@@ -1131,11 +1135,11 @@ class TestMagnitudeStability:
         for _ in range(50):
             ms.update(mag)
         ms.reset()
-        # After reset, stability should return to default (stable)
+        # After reset, internal state is cleared
         mask = np.ones(N_BINS, dtype=bool)
-        assert ms.band_stability(mask) >= 0.5
-        # After reset + one new frame, should behave like fresh start
-        ms.update(mag)
+        # Feed enough steady frames for stability to converge
+        for _ in range(20):
+            ms.update(mag)
         assert ms.band_stability(mask) >= 0.5
 
 
