@@ -21,7 +21,8 @@ def _make_palette(seed=0):
 
 def _audio(events=None, mid_density=0.0, **kw):
     bands = _default_bands()
-    bands['mid'] = BandState(onset_density=mid_density)
+    # PaletteAxis reads density from SUBDIVISION band ('high')
+    bands['high'] = BandState(onset_density=mid_density)
     return AudioState(events=events or [], bands=bands, **kw)
 
 
@@ -78,7 +79,7 @@ class TestMidEvents:
         axis.palette_t = 0.5
         axis.palette_speed = 0.001
 
-        mid = BeatEvent(kind='mid', energy=0.7)
+        mid = BeatEvent(kind='high', energy=0.7)
         audio = _audio(events=[mid])
         axis.tick(audio, dt=1/60, clock=0.0)
 
@@ -87,8 +88,8 @@ class TestMidEvents:
         assert axis.palette_speed > 0.001
 
     def test_mid_speed_scales_with_energy(self):
-        low_energy = BeatEvent(kind='mid', energy=0.2)
-        high_energy = BeatEvent(kind='mid', energy=0.9)
+        low_energy = BeatEvent(kind='high', energy=0.2)
+        high_energy = BeatEvent(kind='high', energy=0.9)
 
         axis_low = PaletteAxis(_make_palette(), role=_default_role)
         axis_low.tick(_audio(events=[low_energy]), dt=1/60, clock=0.0)
@@ -126,7 +127,7 @@ class TestDensityScaling:
     """Verify onset density dampens mid-band response."""
 
     def test_high_density_reduces_speed(self):
-        mid = BeatEvent(kind='mid', energy=0.7)
+        mid = BeatEvent(kind='high', energy=0.7)
 
         axis_low_density = PaletteAxis(_make_palette(), role=_default_role)
         axis_low_density.tick(

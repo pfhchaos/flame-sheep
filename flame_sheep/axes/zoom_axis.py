@@ -1,4 +1,4 @@
-"""Zoom axis — subdivision events drive a zoom pulse that decays over time."""
+"""Zoom axis — downbeat (kick) events drive a zoom pulse that decays over time."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 
 from flame_sheep_audio import AudioState
 from flame_sheep.config import cfg
-from flame_sheep.role_mapper import RoleMapper, SUBDIVISION
+from flame_sheep.role_mapper import RoleMapper, DOWNBEAT
 
 if TYPE_CHECKING:
     from flame_sheep.main import FlameSheepCore
@@ -38,7 +38,7 @@ class ZoomAxis:
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
         # Faster decay at high density = rapid vibration
-        subdiv_density = self._role.band_state(audio, SUBDIVISION).onset_density
+        subdiv_density = self._role.band_state(audio, DOWNBEAT).onset_density
         decay = self.ZOOM_DECAY ** (1.0 + subdiv_density * self.DENSITY_DECAY_SCALE)
         self.zoom_boost *= decay
         if self.zoom_boost < 0.001:
@@ -48,7 +48,7 @@ class ZoomAxis:
         density_scale = 1.0 / (1.0 + subdiv_density * self.DENSITY_DAMPING)
 
         for event in audio.events:
-            if event.kind == self._role.band_for_role(SUBDIVISION):
+            if event.kind == self._role.band_for_role(DOWNBEAT):
                 self.zoom_boost = min(
                     self.ZOOM_BOOST_MAX,
                     self.zoom_boost + event.energy * 0.15 * density_scale)
@@ -56,4 +56,8 @@ class ZoomAxis:
                           f'zoom={self.zoom_boost:.3f}')
 
     def contribute(self, frame: FlameSheepCore.FrameState) -> None:
-        frame.genome.zoom *= (1.0 + self.zoom_boost)
+        # Scale boost inversely with zoom so the visual effect is consistent
+        # regardless of how zoomed in/out the fractal is.
+        # At zoom=1.0, boost is applied as-is. At zoom=0.25, boost is 4x stronger.
+        scale = 1.0 / max(frame.genome.zoom, 0.1)
+        frame.genome.zoom *= (1.0 + self.zoom_boost * scale)

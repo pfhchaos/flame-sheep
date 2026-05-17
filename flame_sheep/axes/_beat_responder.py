@@ -11,7 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from flame_sheep.config import cfg
-from flame_sheep.role_mapper import RoleMapper, DOWNBEAT, SUBDIVISION
+from flame_sheep.role_mapper import RoleMapper, BACKBEAT
 from flame_sheep_audio import BeatEvent
 
 if TYPE_CHECKING:
@@ -140,8 +140,8 @@ class BeatResponder:
         self._last_downbeat_time = clock
         self._recent_downbeat_energy = self._recent_downbeat_energy * 0.8 + event.energy * 0.2
 
-        downbeat_density = self._role.band_state(audio, DOWNBEAT).onset_density
-        density_scale = 1.0 / (1.0 + downbeat_density * cfg.genome.density_damping)
+        backbeat_density = self._role.band_state(audio, BACKBEAT).onset_density
+        density_scale = 1.0 / (1.0 + backbeat_density * cfg.genome.density_damping)
 
         # Section change pending → consume
         if self._section_change_pending and has_lib:

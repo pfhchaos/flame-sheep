@@ -26,7 +26,7 @@ from collections import deque
 from typing import TYPE_CHECKING
 
 from flame_sheep.config import cfg
-from flame_sheep.role_mapper import RoleMapper, DOWNBEAT, SUBDIVISION
+from flame_sheep.role_mapper import RoleMapper, DOWNBEAT, BACKBEAT
 from flame_sheep.axes._morph_cycle import MorphCycle, MorphState
 from flame_sheep.axes._beat_responder import BeatResponder, BeatAction
 from flame_sheep.axes._rotation_driver import RotationDriver
@@ -303,7 +303,7 @@ class GenomeAxis:
 
     def _process_beat_events(self, audio: AudioState, clock: float) -> None:
         """Process beat events in beat mode via BeatResponder."""
-        kick_band = self._role.band_for_role(SUBDIVISION)
+        kick_band = self._role.band_for_role(DOWNBEAT)
         for event in audio.events:
             if event.kind == kick_band:
                 action = self._beat.process_kick(
@@ -321,7 +321,7 @@ class GenomeAxis:
                         log.debug(f'[swap on beat] kick energy={event.energy:.2f}')
                 elif action == BeatAction.RELEASE_DWELL:
                     self._morph.release_dwell()
-            elif event.kind == self._role.band_for_role(DOWNBEAT):
+            elif event.kind == self._role.band_for_role(BACKBEAT):
                 action = self._beat.process_downbeat(
                     event, clock, audio, self._lib is not None)
                 if action == BeatAction.SECTION_CHANGE:
