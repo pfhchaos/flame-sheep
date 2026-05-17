@@ -167,9 +167,10 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                     angle = base_rotation + (2.0 * math.pi * i / swept_steps)
                     rotated = genome.rotated(angle - base_rotation)
                     renderer.upload_genome(rotated)
+                    # Fix viewport to base rotation — only affines change
+                    renderer.set_rotation(base_rotation)
                     renderer.dispatch_chaos_game(iterations=N_ITERS)
                     ctx.memory_barrier()
-                renderer.set_rotation(base_rotation)
 
                 # Swept centroid from histogram (before snapshot)
                 swept_hits, swept_colors = renderer.histogram_data()
