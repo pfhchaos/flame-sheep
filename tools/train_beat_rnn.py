@@ -106,10 +106,10 @@ def soft_cross_entropy(logits: np.ndarray, targets: np.ndarray) -> tuple:
     return loss, grad.astype(np.float32)
 
 
-def train_epoch(model, gpu, batches, lr: float, chunk_len: int):
-    """Train one epoch. Returns average loss."""
+def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
+                in_buf, grad_buf):
+    """Train one epoch. Reuses pre-allocated GPU buffers."""
     losses = []
-    B = batches[0][0].shape[0] if batches else 1
 
     for batch_idx, (inputs, labels) in enumerate(batches):
         # inputs: [B, T, 216], labels: [B, T, 3]
@@ -123,23 +123,17 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int):
             if isinstance(layer, VkGRU):
                 layer.reset_hidden()
 
-        # Forward through time: feed one frame at a time
         chunk_loss = 0.0
-        all_grads = []  # collect per-frame output gradients
+        all_grads = []
 
-        # Forward pass: accumulate outputs
-        frame_outputs = []
         for t in range(T):
             frame = inputs[:, t, :]  # [B, 216]
-            in_buf = gpu.create_buffer(B_actual * 216 * 4)
             gpu.upload(in_buf, frame.ravel())
 
             out_buf = model.forward(in_buf, B_actual, (216,))
             logits = gpu.download(out_buf, np.float32, B_actual * 3).reshape(B_actual, 3)
-            frame_outputs.append(logits)
 
-            # Compute loss for this frame
-            target = labels[:, t, :]  # [B, 3]
+            target = labels[:, t, :]
             loss, grad = soft_cross_entropy(logits, target)
             chunk_loss += loss
             all_grads.append(grad)
@@ -147,24 +141,9 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int):
         chunk_loss /= T
         losses.append(chunk_loss)
 
-        # Backward pass: BPTT
-        # We need to backprop through the full sequence.
-        # The model's backward() handles BPTT for VkGRU internally.
-        # But we need to feed gradients from each timestep.
-        #
-        # For the output linear layer, we backprop the last frame's gradient,
-        # then the GRU backward unrolls all cached timesteps.
-        # Actually for proper BPTT with per-frame loss, we need to sum gradients.
-        #
-        # Approach: backprop each frame's output gradient through the output linear,
-        # accumulating into the GRU's gradient. The GRU's backward handles temporal deps.
-        #
-        # Simplified approach for now: only backprop from the LAST frame.
-        # TODO: proper per-frame gradient accumulation requires extending VkModel.
-
-        # Use mean gradient across all frames as approximation
-        mean_grad = np.mean(all_grads, axis=0).astype(np.float32)  # [B, 3]
-        grad_buf = gpu.create_buffer(B_actual * 3 * 4)
+        # Use mean gradient across all frames as approximation for BPTT.
+        # TODO: proper per-frame gradient accumulation through output linear.
+        mean_grad = np.mean(all_grads, axis=0).astype(np.float32)
         gpu.upload(grad_buf, mean_grad.ravel())
 
         model.backward(grad_buf, B_actual)
@@ -176,8 +155,8 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int):
     return np.mean(losses) if losses else 0.0
 
 
-def validate(model, gpu, batches, chunk_len: int):
-    """Run validation, return average loss and beat detection accuracy."""
+def validate(model, gpu, batches, chunk_len: int, in_buf):
+    """Run validation. Reuses pre-allocated input buffer."""
     losses = []
     correct_beats = 0
     total_beats = 0
@@ -192,7 +171,6 @@ def validate(model, gpu, batches, chunk_len: int):
 
         for t in range(T):
             frame = inputs[:, t, :]
-            in_buf = gpu.create_buffer(B * 216 * 4)
             gpu.upload(in_buf, frame.ravel())
 
             out_buf = model.forward(in_buf, B, (216,))
@@ -202,7 +180,6 @@ def validate(model, gpu, batches, chunk_len: int):
             loss, _ = soft_cross_entropy(logits, target)
             losses.append(loss)
 
-            # Accuracy: compare argmax
             pred_class = logits.argmax(axis=1)
             true_class = target.argmax(axis=1)
             correct_beats += (pred_class == true_class).sum()
@@ -262,6 +239,10 @@ def main():
     print(f"Chunk length: {args.chunk_len} frames ({args.chunk_len / 93.75:.2f}s)")
     print()
 
+    # Pre-allocate GPU buffers once (reused across all batches/epochs)
+    in_buf = gpu.create_buffer(args.batch_size * 216 * 4)
+    grad_buf = gpu.create_buffer(args.batch_size * 3 * 4)
+
     # Training loop
     best_val_loss = float('inf')
     for epoch in range(args.epochs):
@@ -270,8 +251,10 @@ def main():
         train_batches = make_chunks(train_data, args.chunk_len, args.batch_size, rng)
         val_batches = make_chunks(val_data, args.chunk_len, args.batch_size, rng)
 
-        train_loss = train_epoch(model, gpu, train_batches, args.lr, args.chunk_len)
-        val_loss, val_acc = validate(model, gpu, val_batches, args.chunk_len)
+        train_loss = train_epoch(model, gpu, train_batches, args.lr,
+                                 args.chunk_len, in_buf, grad_buf)
+        val_loss, val_acc = validate(model, gpu, val_batches,
+                                     args.chunk_len, in_buf)
 
         print(f"  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  "
               f"val_acc={val_acc:.3f}")
