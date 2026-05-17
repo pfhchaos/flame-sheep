@@ -121,6 +121,10 @@ class VkConv2d(VkLayer):
         self.output_buf = gpu.create_buffer(
             batch_size * out_channels * self.out_h * self.out_w * 4)
 
+        # Backward buffer (reused across calls)
+        self._d_input_buf = gpu.create_buffer(
+            batch_size * in_channels * in_h * in_w * 4)
+
         # Saved for backward
         self._saved_input: VkBuffer | None = None
         self._saved_output: VkBuffer | None = None
@@ -159,13 +163,9 @@ class VkConv2d(VkLayer):
         else:
             d_relu_buf = grad_output
 
-        # Backward input gradient
-        d_input_buf = self.gpu.create_buffer(
-            B * self.in_channels * self.in_h * self.in_w * 4)
-
         pipeline = self.gpu.create_pipeline(
             str(SHADER_DIR / 'conv2d_backward_input.comp'),
-            buffers=[d_relu_buf, self.kernel_buf, d_input_buf],
+            buffers=[d_relu_buf, self.kernel_buf, self._d_input_buf],
             push_constant_size=44,
         )
         push = struct.pack('11i', B, self.in_channels, self.out_channels,
@@ -194,7 +194,7 @@ class VkConv2d(VkLayer):
         self.gpu.dispatch(pipeline, (n_total + 63) // 64, push_constants=push)
         pipeline.destroy()
 
-        return d_input_buf
+        return self._d_input_buf
 
     def zero_grad(self):
         self.gpu.zero_buffer(self.grad_buf)
@@ -255,6 +255,7 @@ class VkGAPLinear(VkLayer):
 
         self._spatial_h = 0
         self._spatial_w = 0
+        self._d_input_buf: VkBuffer | None = None
 
     def forward(self, input_buf, batch_size, shape):
         C, H, W = shape
@@ -275,12 +276,13 @@ class VkGAPLinear(VkLayer):
     def backward(self, grad_output, batch_size):
         C = self.channels
         H, W = self._spatial_h, self._spatial_w
-        d_input_buf = self.gpu.create_buffer(batch_size * C * H * W * 4)
+        if self._d_input_buf is None:
+            self._d_input_buf = self.gpu.create_buffer(batch_size * C * H * W * 4)
 
         pipeline = self.gpu.create_pipeline(
             str(SHADER_DIR / 'gap_linear_backward.comp'),
             buffers=[grad_output, self.pooled_buf, self.weight_buf,
-                     d_input_buf, self.grad_buf],
+                     self._d_input_buf, self.grad_buf],
             push_constant_size=16,
         )
         push = struct.pack('4i', batch_size, C, H, W)
@@ -290,7 +292,7 @@ class VkGAPLinear(VkLayer):
         self.gpu.dispatch(pipeline, gx, gy, gz, push)
         pipeline.destroy()
 
-        return d_input_buf
+        return self._d_input_buf
 
     def zero_grad(self):
         self.gpu.zero_buffer(self.grad_buf)
@@ -331,6 +333,7 @@ class VkGAPMLP(VkLayer):
 
         self._spatial_h = 0
         self._spatial_w = 0
+        self._d_input_buf: VkBuffer | None = None
 
     def forward(self, input_buf, batch_size, shape):
         C, H, W = shape
@@ -352,12 +355,13 @@ class VkGAPMLP(VkLayer):
     def backward(self, grad_output, batch_size):
         C = self.channels
         H, W = self._spatial_h, self._spatial_w
-        d_input_buf = self.gpu.create_buffer(batch_size * C * H * W * 4)
+        if self._d_input_buf is None:
+            self._d_input_buf = self.gpu.create_buffer(batch_size * C * H * W * 4)
 
         pipeline = self.gpu.create_pipeline(
             str(SHADER_DIR / 'gap_mlp_backward.comp'),
             buffers=[grad_output, self.pooled_buf, self.weight_buf,
-                     d_input_buf, self.grad_buf, self.hidden_buf],
+                     self._d_input_buf, self.grad_buf, self.hidden_buf],
             push_constant_size=20,
         )
         push = struct.pack('5i', batch_size, C, H, W, self.hidden)
@@ -367,7 +371,7 @@ class VkGAPMLP(VkLayer):
         self.gpu.dispatch(pipeline, gx, gy, gz, push)
         pipeline.destroy()
 
-        return d_input_buf
+        return self._d_input_buf
 
     def zero_grad(self):
         self.gpu.zero_buffer(self.grad_buf)
@@ -723,10 +727,10 @@ class VkGRU(VkLayer):
             return self._grad_input_buf
 
         # dh_buf holds the running gradient w.r.t. hidden state
-        # Initialize with grad_output (gradient from layer above at final timestep)
-        dh_buf = self.gpu.create_buffer(B * H * 4)
+        if not hasattr(self, '_dh_buf') or self._dh_buf is None:
+            self._dh_buf = self.gpu.create_buffer(B * H * 4)
         dh_data = self.gpu.download(grad_output, np.float32, B * H)
-        self.gpu.upload(dh_buf, dh_data)
+        self.gpu.upload(self._dh_buf, dh_data)
 
         # dx buffer for each timestep (we only need to output the final one
         # for VkModel.backward(), but for sequence training we'd accumulate)
@@ -743,7 +747,7 @@ class VkGRU(VkLayer):
 
             pipeline = self.gpu.create_pipeline(
                 str(RNN_SHADER_DIR / 'gru_backward.comp'),
-                buffers=[input_buf, dh_buf, self._grad_input_buf,
+                buffers=[input_buf, self._dh_buf, self._grad_input_buf,
                          self.cache_buf, self.W_buf, self.U_buf,
                          self.bias_buf, self.grad_W_buf,
                          self.grad_U_buf, self.grad_bias_buf],
