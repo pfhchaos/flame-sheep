@@ -22,7 +22,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-RENDER_VERSION = 5  # v5: fix swept render — rotate affines, not viewport
+RENDER_VERSION = 6  # v6: first-hit snapshots in live render range (150-500) without between-frame clear
 
 COLOR_SCALE = 1_000_000.0
 
@@ -124,28 +124,49 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 renderer.clear_transform_hits()
 
                 # First-hit iteration response: track when each pixel first appears.
-                # Take 16 snapshots across the iteration range (100-500 iters).
+                # Snapshot within the live render range (150-500 iters) so the
+                # model learns emergence at iteration counts it'll actually see
+                # at runtime. Outside that range, hits accumulate normally to
+                # build the long-exposure hist_static.
+                #
+                # Cumulative semantics: each snapshot records "what pixels have
+                # any hits by iteration N". Do NOT clear the histogram between
+                # dispatches — that would only show single-frame hits, which
+                # collapses to binary (in-attractor vs not).
                 n_snapshots = 16
-                snap_iters = np.linspace(
-                    N_ITERS * 2, N_ITERS * n_frames, n_snapshots, dtype=int)
+                snap_iters = np.linspace(150, 500, n_snapshots, dtype=int)
+                total_iters = N_ITERS * n_frames
+
+                # Build dispatch schedule: small chunks to hit each snapshot
+                # target precisely, then big chunks to fill out hist_static.
+                chunk_sizes = []
+                prev = 0
+                for target in snap_iters:
+                    chunk_sizes.append(int(target - prev))
+                    prev = int(target)
+                while prev < total_iters:
+                    next_chunk = min(N_ITERS, total_iters - prev)
+                    chunk_sizes.append(next_chunk)
+                    prev += next_chunk
+
                 first_hit = None
                 total_dispatched = 0
+                snap_idx = 0
 
-                for frame_i in range(n_frames):
-                    renderer.clear_histogram()
-                    renderer.dispatch_chaos_game(iterations=N_ITERS)
+                for chunk in chunk_sizes:
+                    renderer.dispatch_chaos_game(iterations=chunk)
                     ctx.memory_barrier()
-                    total_dispatched += N_ITERS
+                    total_dispatched += chunk
 
-                    # Check if we hit a snapshot point
-                    for snap_idx, target in enumerate(snap_iters):
-                        if total_dispatched >= target and (
-                                snap_idx == 0 or total_dispatched - N_ITERS < target):
-                            hits, _ = renderer.histogram_data()
-                            if first_hit is None:
-                                first_hit = np.full(hits.shape, 255, dtype=np.uint8)
-                            mapped = snap_idx * 255 // max(n_snapshots - 1, 1)
-                            first_hit[(hits > 0) & (first_hit == 255)] = mapped
+                    # Capture any snapshot targets crossed by this dispatch
+                    while (snap_idx < n_snapshots
+                            and total_dispatched >= snap_iters[snap_idx]):
+                        hits, _ = renderer.histogram_data()
+                        if first_hit is None:
+                            first_hit = np.full(hits.shape, 255, dtype=np.uint8)
+                        mapped = snap_idx * 255 // max(n_snapshots - 1, 1)
+                        first_hit[(hits > 0) & (first_hit == 255)] = mapped
+                        snap_idx += 1
 
                 render_static = renderer.snapshot_png()
 
