@@ -135,11 +135,24 @@ def render_genome(genome, renderer, ctx,
     renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
 
     renderer.clear_histogram()
-    for _ in range(n_frames):
+
+    # Render at live iteration count (max_iters from detail axis).
+    # For ES base training, first-hit channel is zeros (no iteration response).
+    # For live genome renders, first-hit snapshots would be added here.
+    LIVE_MAX_ITERS = 500  # matches DetailAxis.max_iters
+    n_dispatches = max(1, LIVE_MAX_ITERS // N_ITERS)
+    for _ in range(n_dispatches):
         renderer.dispatch_chaos_game(iterations=N_ITERS)
+        ctx.memory_barrier()
+    # Handle remainder
+    remainder = LIVE_MAX_ITERS - n_dispatches * N_ITERS
+    if remainder > 0:
+        renderer.dispatch_chaos_game(iterations=remainder)
         ctx.memory_barrier()
 
     static_png = _snapshot(use_de)
+    static_hits, static_colors = renderer.histogram_data()
+    first_hit = None
 
     # --- Swept render (grayscale, rotation-accumulated) ---
     renderer.upload_genome(genome)
@@ -152,15 +165,17 @@ def render_genome(genome, renderer, ctx,
     base_rotation = genome.rotation
     for i in range(swept_steps):
         angle = base_rotation + (2.0 * math.pi * i / swept_steps)
-        renderer.set_rotation(angle)
+        rotated = genome.rotated(angle - base_rotation)
+        renderer.upload_genome(rotated)
+        renderer.set_rotation(base_rotation)  # pin viewport to base
         for _ in range(frames_per_step):
             renderer.dispatch_chaos_game(iterations=N_ITERS)
             ctx.memory_barrier()
-    renderer.set_rotation(base_rotation)
 
     swept_png = _snapshot(use_de, grayscale=True)
+    swept_hits, _ = renderer.histogram_data()
 
-    return static_png, swept_png
+    return static_png, swept_png, (static_hits, static_colors, swept_hits, first_hit)
 
 
 def main():
@@ -212,12 +227,12 @@ def main():
     if args.limit:
         genomes = genomes[:args.limit]
 
-    # Filter already-rendered if resuming
+    # Filter already-rendered if resuming — check for .npz (histogram data)
     if args.resume:
         before = len(genomes)
         genomes = [
             (g, r, gen, sid) for g, r, gen, sid in genomes
-            if not (output_dir / f'gen{gen}_{sid}_r{r}_static.png').exists()
+            if not (output_dir / f'gen{gen}_{sid}_r{r}_hist.npz').exists()
         ]
         log.info('Resume: %d remaining (skipped %d already rendered)',
                  len(genomes), before - len(genomes))
@@ -250,7 +265,7 @@ def main():
         swept_path = output_dir / f'{prefix}_swept.png'
 
         try:
-            static_png, swept_png = render_genome(
+            static_png, swept_png, scoring_data = render_genome(
                 genome, renderer, ctx,
                 n_frames=args.frames,
                 swept_steps=args.swept_steps,
@@ -260,6 +275,11 @@ def main():
 
             static_path.write_bytes(static_png)
             swept_path.write_bytes(swept_png)
+
+            # Save raw histogram data for domain-native training
+            hist_path = output_dir / f'{prefix}_hist.npz'
+            from flame_sheep.scoring_channels import save_raw_histograms
+            save_raw_histograms(str(hist_path), *scoring_data)
 
             writer.writerow([gen, sid, rating,
                              static_path.name, swept_path.name])
