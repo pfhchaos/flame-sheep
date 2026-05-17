@@ -19,15 +19,13 @@ Idle mode adds: loop cycling via CYCLES_PER_LOOP counter.
 
 from __future__ import annotations
 
-import enum
 import logging
 from collections.abc import Callable
-from collections import deque
 from typing import TYPE_CHECKING
 
 from flame_sheep.config import cfg
 from flame_sheep.role_mapper import RoleMapper, DOWNBEAT, BACKBEAT
-from flame_sheep.axes._morph_cycle import MorphCycle, MorphState
+from flame_sheep.axes._morph_cycle import MorphCycle
 from flame_sheep.axes._beat_responder import BeatResponder, BeatAction
 from flame_sheep.axes._rotation_driver import RotationDriver
 from flame_sheep.axes._centroid_swap import CentroidSwap
@@ -43,21 +41,6 @@ from flame_sheep.variations import Variation
 if TYPE_CHECKING:
     from flame_sheep.main import FlameSheepCore
     from flame_sheep.storage import Library
-
-
-class _MorphState(enum.Enum):
-    MORPHING = 'morphing'
-    SWAP_READY = 'swap_ready'  # morph complete, waiting for kick to commit swap
-    DWELL = 'dwell'
-
-
-# Bidirectional mapping between legacy _MorphState and new MorphState
-_MORPH_STATE_MAP = {
-    MorphState.MORPHING: _MorphState.MORPHING,
-    MorphState.SWAP_READY: _MorphState.SWAP_READY,
-    MorphState.DWELL: _MorphState.DWELL,
-}
-_MORPH_STATE_REVERSE = {v: k for k, v in _MORPH_STATE_MAP.items()}
 
 
 class GenomeAxis:
@@ -150,52 +133,6 @@ class GenomeAxis:
     def active_loop_id(self, value: int | None) -> None:
         self._loop.active_loop_id = value
 
-    # --- Compatibility shims (used by integration tests) ---
-
-    @property
-    def _morph_t(self) -> float:
-        return self._morph.t
-
-    @_morph_t.setter
-    def _morph_t(self, value: float) -> None:
-        self._morph.t = value
-
-    @property
-    def _morph_state(self) -> _MorphState:
-        return _MORPH_STATE_MAP[self._morph.state]
-
-    @_morph_state.setter
-    def _morph_state(self, value: _MorphState) -> None:
-        self._morph.state = _MORPH_STATE_REVERSE[value]
-
-    @property
-    def _dwell_start(self) -> float:
-        return self._morph.dwell_start
-
-    @_dwell_start.setter
-    def _dwell_start(self, value: float) -> None:
-        self._morph.dwell_start = value
-
-    @property
-    def _rotation_phase(self) -> float:
-        return self._rotation.phase
-
-    @_rotation_phase.setter
-    def _rotation_phase(self, value: float) -> None:
-        self._rotation.phase = value
-
-    @property
-    def _loop_genomes(self) -> list:
-        return self._loop.loop_genomes
-
-    @_loop_genomes.setter
-    def _loop_genomes(self, value: list) -> None:
-        self._loop._loop_genomes = value
-
-    @property
-    def _loop_history(self) -> deque:
-        return self._loop._loop_history
-
     # --- Main tick ---
 
     def tick(self, audio: AudioState, dt: float, clock: float) -> None:
@@ -284,7 +221,7 @@ class GenomeAxis:
                 self._morph.release_dwell()
                 log.debug("[mode] beat→other: released dwell")
 
-        if new == Mode.BEAT and not self._loop_genomes:
+        if new == Mode.BEAT and not self._loop.has_loop:
             # Entering beat mode without a loop (e.g., from graph walk).
             # Find the nearest loop via the transition graph.
             self.next_loop()
