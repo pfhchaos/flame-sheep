@@ -668,42 +668,6 @@ class VkGRU(VkLayer):
 
         return self.output_buf, (self.hidden_size,)
 
-    def forward_sequence(self, input_buf, batch_size, seq_len, shape):
-        """Multi-frame forward for training. Input: [B, T, features].
-
-        Dispatches the GRU forward shader T times, advancing hidden state
-        and caching activations at each step. Returns buffer of all hidden
-        states [B, T, H].
-        """
-        H = self.hidden_size
-        I = self.input_size
-
-        # Allocate output for all timesteps
-        all_hidden_buf = self.gpu.create_buffer(batch_size * seq_len * H * 4)
-
-        self._seq_pos = 0
-        for t in range(seq_len):
-            # Create a view/offset for input at timestep t
-            # Input layout: [B, T, I] — frame t starts at t*I within each batch
-            # We'll need per-frame input buffers or offset dispatches
-            # For now, we pass the whole buffer and use t as offset in push constants
-            cache_offset = t * batch_size * 4 * H
-
-            pipeline = self.gpu.create_pipeline(
-                str(RNN_SHADER_DIR / 'gru_forward.comp'),
-                buffers=[input_buf, self.hidden_buf, self.W_buf, self.U_buf,
-                         self.bias_buf, self.output_buf, self.cache_buf],
-                push_constant_size=16,
-            )
-            push = struct.pack('4i', batch_size, I, H, cache_offset)
-            self.gpu.dispatch(pipeline, batch_size, push_constants=push)
-            pipeline.destroy()
-
-            # TODO: copy_buffer or offset upload for sequence output
-            # For now forward_sequence is not used in training loop
-
-        self._seq_pos = seq_len
-        return all_hidden_buf, (seq_len, H)
 
     def backward(self, grad_output, batch_size):
         """BPTT backward over cached timesteps.
