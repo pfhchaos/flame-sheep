@@ -241,7 +241,7 @@ void main() {
         atomicAdd(histogram[hit_idx], 1u);
         atomicAdd(histogram[col_idx], uint(plot_c * float(COLOR_SCALE)));
 #ifdef SCORING_MODE
-        atomicAdd(transform_hits[idx * uint(MAX_TRANSFORMS) + uint(tidx)], 1u);
+        atomicAdd(transform_hits[px_idx * uint(MAX_TRANSFORMS) + uint(tidx)], 1u);
 #endif
     }
 
