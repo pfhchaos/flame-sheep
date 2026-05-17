@@ -46,8 +46,13 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 stop_event.wait(BackgroundPruner.LOAD_CHECK_INTERVAL)
                 continue
 
+            # Two pruning strategies:
+            # 1. GPU-rendered genomes: check img_coverage from DB (trustworthy)
+            # 2. Unrendered genomes: fall back to CPU check_stability()
+
             row = conn.execute(
-                '''SELECT id, params FROM genomes
+                '''SELECT id, params, img_coverage, render_static
+                   FROM genomes
                    WHERE COALESCE(archived, 0) = 0
                      AND COALESCE(pruner_checked, 0) = 0
                    LIMIT 1'''
@@ -57,16 +62,28 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 stop_event.wait(BackgroundPruner.IDLE_CHECK_INTERVAL)
                 continue
 
-            gid, params_json = row
+            gid, params_json, img_coverage, has_render = row[0], row[1], row[2], row[3]
             try:
-                genome = _genome_from_json(params_json)
-                stable = genome.check_stability()
+                should_archive = False
+                reason = None
 
-                if not stable:
+                if has_render is not None and img_coverage is not None:
+                    # GPU render exists — trust the coverage metric
+                    if img_coverage < 0.02:
+                        should_archive = True
+                        reason = 'low_coverage'
+                else:
+                    # No GPU render yet — use CPU stability check
+                    genome = _genome_from_json(params_json)
+                    if not genome.check_stability():
+                        should_archive = True
+                        reason = 'stability'
+
+                if should_archive:
                     conn.execute(
                         'UPDATE genomes SET archived=1, pruner_checked=1, archive_reason=? WHERE id=?',
-                        ('stability', gid))
-                    log.info('archived genome #%d (failed stability)', gid)
+                        (reason, gid))
+                    log.info('archived genome #%d (%s)', gid, reason)
                 else:
                     conn.execute(
                         'UPDATE genomes SET pruner_checked=1 WHERE id=?',
