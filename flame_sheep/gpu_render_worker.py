@@ -22,7 +22,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-RENDER_VERSION = 4  # v4: always store histograms + first-hit iteration response
+RENDER_VERSION = 5  # v5: fix swept render — rotate affines, not viewport
 
 COLOR_SCALE = 1_000_000.0
 
@@ -165,7 +165,8 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 base_rotation = genome.rotation
                 for i in range(swept_steps):
                     angle = base_rotation + (2.0 * math.pi * i / swept_steps)
-                    renderer.set_rotation(angle)
+                    rotated = genome.rotated(angle - base_rotation)
+                    renderer.upload_genome(rotated)
                     renderer.dispatch_chaos_game(iterations=N_ITERS)
                     ctx.memory_barrier()
                 renderer.set_rotation(base_rotation)
