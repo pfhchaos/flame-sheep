@@ -130,12 +130,16 @@ def normalize_channels(
     H = np.clip(H, 0.0, 1.0).astype(np.float32)
 
     # --- Channel S: swept rotation density ---
-    # Same log + gamma as L channel
+    # log + linear (no gamma compression). The corrected swept render
+    # (with real angular structure, not a repeated spirograph) produces a
+    # broad-and-bright distribution where every pixel in the attractor
+    # at any rotation accumulates hits. Gamma=1/6 (as used for L) would
+    # compress this to ~1.0 everywhere, killing the input signal.
     S = np.log1p(swept_hits.astype(np.float64))
     S_max = S.max()
     if S_max > 0:
         S /= S_max
-    S = np.power(S, 1.0 / GAMMA).astype(np.float32)
+    S = S.astype(np.float32)
 
     # --- Channel A: first-hit iteration (emergence order) ---
     # 0 = appeared first (stable structure), 255 = appeared last or never.
