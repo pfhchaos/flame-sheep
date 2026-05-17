@@ -24,38 +24,54 @@ import vulkan as vk
 
 class VkBuffer:
     """Wraps a Vulkan buffer + device memory allocation."""
-    __slots__ = ('buffer', 'memory', 'size', 'device')
+    __slots__ = ('buffer', 'memory', 'size', 'device', '_ctx')
 
-    def __init__(self, buffer, memory, size, device):
+    def __init__(self, buffer, memory, size, device, ctx=None):
         self.buffer = buffer
         self.memory = memory
         self.size = size
         self.device = device
+        self._ctx = ctx
 
     def destroy(self):
+        if self.buffer is None:
+            return  # already destroyed
         vk.vkDestroyBuffer(self.device, self.buffer, None)
         vk.vkFreeMemory(self.device, self.memory, None)
+        if self._ctx is not None:
+            self._ctx._live_buffers.discard(id(self))
+            self._ctx._buffer_bytes -= self.size
+            self._ctx = None
+        self.buffer = None
+        self.memory = None
 
 
 class VkPipeline:
     """Wraps a compute pipeline + descriptor set."""
     __slots__ = ('pipeline', 'pipeline_layout', 'descriptor_set',
-                 'descriptor_set_layout', 'descriptor_pool', 'device')
+                 'descriptor_set_layout', 'descriptor_pool', 'device', '_ctx')
 
     def __init__(self, pipeline, pipeline_layout, descriptor_set,
-                 descriptor_set_layout, descriptor_pool, device):
+                 descriptor_set_layout, descriptor_pool, device, ctx=None):
         self.pipeline = pipeline
         self.pipeline_layout = pipeline_layout
         self.descriptor_set = descriptor_set
         self.descriptor_set_layout = descriptor_set_layout
         self.descriptor_pool = descriptor_pool
         self.device = device
+        self._ctx = ctx
 
     def destroy(self):
+        if self.pipeline is None:
+            return  # already destroyed
         vk.vkDestroyPipeline(self.device, self.pipeline, None)
         vk.vkDestroyPipelineLayout(self.device, self.pipeline_layout, None)
         vk.vkDestroyDescriptorPool(self.device, self.descriptor_pool, None)
         vk.vkDestroyDescriptorSetLayout(self.device, self.descriptor_set_layout, None)
+        if self._ctx is not None:
+            self._ctx._live_pipelines.discard(id(self))
+            self._ctx = None
+        self.pipeline = None
 
 
 class VkCompute:
@@ -71,6 +87,25 @@ class VkCompute:
         self._create_device()
         self._create_command_pool()
         self._shader_cache: dict[str, int] = {}  # path → shader module
+        # Leak-detection counters (incremented in create_*, decremented in destroy)
+        self._live_buffers: set = set()
+        self._live_pipelines: set = set()
+        self._buffer_bytes: int = 0
+
+    @property
+    def buffer_count(self) -> int:
+        """Number of buffers that have been created and not yet destroyed."""
+        return len(self._live_buffers)
+
+    @property
+    def pipeline_count(self) -> int:
+        """Number of pipelines that have been created and not yet destroyed."""
+        return len(self._live_pipelines)
+
+    @property
+    def buffer_bytes(self) -> int:
+        """Total bytes across all live buffers."""
+        return self._buffer_bytes
 
     def _create_instance(self):
         app_info = vk.VkApplicationInfo(
@@ -175,7 +210,10 @@ class VkCompute:
         memory = vk.vkAllocateMemory(self.device, alloc_info, None)
         vk.vkBindBufferMemory(self.device, buffer, memory, 0)
 
-        return VkBuffer(buffer, memory, size, self.device)
+        buf = VkBuffer(buffer, memory, size, self.device, ctx=self)
+        self._live_buffers.add(id(buf))
+        self._buffer_bytes += size
+        return buf
 
     def upload(self, buf: VkBuffer, data: np.ndarray | bytes):
         """Copy CPU data → GPU buffer."""
@@ -342,8 +380,10 @@ class VkCompute:
             ))
         vk.vkUpdateDescriptorSets(self.device, len(writes), writes, 0, None)
 
-        return VkPipeline(pipeline, pipeline_layout, descriptor_set,
-                          ds_layout, descriptor_pool, self.device)
+        pipe = VkPipeline(pipeline, pipeline_layout, descriptor_set,
+                          ds_layout, descriptor_pool, self.device, ctx=self)
+        self._live_pipelines.add(id(pipe))
+        return pipe
 
     # -----------------------------------------------------------------
     # Dispatch
