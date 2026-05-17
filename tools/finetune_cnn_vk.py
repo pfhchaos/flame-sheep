@@ -26,10 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from flame_sheep.vk_compute import VkCompute
 
 # Reuse training infrastructure from train_cnn_vk
-from train_cnn_vk import (
-    LAYERS, MODEL_CONFIGS, SHADER_DIR, MLP_HIDDEN,
-    spatial_size, weight_counts,
-)
+from train_cnn_vk import MODEL_CONFIGS, MLP_HIDDEN
 
 log = logging.getLogger(__name__)
 
