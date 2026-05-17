@@ -69,8 +69,8 @@ class TestGenomeSwapRate:
         prev_target = id(core.target_genome)
 
         # Force into morphing state so morph can complete
-        from flame_sheep.axes.genome_axis import _MorphState
-        core._genome_axis._morph_state = _MorphState.MORPHING
+        from flame_sheep.axes._morph_cycle import MorphState
+        core._genome_axis._morph.state = MorphState.MORPHING
 
         for _ in range(int(10.0 * 60)):  # 10 seconds at 60fps
             clock.advance(dt)
@@ -88,10 +88,10 @@ class TestGenomeSwapRate:
         dt = 1.0 / 60
         swaps = 0
         # Reset state from previous test
-        from flame_sheep.axes.genome_axis import _MorphState
-        core._genome_axis._morph_state = _MorphState.DWELL
-        core._genome_axis._morph_t = 0.0
-        core._genome_axis._dwell_start = clock()
+        from flame_sheep.axes._morph_cycle import MorphState
+        core._genome_axis._morph.state = MorphState.DWELL
+        core._genome_axis._morph.t = 0.0
+        core._genome_axis._morph.dwell_start = clock()
         prev_target = id(core.target_genome)
 
         for _ in range(int(4.0 * 60)):  # 4 seconds
