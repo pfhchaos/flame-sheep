@@ -482,3 +482,244 @@ def build_cnn_scorer(gpu: VkCompute, layers_config: list[tuple],
         layers.append(VkGAPLinear(gpu, final_c, batch_size))
 
     return VkModel(gpu, layers)
+
+
+# ---------------------------------------------------------------------------
+# RNN layers
+# ---------------------------------------------------------------------------
+
+RNN_SHADER_DIR = Path(__file__).parent / 'shaders' / 'rnn'
+
+
+class VkLinear(VkLayer):
+    """Dense linear layer: y = x @ W + b, optional ReLU.
+
+    Input:  [B, in_features]  (shape = (in_features,))
+    Output: [B, out_features] (shape = (out_features,))
+    """
+
+    def __init__(self, gpu: VkCompute, in_features: int, out_features: int,
+                 batch_size: int, relu: bool = False):
+        super().__init__(gpu)
+        self.in_features = in_features
+        self.out_features = out_features
+        self.batch_size = batch_size
+        self.relu = relu
+
+        # Weight: [in_features, out_features], Bias: [out_features]
+        n_w = in_features * out_features
+        n_b = out_features
+        self.weight_buf = gpu.create_buffer(n_w * 4)
+        self.bias_buf = gpu.create_buffer(n_b * 4)
+        self._param_bufs = [self.weight_buf, self.bias_buf]
+        self._param_sizes = [n_w, n_b]
+
+        # Gradient buffers (uint32 CAS)
+        self.grad_weight_buf = gpu.create_buffer(n_w * 4)
+        self.grad_bias_buf = gpu.create_buffer(n_b * 4)
+        self._grad_bufs = [self.grad_weight_buf, self.grad_bias_buf]
+
+        # Output buffer
+        self.output_buf = gpu.create_buffer(batch_size * out_features * 4)
+
+        # Saved for backward
+        self._saved_input: VkBuffer | None = None
+
+    def forward(self, input_buf, batch_size, shape):
+        self._saved_input = input_buf
+
+        pipeline = self.gpu.create_pipeline(
+            str(RNN_SHADER_DIR / 'linear_forward.comp'),
+            buffers=[input_buf, self.weight_buf, self.bias_buf, self.output_buf],
+            push_constant_size=16,
+        )
+        push = struct.pack('4i', batch_size, self.in_features,
+                           self.out_features, 1 if self.relu else 0)
+        total = batch_size * self.out_features
+        self.gpu.dispatch(pipeline, (total + 63) // 64, push_constants=push)
+        pipeline.destroy()
+
+        return self.output_buf, (self.out_features,)
+
+    def backward(self, grad_output, batch_size):
+        # TODO: implement backward shader
+        raise NotImplementedError("VkLinear backward not yet implemented")
+
+    def init_weights(self, rng):
+        std = float(np.sqrt(2.0 / self.in_features))
+        w = (rng.standard_normal(self.in_features * self.out_features) * std).astype(np.float32)
+        b = np.zeros(self.out_features, dtype=np.float32)
+        self.gpu.upload(self.weight_buf, w)
+        self.gpu.upload(self.bias_buf, b)
+
+
+class VkGRU(VkLayer):
+    """GRU recurrent layer — single-frame or sequence forward.
+
+    Per frame: takes [B, input_size], updates hidden [B, hidden_size],
+    outputs [B, hidden_size].
+
+    For BPTT training, caches activations per timestep.
+    """
+
+    def __init__(self, gpu: VkCompute, input_size: int, hidden_size: int,
+                 batch_size: int, max_seq_len: int = 128):
+        super().__init__(gpu)
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.batch_size = batch_size
+        self.max_seq_len = max_seq_len
+
+        H = hidden_size
+        I = input_size
+
+        # W: [3, input_size, hidden_size] — gates z, r, h
+        n_W = 3 * I * H
+        # U: [3, hidden_size, hidden_size]
+        n_U = 3 * H * H
+        # bias: [6, hidden_size] — split input/hidden biases (PyTorch compat)
+        n_bias = 6 * H
+
+        self.W_buf = gpu.create_buffer(n_W * 4)
+        self.U_buf = gpu.create_buffer(n_U * 4)
+        self.bias_buf = gpu.create_buffer(n_bias * 4)
+        self._param_bufs = [self.W_buf, self.U_buf, self.bias_buf]
+        self._param_sizes = [n_W, n_U, n_bias]
+
+        # Gradient buffers
+        self.grad_W_buf = gpu.create_buffer(n_W * 4)
+        self.grad_U_buf = gpu.create_buffer(n_U * 4)
+        self.grad_bias_buf = gpu.create_buffer(n_bias * 4)
+        self._grad_bufs = [self.grad_W_buf, self.grad_U_buf, self.grad_bias_buf]
+
+        # Hidden state (persists across frames)
+        self.hidden_buf = gpu.create_buffer(batch_size * H * 4)
+
+        # Output buffer (copy of hidden after forward)
+        self.output_buf = gpu.create_buffer(batch_size * H * 4)
+
+        # Activation cache for BPTT: [max_seq_len, B, 4*H]
+        self.cache_buf = gpu.create_buffer(max_seq_len * batch_size * 4 * H * 4)
+        self._seq_pos = 0  # current position in cache
+
+    def reset_hidden(self) -> None:
+        """Zero the hidden state (call on new song, etc.)."""
+        self.gpu.zero_buffer(self.hidden_buf)
+        self._seq_pos = 0
+
+    def forward(self, input_buf, batch_size, shape):
+        """Single-frame GRU forward. Updates hidden state in-place."""
+        H = self.hidden_size
+
+        # Cache offset for this timestep
+        cache_offset = self._seq_pos * batch_size * 4 * H
+
+        pipeline = self.gpu.create_pipeline(
+            str(RNN_SHADER_DIR / 'gru_forward.comp'),
+            buffers=[input_buf, self.hidden_buf, self.W_buf, self.U_buf,
+                     self.bias_buf, self.output_buf, self.cache_buf],
+            push_constant_size=16,
+        )
+        push = struct.pack('4i', batch_size, self.input_size,
+                           self.hidden_size, cache_offset)
+        # One workgroup per batch element, local_size_x covers hidden units
+        self.gpu.dispatch(pipeline, batch_size, push_constants=push)
+        pipeline.destroy()
+
+        self._seq_pos += 1
+
+        return self.output_buf, (self.hidden_size,)
+
+    def forward_sequence(self, input_buf, batch_size, seq_len, shape):
+        """Multi-frame forward for training. Input: [B, T, features].
+
+        Dispatches the GRU forward shader T times, advancing hidden state
+        and caching activations at each step. Returns buffer of all hidden
+        states [B, T, H].
+        """
+        H = self.hidden_size
+        I = self.input_size
+
+        # Allocate output for all timesteps
+        all_hidden_buf = self.gpu.create_buffer(batch_size * seq_len * H * 4)
+
+        self._seq_pos = 0
+        for t in range(seq_len):
+            # Create a view/offset for input at timestep t
+            # Input layout: [B, T, I] — frame t starts at t*I within each batch
+            # We'll need per-frame input buffers or offset dispatches
+            # For now, we pass the whole buffer and use t as offset in push constants
+            cache_offset = t * batch_size * 4 * H
+
+            pipeline = self.gpu.create_pipeline(
+                str(RNN_SHADER_DIR / 'gru_forward.comp'),
+                buffers=[input_buf, self.hidden_buf, self.W_buf, self.U_buf,
+                         self.bias_buf, self.output_buf, self.cache_buf],
+                push_constant_size=16,
+            )
+            push = struct.pack('4i', batch_size, I, H, cache_offset)
+            self.gpu.dispatch(pipeline, batch_size, push_constants=push)
+            pipeline.destroy()
+
+            # Copy current hidden to all_hidden at position t
+            # (output_buf == new hidden state for this timestep)
+            self.gpu.copy_buffer(self.output_buf, all_hidden_buf,
+                                 size=batch_size * H * 4,
+                                 dst_offset=t * batch_size * H * 4)
+
+        self._seq_pos = seq_len
+        return all_hidden_buf, (seq_len, H)
+
+    def backward(self, grad_output, batch_size):
+        # TODO: implement BPTT backward shader
+        raise NotImplementedError("VkGRU backward not yet implemented")
+
+    def init_weights(self, rng):
+        """Initialize GRU weights — Xavier uniform for gates."""
+        H = self.hidden_size
+        I = self.input_size
+
+        # W: [3, I, H] — Xavier uniform based on fan_in=I
+        std_w = float(np.sqrt(1.0 / I))
+        W = (rng.standard_normal(3 * I * H) * std_w).astype(np.float32)
+
+        # U: [3, H, H] — orthogonal-ish init (Xavier with fan_in=H)
+        std_u = float(np.sqrt(1.0 / H))
+        U_arr = (rng.standard_normal(3 * H * H) * std_u).astype(np.float32)
+
+        # Bias: [6, H] — zeros, except bias for reset gate slightly positive
+        # to encourage remembering at init
+        bias = np.zeros(6 * H, dtype=np.float32)
+
+        self.gpu.upload(self.W_buf, W)
+        self.gpu.upload(self.U_buf, U_arr)
+        self.gpu.upload(self.bias_buf, bias)
+
+
+# ---------------------------------------------------------------------------
+# RNN Model builder
+# ---------------------------------------------------------------------------
+
+def build_beat_crnn(gpu: VkCompute, input_size: int = 216,
+                    hidden_size: int = 48, n_classes: int = 3,
+                    batch_size: int = 8, max_seq_len: int = 128) -> VkModel:
+    """Build the beat detection CRNN.
+
+    Architecture: Linear(input→32, ReLU) → GRU(32→hidden) → Linear(hidden→3)
+
+    Args:
+        input_size: features per frame (e.g., 108 CQT + 108 diff = 216)
+        hidden_size: GRU hidden units
+        n_classes: output classes (non-beat, beat, downbeat)
+        batch_size: fixed batch size
+        max_seq_len: max BPTT sequence length
+    """
+    proj_size = 32  # input projection dimension
+
+    layers: list[VkLayer] = [
+        VkLinear(gpu, input_size, proj_size, batch_size, relu=True),
+        VkGRU(gpu, proj_size, hidden_size, batch_size, max_seq_len),
+        VkLinear(gpu, hidden_size, n_classes, batch_size, relu=False),
+    ]
+
+    return VkModel(gpu, layers)
