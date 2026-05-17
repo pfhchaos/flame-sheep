@@ -12,8 +12,15 @@ For each audio file:
 """
 
 import argparse
+import collections
+import collections.abc
 import sys
 from pathlib import Path
+
+# Monkey-patch for madmom on Python 3.10+ (removed in 3.9, deprecated since 3.3)
+collections.MutableSequence = collections.abc.MutableSequence
+collections.MutableMapping = collections.abc.MutableMapping
+collections.MutableSet = collections.abc.MutableSet
 
 import numpy as np
 import librosa
