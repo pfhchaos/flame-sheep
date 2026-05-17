@@ -21,22 +21,22 @@ from __future__ import annotations
 
 import enum
 import logging
-import threading
 from collections.abc import Callable
 from collections import deque
 from typing import TYPE_CHECKING
 
 from flame_sheep.config import cfg
-from flame_sheep.role_mapper import RoleMapper, DOWNBEAT, BACKBEAT
-from flame_sheep.loops import loop_sequence, cycle_length
+from flame_sheep.role_mapper import RoleMapper, DOWNBEAT, SUBDIVISION
+from flame_sheep.axes._morph_cycle import MorphCycle, MorphState
+from flame_sheep.axes._beat_responder import BeatResponder, BeatAction
+from flame_sheep.axes._rotation_driver import RotationDriver
+from flame_sheep.axes._centroid_swap import CentroidSwap
 import numpy as np
 
 log = logging.getLogger(__name__)
 
-from flame_sheep_audio import AudioState, BeatEvent
-from flame_sheep_audio import HOP_SIZE, SAMPLE_RATE
+from flame_sheep_audio import AudioState
 from flame_sheep_audio.mode import Mode
-from flame_sheep_audio.response import MelCentroid, Delta, AsymmetricEnvelope
 from flame_sheep.genome import Genome
 from flame_sheep.variations import Variation
 
@@ -47,7 +47,17 @@ if TYPE_CHECKING:
 
 class _MorphState(enum.Enum):
     MORPHING = 'morphing'
+    SWAP_READY = 'swap_ready'  # morph complete, waiting for kick to commit swap
     DWELL = 'dwell'
+
+
+# Bidirectional mapping between legacy _MorphState and new MorphState
+_MORPH_STATE_MAP = {
+    MorphState.MORPHING: _MorphState.MORPHING,
+    MorphState.SWAP_READY: _MorphState.SWAP_READY,
+    MorphState.DWELL: _MorphState.DWELL,
+}
+_MORPH_STATE_REVERSE = {v: k for k, v in _MORPH_STATE_MAP.items()}
 
 
 class GenomeAxis:
@@ -58,26 +68,6 @@ class GenomeAxis:
     """
 
     LOOP_HISTORY_SIZE = 8
-
-    @property
-    def BREAK_DECAY(self) -> float:
-        return cfg.genome.break_decay
-
-    @property
-    def DENSITY_DAMPING(self) -> float:
-        return cfg.genome.density_damping
-
-    @property
-    def CENTROID_SWAP_THRESHOLD(self) -> float:
-        return cfg.genome.centroid_swap_threshold
-
-    @property
-    def ROTATION_SPEED(self) -> float:
-        return cfg.genome.rotation_speed
-
-    @property
-    def ROTATION_BEAT_BOOST(self) -> float:
-        return cfg.genome.rotation_beat_boost
 
     @property
     def MORPH_SPEED(self) -> float:
@@ -113,66 +103,137 @@ class GenomeAxis:
         self.current_genome = self._genome_factory()
         self.target_genome = self._genome_factory()
 
-        # --- Morph state (two-state: MORPHING / DWELL) ---
-        self._morph_state = _MorphState.DWELL
-        self._morph_t = 0.0
-        self._dwell_start: float = 0.0
+        # --- Morph state ---
+        self._morph = MorphCycle()
+        self._next_loop_pending = False
 
-        # --- Prefetch ---
-        self._next_genome: Genome | None = None
-        self._genome_lock = threading.Lock()
+        # --- Beat responder ---
+        self._beat = BeatResponder(role)
 
-        # --- Beat mode state ---
-        self._recent_downbeat_energy = 0.5
-        self._section_change_pending = False
-        self.SECTION_CHANGE_THRESHOLD = 0.6
-        self._section_warmup = 0
-        self._section_cooldown = 0
-        self.SECTION_COOLDOWN = 480
-        self._break_damping = 1.0
-
-        # --- Loop playback ---
-        self._loop_genomes: list[Genome] = []
-        self._loop_structure: str = 'cyclic'
-        self._loop_sequence = loop_sequence([], 'cyclic')
-        self._loop_step: int = 0
-        self._loop_cycle_len: int = 0
-        self.active_loop_id: int | None = None
-        self._loop_history: deque[int] = deque(maxlen=self.LOOP_HISTORY_SIZE)
-
-        # --- Idle loop cycling ---
-        self._idle_loop_cycles = 0
+        # --- Loop player ---
+        from flame_sheep.axes._loop_player import LoopPlayer
+        self._loop = LoopPlayer(lib, genome_factory, self.current_genome, self.rng)
 
         # Walker reset flag (consumed by renderer)
         self.needs_walker_reset = False
 
-        # --- Mel-space centroid tracking (lazy init on first spectrum) ---
-        self._mel_centroid: MelCentroid | None = None
-        self._mel_delta = Delta()
+        # --- Centroid swap ---
+        self._centroid = CentroidSwap()
 
         # --- Rotation ---
-        _hop_time = HOP_SIZE / SAMPLE_RATE
-        self._rotation_boost = AsymmetricEnvelope(
-            attack=0.001, release=1.0, hop_time=_hop_time, unit='beats')
-        self._rotation_phase = 0.0
+        self._rotation = RotationDriver()
 
-        # --- Timing ---
-        self._last_downbeat_time = 0.0
-
+        # Boot: load loop or start prefetch
         if lib is not None and lib.loop_count() > 0:
-            self._load_top_loop()
+            target = self._loop.next_loop(self.current_genome)
+            if target is not None:
+                self.target_genome = target
+                self._morph.start_morph()
         else:
-            self._prefetch_genome()
+            self._loop._prefetch_genome(self.current_genome)
 
     # --- Properties ---
 
     @property
     def morph_t(self) -> float:
-        return self._morph_t
+        return self._morph.t
 
     @morph_t.setter
     def morph_t(self, value: float) -> None:
-        self._morph_t = value
+        self._morph.t = value
+
+    @property
+    def _morph_t(self) -> float:
+        return self._morph.t
+
+    @_morph_t.setter
+    def _morph_t(self, value: float) -> None:
+        self._morph.t = value
+
+    @property
+    def _morph_state(self) -> _MorphState:
+        """Compatibility shim — maps MorphState to _MorphState."""
+        return _MORPH_STATE_MAP[self._morph.state]
+
+    @_morph_state.setter
+    def _morph_state(self, value: _MorphState) -> None:
+        self._morph.state = _MORPH_STATE_REVERSE[value]
+
+    @property
+    def _dwell_start(self) -> float:
+        return self._morph.dwell_start
+
+    @_dwell_start.setter
+    def _dwell_start(self, value: float) -> None:
+        self._morph.dwell_start = value
+
+    @property
+    def _rotation_phase(self) -> float:
+        return self._rotation.phase
+
+    @_rotation_phase.setter
+    def _rotation_phase(self, value: float) -> None:
+        self._rotation.phase = value
+
+    @property
+    def _section_change_pending(self) -> bool:
+        return self._beat.section_change_pending
+
+    @_section_change_pending.setter
+    def _section_change_pending(self, value: bool) -> None:
+        self._beat.section_change_pending = value
+
+    @property
+    def _section_warmup(self) -> int:
+        return self._beat.section_warmup
+
+    @_section_warmup.setter
+    def _section_warmup(self, value: int) -> None:
+        self._beat.section_warmup = value
+
+    @property
+    def _section_cooldown(self) -> int:
+        return self._beat.section_cooldown
+
+    @_section_cooldown.setter
+    def _section_cooldown(self, value: int) -> None:
+        self._beat.section_cooldown = value
+
+    @property
+    def _break_damping(self) -> float:
+        return self._beat.break_damping
+
+    @_break_damping.setter
+    def _break_damping(self, value: float) -> None:
+        self._beat.break_damping = value
+
+    @property
+    def active_loop_id(self) -> int | None:
+        return self._loop.active_loop_id
+
+    @active_loop_id.setter
+    def active_loop_id(self, value: int | None) -> None:
+        self._loop.active_loop_id = value
+
+    @property
+    def _loop_genomes(self) -> list:
+        return self._loop.loop_genomes
+
+    @_loop_genomes.setter
+    def _loop_genomes(self, value: list) -> None:
+        self._loop._loop_genomes = value
+
+    @property
+    def _loop_step(self) -> int:
+        return self._loop._loop_step
+
+    @property
+    def _loop_cycle_len(self) -> int:
+        return self._loop._loop_cycle_len
+
+    @property
+    def _loop_history(self) -> deque:
+        return self._loop._loop_history
 
     # --- Main tick ---
 
@@ -183,129 +244,73 @@ class GenomeAxis:
             self._on_mode_change(self._mode, new_mode, clock)
         self._mode = new_mode
 
-        self._section_warmup += 1
-        self._section_cooldown += 1
-
-        # --- Mel-space centroid delta (lazy init / reinit on spectrum size change) ---
-        n_bins = len(audio.spectrum)
-        if n_bins > 0 and (self._mel_centroid is None
-                           or self._mel_centroid.n_bins != n_bins):
-            from flame_sheep_audio.response import MelCentroid as _MC
-            freqs = np.linspace(0, SAMPLE_RATE / 2, n_bins)
-            self._mel_centroid = _MC(freqs)
-        if n_bins > 0 and self._mel_centroid is not None:
-            mel_centroid = self._mel_centroid.compute(audio.spectrum)
-        else:
-            mel_centroid = 0.0
-        mel_delta = self._mel_delta.update(mel_centroid)
-
-        # --- Section change detection (beat mode only) ---
+        # --- Beat processing ---
         if self._mode == Mode.BEAT:
-            WARMUP_FRAMES = 1800
-            if (
-                audio.section_change > self.SECTION_CHANGE_THRESHOLD
-                and self._section_warmup > WARMUP_FRAMES
-                and self._section_cooldown > self.SECTION_COOLDOWN
-            ):
-                if not self._section_change_pending:
-                    self._section_change_pending = True
-                    log.info(
-                        f"[section] change detected ({audio.section_change:.3f}), "
-                        f"will swap loop on next strong beat"
-                    )
-
-        # --- Handle discrete events ---
-        for event in audio.events:
-            if self._mode == Mode.BEAT:
-                if event.kind == self._role.band_for_role(DOWNBEAT):
-                    self._handle_downbeat(event, clock, audio)
-                elif event.kind == "song_start":
+            self._beat.tick(audio)
+            self._process_beat_events(audio, clock)
+        else:
+            self._beat.break_damping = 1.0
+            # Song start events still processed outside beat mode
+            for event in audio.events:
+                if event.kind == "song_start":
                     self._handle_song_start(clock)
-            elif event.kind == "song_start":
-                self._handle_song_start(clock)
 
         # --- Centroid swap (beat + energy modes) ---
         if self._mode in (Mode.BEAT, Mode.ENERGY):
             low_density = self._role.band_state(audio, DOWNBEAT).onset_density
-            if (
-                low_density < cfg.genome.centroid_swap_density_gate
-                and mel_delta > self.CENTROID_SWAP_THRESHOLD
-                and self._morph_t > 0.3
-            ):
+            if self._centroid.tick(audio.spectrum, low_density, self._morph.t):
                 self.current_genome = self.current_genome.lerp(
-                    self.target_genome, self._morph_t
+                    self.target_genome, self._morph.t
                 )
                 self._swap_next_genome()
-                self._morph_state = _MorphState.DWELL
-                self._dwell_start = clock
-                self._morph_t = 0.0
-                log.debug(
-                    f"[centroid swap] mel_delta={mel_delta:.1f} "
-                    f"low_density={low_density:.2f}"
-                )
-
-        # --- Break damping (beat mode only) ---
-        if self._mode == Mode.BEAT:
-            if audio.break_intensity > 0:
-                self._break_damping *= self.BREAK_DECAY
-            else:
-                self._break_damping = min(1.0, self._break_damping / self.BREAK_DECAY)
-        else:
-            self._break_damping = 1.0
+                self._morph.commit_swap(clock)
+                log.debug("[centroid swap] triggered")
 
         bpm = max(audio.effective_bpm, 60.0)
 
         # --- Morph advancement (same speed, all modes) ---
-        if self._morph_state == _MorphState.MORPHING:
-            self._morph_t = min(1.0, self._morph_t + self.MORPH_SPEED)
-            if self._morph_t >= 1.0:
-                # Morph complete → swap genome → enter dwell
-                self.current_genome = self.target_genome
-                self._swap_next_genome()
-                self._morph_t = 0.0
-                self._morph_state = _MorphState.DWELL
-                self._dwell_start = clock
+        if self._morph.morphing:
+            self._morph.advance()
+            if self._morph.is_complete():
+                if self._mode == Mode.BEAT:
+                    self._morph.enter_swap_ready()
+                else:
+                    # Idle/energy mode: swap immediately
+                    self.current_genome = self.target_genome
+                    if self._next_loop_pending:
+                        self._next_loop_pending = False
+                        self.next_loop()
+                        self._morph.start_morph()
+                    elif self._loop.has_loop and self._loop.should_exit_loop():
+                        self.next_loop()
+                        self._morph.start_morph()
+                    elif self._loop.has_loop:
+                        self._swap_next_genome()
+                        self._morph.commit_swap(clock)
+                    else:
+                        self._graph_walk_next()
+                        self._morph.commit_swap(clock)
 
-                # Idle loop cycling
-                if self._mode == Mode.IDLE and self._loop_genomes and self._lib is not None:
-                    if self._loop_step == 0:
-                        self._idle_loop_cycles += 1
-                        if self._idle_loop_cycles >= self.CYCLES_PER_LOOP:
-                            self._idle_loop_cycles = 0
-                            self._next_idle_loop()
-
-        elif self._morph_state == _MorphState.DWELL:
+        elif self._morph.in_dwell:
             # Mode-specific dwell release
             if self._mode == Mode.BEAT:
-                # Beat releases dwell (handled in _handle_downbeat)
+                # Beat releases dwell (handled in event loop above)
                 pass
-            elif self._mode == Mode.ENERGY:
-                # Centroid shift releases dwell (handled in centroid swap above)
-                # Fallback: same timeout as idle
+            elif self._mode in (Mode.ENERGY, Mode.IDLE):
+                # Timeout releases dwell
                 dwell_duration = self.DWELL_BEATS * 60.0 / bpm
-                if clock - self._dwell_start >= dwell_duration:
-                    self._morph_state = _MorphState.MORPHING
-                    log.debug("[dwell] energy timeout → MORPHING")
-            elif self._mode == Mode.IDLE:
-                # Fixed duration timeout
-                dwell_duration = self.DWELL_BEATS * 60.0 / bpm
-                if clock - self._dwell_start >= dwell_duration:
-                    self._morph_state = _MorphState.MORPHING
-                    log.debug("[dwell] idle timeout → MORPHING")
+                if clock - self._morph.dwell_start >= dwell_duration:
+                    self._morph.release_dwell()
+                    log.debug(f"[dwell] {self._mode.value} timeout → MORPHING")
 
         # --- Rotation (all modes) ---
-        boost = self._rotation_boost.update(0.0, bpm=bpm)
-        rotation_speed = self.ROTATION_SPEED + boost * self.ROTATION_BEAT_BOOST
-        self._rotation_phase += rotation_speed * self._break_damping
-        TWO_PI = 2.0 * np.pi
-        if self._rotation_phase >= TWO_PI:
-            self._rotation_phase -= TWO_PI
+        self._rotation.tick(bpm, self._beat.break_damping)
 
     def contribute(self, frame: FlameSheepCore.FrameState) -> None:
         """Write interpolated genome to frame. Same for all modes."""
-        frame.genome = self.current_genome.lerp(self.target_genome, self._morph_t)
-        if self._rotation_phase != 0.0:
-            frame.genome = frame.genome.rotated(self._rotation_phase)
+        frame.genome = self.current_genome.lerp(self.target_genome, self._morph.t)
+        if self._rotation.phase != 0.0:
+            frame.genome = frame.genome.rotated(self._rotation.phase)
 
     # --- Mode transitions ---
 
@@ -314,12 +319,16 @@ class GenomeAxis:
         reset, no handoff, just change what behaviors are active."""
         if old == Mode.BEAT and new != Mode.BEAT:
             # Leaving beat mode: if dwell was waiting for a beat, release it
-            if self._morph_state == _MorphState.DWELL:
-                self._morph_state = _MorphState.MORPHING
+            if self._morph.in_dwell:
+                self._morph.release_dwell()
                 log.debug("[mode] beat→other: released dwell")
 
-        if new == Mode.IDLE:
-            self._idle_loop_cycles = 0
+        if new == Mode.BEAT and not self._loop_genomes:
+            # Entering beat mode without a loop (e.g., from graph walk).
+            # Find the nearest loop via the transition graph.
+            self.next_loop()
+            log.info("[mode] →beat: loaded loop via graph transition")
+
 
     # --- Playback hints ---
 
@@ -331,54 +340,51 @@ class GenomeAxis:
 
     # --- Event handlers ---
 
-    def _handle_downbeat(self, event: BeatEvent, clock: float, audio: AudioState | None = None) -> None:
-        since = clock - self._last_downbeat_time
-        self._last_downbeat_time = clock
-
-        self._recent_downbeat_energy = self._recent_downbeat_energy * 0.8 + event.energy * 0.2
-
-        downbeat_density = self._role.band_state(audio, DOWNBEAT).onset_density if audio else 0.0
-        density_scale = 1.0 / (1.0 + downbeat_density * self.DENSITY_DAMPING)
-
-        # Section change pending → consume on any low-band onset
-        if self._section_change_pending and self._lib is not None:
-            self._section_change_pending = False
-            self._section_cooldown = 0
-            self.current_genome = self.current_genome.lerp(
-                self.target_genome, self._morph_t
-            )
-            self.next_loop()
-            self._morph_state = _MorphState.DWELL
-            self._dwell_start = clock
-            self._morph_t = 0.0
-            log.info(f"[SWAP+LOOP]  section change consumed on beat")
-            return
-
-        bpm = max(audio.effective_bpm, 60.0) if audio else 120.0
-        kick = event.energy * density_scale
-
-        # Beat releases dwell → start morphing
-        if self._morph_state == _MorphState.DWELL:
-            self._morph_state = _MorphState.MORPHING
-            log.debug(f"[downbeat] dwell released by beat, energy={event.energy:.2f}")
-        else:
-            # Normal beat during morph — boost rotation
-            self._rotation_boost.update(kick, bpm=bpm)
-            log.debug(f"[downbeat]  +{since:.3f}s  energy={event.energy:.2f}")
+    def _process_beat_events(self, audio: AudioState, clock: float) -> None:
+        """Process beat events in beat mode via BeatResponder."""
+        kick_band = self._role.band_for_role(SUBDIVISION)
+        for event in audio.events:
+            if event.kind == kick_band:
+                action = self._beat.process_kick(
+                    event, self._morph.in_swap_ready, self._morph.in_dwell)
+                if action == BeatAction.COMMIT_SWAP:
+                    self.current_genome = self.target_genome
+                    if self._next_loop_pending:
+                        self._next_loop_pending = False
+                        self.next_loop()
+                        self._morph.start_morph()
+                        log.debug(f'[swap on beat] next loop pending, kick energy={event.energy:.2f}')
+                    else:
+                        self._swap_next_genome()
+                        self._morph.commit_swap(clock)
+                        log.debug(f'[swap on beat] kick energy={event.energy:.2f}')
+                elif action == BeatAction.RELEASE_DWELL:
+                    self._morph.release_dwell()
+            elif event.kind == self._role.band_for_role(DOWNBEAT):
+                action = self._beat.process_downbeat(
+                    event, clock, audio, self._lib is not None)
+                if action == BeatAction.SECTION_CHANGE:
+                    self.current_genome = self.current_genome.lerp(
+                        self.target_genome, self._morph.t)
+                    self.next_loop()
+                    self._morph.commit_swap(clock)
+                    log.info("[SWAP+LOOP] section change consumed on beat")
+                else:
+                    # Apply morph nudge + rotation boost
+                    self._morph.nudge(self._beat.last_morph_nudge)
+                    bpm = max(audio.effective_bpm, 60.0)
+                    self._rotation.boost(
+                        self._beat.last_morph_nudge / 0.05, bpm=bpm)
+            elif event.kind == "song_start":
+                self._handle_song_start(clock)
 
     def _handle_song_start(self, clock: float, mode_hint: str | None = None) -> None:
         """Reset state for new song."""
         if mode_hint is not None:
             self._mode = Mode(mode_hint)
 
-        self._last_downbeat_time = clock
-        self._recent_downbeat_energy = 0.5
-        self._break_damping = 1.0
-        self._section_change_pending = False
-        self._section_warmup = 0
-        self._morph_state = _MorphState.DWELL
-        self._dwell_start = clock
-        self._morph_t = 0.0
+        self._beat.reset_for_song(clock)
+        self._morph.commit_swap(clock)
         # New song, new loop
         if self._lib is not None and self._lib.loop_count() > 1:
             self.next_loop()
@@ -387,10 +393,9 @@ class GenomeAxis:
     def accept_handoff(self, genome: Genome, loop_id: int | None = None) -> None:
         """Receive genome from external source (e.g., test injection)."""
         self.current_genome = genome
-        self._morph_state = _MorphState.DWELL
-        self._morph_t = 0.0
-        self._recent_downbeat_energy = 0.5
-        self._break_damping = 1.0
+        self._morph.commit_swap(0.0)
+        self._beat.recent_downbeat_energy = 0.5
+        self._beat.break_damping = 1.0
         if loop_id is not None and loop_id != self.active_loop_id:
             self.load_loop(loop_id)
         self._swap_next_genome()
@@ -398,147 +403,49 @@ class GenomeAxis:
     def force_swap(self) -> None:
         """Immediately swap to a new genome."""
         self.current_genome = self.current_genome.lerp(
-            self.target_genome, self._morph_t)
+            self.target_genome, self._morph.t)
         self._swap_next_genome()
-        self._morph_state = _MorphState.DWELL
-        self._morph_t = 0.0
+        self._morph.commit_swap(0.0)
         self.needs_walker_reset = True
         log.info("force swap")
 
+    def user_next(self) -> None:
+        """User-triggered 'next' — finish current morph, then switch loop.
+
+        Sets a flag so that when the current morph completes, instead of
+        continuing the loop sequence, it loads the next loop via graph.
+        If in dwell, triggers immediately.
+        """
+        if self._morph.in_dwell or self._morph.in_swap_ready:
+            # Not morphing — switch now
+            self.current_genome = self.target_genome or self.current_genome
+            self.next_loop()
+            self._morph.start_morph()
+        else:
+            # Mid-morph — flag it to switch when morph completes
+            self._next_loop_pending = True
+
     # --- Loop management ---
 
-    def _load_top_loop(self) -> None:
-        if self._lib is None or self._lib.loop_count() < 1:
-            self._loop_genomes = []
-            self.active_loop_id = None
-            self._prefetch_genome()
-            return
-        self.next_loop()
-
     def load_loop(self, loop_id: int) -> None:
-        self._start_loop(loop_id)
-
-    def _start_loop(self, loop_id: int) -> None:
-        items = self._lib.load_loop(loop_id)
-        self._loop_genomes = [genome for _, genome, _ in items]
-        self._loop_structure = self._lib.loop_type(loop_id)
-        n = len(self._loop_genomes)
-
-        self._loop_sequence = loop_sequence(self._loop_genomes, self._loop_structure)
-        self._loop_cycle_len = cycle_length(n, self._loop_structure)
-
-        # Pick start position: closest genome to current (smooth transition)
-        start = self._best_entry_position(self._loop_genomes)
-
-        for _ in range(start):
-            next(self._loop_sequence)
-        self._loop_step = start
-
-        self.active_loop_id = loop_id
-        self.current_genome = self._loop_genomes[start]
-        self.target_genome = next(self._loop_sequence)
-        self._loop_step += 1
-        self._morph_state = _MorphState.DWELL
-        self._morph_t = 0.0
-        self.needs_walker_reset = True
-        log.info(f"[loop] loaded #{loop_id} ({self._loop_structure}, "
-                 f"{n} genomes, start={start})")
-        for i, g in enumerate(self._loop_genomes):
-            marker = " <--" if i == start else ""
-            log.debug(f"  [{i}] {_describe_genome(g)}{marker}")
-
-    def _best_entry_position(self, loop_genomes: list) -> int:
-        """Pick the loop genome closest to the current genome."""
-        if self.current_genome is None or len(loop_genomes) <= 1:
-            return int(self.rng.integers(0, max(1, len(loop_genomes))))
-
-        best_idx = 0
-        best_dist = float('inf')
-        for i, g in enumerate(loop_genomes):
-            d = self.current_genome.distance(g)
-            if d < best_dist:
-                best_dist = d
-                best_idx = i
-
-        return best_idx
+        target = self._loop.load_loop(loop_id, self.current_genome)
+        self.target_genome = target
+        self._morph.start_morph()
 
     def next_loop(self) -> None:
-        if self._lib is None or self._lib.loop_count() < 1:
-            return
-        top = self._lib.top_loops(n=20)
-        candidates = [(lid, info) for lid, info in top if lid not in self._loop_history]
-        if not candidates:
-            candidates = [
-                (lid, info) for lid, info in top if lid != self.active_loop_id
-            ]
-        if not candidates:
-            candidates = top
-        fitnesses = np.array([max(info["fitness"], 0.01) for _, info in candidates])
-        weights = fitnesses / fitnesses.sum()
-        idx = self.rng.choice(len(candidates), p=weights)
-        lid, info = candidates[idx]
-        self._load_and_track(lid, info["fitness"])
-
-    def _load_and_track(self, loop_id: int, fitness: float | None = None) -> None:
-        self._loop_history.append(loop_id)
-        self.load_loop(loop_id)
-        if fitness is not None:
-            log.debug(f"[loop] fitness={fitness:.3f}")
-
-    def _next_idle_loop(self) -> None:
-        """Switch to next loop during idle mode."""
-        if self._lib is None or self._lib.loop_count() < 1:
-            return
-        top = self._lib.top_loops(n=20)
-        candidates = [(lid, info) for lid, info in top
-                      if lid not in self._loop_history]
-        if not candidates:
-            candidates = [(lid, info) for lid, info in top
-                          if lid != self.active_loop_id]
-        if not candidates:
-            candidates = top
-        fitnesses = np.array([max(info['fitness'], 0.01)
-                              for _, info in candidates])
-        weights = fitnesses / fitnesses.sum()
-        idx = self.rng.choice(len(candidates), p=weights)
-        lid, info = candidates[idx]
-        self._load_and_track(lid, info['fitness'])
-        log.info(f'[idle] switched to loop #{lid} '
-                 f'(fitness={info["fitness"]:.3f})')
-
-    # --- Genome prefetch ---
-
-    def _prefetch_genome(self) -> None:
-        current_snapshot = self.current_genome
-        factory = self._genome_factory
-
-        def _gen():
-            for _ in range(20):
-                g = factory()
-                if g.distance(current_snapshot) >= self.MIN_GENOME_DISTANCE:
-                    break
-            with self._genome_lock:
-                self._next_genome = g
-
-        threading.Thread(target=_gen, daemon=True).start()
+        ref = self.current_genome
+        if ref.db_id is None and self.target_genome is not None:
+            ref = self.target_genome
+        target = self._loop.next_loop(ref)
+        if target is not None:
+            self.target_genome = target
+            self._morph.start_morph()
 
     def _swap_next_genome(self) -> None:
-        if self._loop_genomes:
-            self.target_genome = next(self._loop_sequence)
-            self._loop_step += 1
-            if self._loop_step >= self._loop_cycle_len:
-                self._loop_step = 0
-                log.debug(f"[loop] cycle complete ({self._loop_structure}, "
-                          f"{len(self._loop_genomes)} genomes)")
-        else:
-            with self._genome_lock:
-                if self._next_genome is not None:
-                    self.target_genome = self._next_genome
-                    self._next_genome = None
-                else:
-                    self.target_genome = self._genome_factory()
-            self._prefetch_genome()
-            log.debug(f"[genome] {_describe_genome(self.target_genome)}")
+        self.target_genome = self._loop.swap_next(self.current_genome)
+
+    def _graph_walk_next(self) -> None:
+        self.target_genome = self._loop.graph_walk(self.current_genome)
 
 
 # Reverse map: variation index -> name
