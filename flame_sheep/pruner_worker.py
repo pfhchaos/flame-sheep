@@ -32,7 +32,7 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
     except OSError:
         pass
 
-    from .storage import _ensure_schema, _genome_from_json
+    from .storage import _ensure_schema
 
     conn = sqlite3.connect(db_path)
     conn.execute('PRAGMA busy_timeout=30000')
@@ -46,15 +46,12 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 stop_event.wait(BackgroundPruner.LOAD_CHECK_INTERVAL)
                 continue
 
-            # Two pruning strategies:
-            # 1. GPU-rendered genomes: check img_coverage from DB (trustworthy)
-            # 2. Unrendered genomes: fall back to CPU check_stability()
-
             row = conn.execute(
-                '''SELECT id, params, img_coverage, render_static
+                '''SELECT id, img_coverage
                    FROM genomes
                    WHERE COALESCE(archived, 0) = 0
                      AND COALESCE(pruner_checked, 0) = 0
+                     AND img_coverage IS NOT NULL
                    LIMIT 1'''
             ).fetchone()
 
@@ -62,28 +59,13 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 stop_event.wait(BackgroundPruner.IDLE_CHECK_INTERVAL)
                 continue
 
-            gid, params_json, img_coverage, has_render = row[0], row[1], row[2], row[3]
+            gid, img_coverage = row
             try:
-                should_archive = False
-                reason = None
-
-                if has_render is not None and img_coverage is not None:
-                    # GPU render exists — trust the coverage metric
-                    if img_coverage < 0.02:
-                        should_archive = True
-                        reason = 'low_coverage'
-                else:
-                    # No GPU render yet — use CPU stability check
-                    genome = _genome_from_json(params_json)
-                    if not genome.check_stability():
-                        should_archive = True
-                        reason = 'stability'
-
-                if should_archive:
+                if img_coverage < 0.02:
                     conn.execute(
                         'UPDATE genomes SET archived=1, pruner_checked=1, archive_reason=? WHERE id=?',
-                        (reason, gid))
-                    log.info('archived genome #%d (%s)', gid, reason)
+                        ('low_coverage', gid))
+                    log.info('archived genome #%d (img_coverage=%.4f)', gid, img_coverage)
                 else:
                     conn.execute(
                         'UPDATE genomes SET pruner_checked=1 WHERE id=?',
