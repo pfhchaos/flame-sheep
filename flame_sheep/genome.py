@@ -328,7 +328,7 @@ class Genome:
 
     def check_stability(self, n_angles: int = 8, n_test: int = 3000,
                         max_bbox_ratio: float = 10.0,
-                        min_cells: int = 20) -> bool:
+                        min_cells: int = 5) -> bool:
         """Check attractor stability across rotation angles.
 
         Rejects:
