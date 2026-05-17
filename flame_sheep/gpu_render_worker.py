@@ -22,7 +22,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-RENDER_VERSION = 9  # v9: hist_static is single fresh dispatch (not 60-frame accumulation regression from v6)
+RENDER_VERSION = 10  # v10: first-hit = single-frame snapshots at iter=N (match live wallpaper semantics)
 
 COLOR_SCALE = 1_000_000.0
 
@@ -135,58 +135,45 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
                 renderer.clear_transform_hits()
 
-                # First-hit iteration response: track when each pixel first appears.
-                # Snapshot within the live render range (LIVE_ITER_MIN to
-                # LIVE_ITER_MAX) so the model learns emergence at iteration
-                # counts it'll actually see at runtime. Outside that range,
-                # hits accumulate normally to build the long-exposure hist_static.
+                # First-hit iteration response: for each pixel, record the
+                # smallest iter count at which it appears in a single live frame.
+                # This matches what the live wallpaper actually does: each
+                # frame is a fresh dispatch at iter=N (driven by audio energy)
+                # into a cleared histogram. So we snapshot single-frame renders
+                # at 16 iter counts spanning the live range.
                 #
-                # Cumulative semantics: each snapshot records "what pixels have
-                # any hits by iteration N". Do NOT clear the histogram between
-                # dispatches — that would only show single-frame hits, which
-                # collapses to binary (in-attractor vs not).
+                # Encoding: 0 = trunk (appears at LIVE_ITER_MIN, denset),
+                #           240 = wispy (only appears at LIVE_ITER_MAX),
+                #           255 = sentinel for "never appears at any energy".
+                # The 15-step gap between 240 and 255 separates "barely visible
+                # at peak energy" from "never visible".
                 n_snapshots = 16
                 snap_iters = np.linspace(LIVE_ITER_MIN, LIVE_ITER_MAX,
                                          n_snapshots, dtype=int)
-                total_iters = N_ITERS * n_frames
 
-                # Build dispatch schedule: small chunks to hit each snapshot
-                # target precisely, then big chunks to fill out hist_static.
-                chunk_sizes = []
-                prev = 0
-                for target in snap_iters:
-                    chunk_sizes.append(int(target - prev))
-                    prev = int(target)
-                while prev < total_iters:
-                    next_chunk = min(N_ITERS, total_iters - prev)
-                    chunk_sizes.append(next_chunk)
-                    prev += next_chunk
+                # Burn-in: get walkers to converged positions before the
+                # first snapshot, otherwise burn-in trace pollutes snap 0.
+                # Live wallpaper walkers persist across frames so they're
+                # always converged in steady state — match that.
+                renderer.clear_histogram()
+                renderer.dispatch_chaos_game(iterations=50)
+                ctx.memory_barrier()
 
                 first_hit = None
-                total_dispatched = 0
-                snap_idx = 0
-
-                for chunk in chunk_sizes:
-                    renderer.dispatch_chaos_game(iterations=chunk)
+                for snap_idx, target in enumerate(snap_iters):
+                    renderer.clear_histogram()
+                    renderer.dispatch_chaos_game(iterations=int(target))
                     ctx.memory_barrier()
-                    total_dispatched += chunk
+                    hits, _ = renderer.histogram_data()
+                    if first_hit is None:
+                        first_hit = np.full(hits.shape, 255, dtype=np.uint8)
+                    mapped = snap_idx * 240 // (n_snapshots - 1)
+                    first_hit[(hits > 0) & (first_hit == 255)] = mapped
 
-                    # Capture any snapshot targets crossed by this dispatch
-                    while (snap_idx < n_snapshots
-                            and total_dispatched >= snap_iters[snap_idx]):
-                        hits, _ = renderer.histogram_data()
-                        if first_hit is None:
-                            first_hit = np.full(hits.shape, 255, dtype=np.uint8)
-                        mapped = snap_idx * 255 // max(n_snapshots - 1, 1)
-                        first_hit[(hits > 0) & (first_hit == 255)] = mapped
-                        snap_idx += 1
-
-                # The snapshot loop accumulated hits across many dispatches
-                # to drive the first-hit emergence map. That cumulative state
-                # is wrong for hist_static — it should represent a single
-                # live frame at peak detail, not a long exposure. Clear and
-                # do one fresh dispatch at LIVE_ITER_MAX. Walkers stay at
-                # their converged positions, matching live frame behavior.
+                # hist_static is the single live frame at peak energy
+                # (LIVE_ITER_MAX). The last snapshot above already rendered
+                # exactly that, but transform_hits accumulated across the loop —
+                # do a fresh dispatch to get clean transform_hits too.
                 renderer.clear_histogram()
                 renderer.clear_transform_hits()
                 renderer.dispatch_chaos_game(iterations=LIVE_ITER_MAX)
