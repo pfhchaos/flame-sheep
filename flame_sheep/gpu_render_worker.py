@@ -22,7 +22,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-RENDER_VERSION = 6  # v6: first-hit snapshots in live render range (150-500) without between-frame clear
+RENDER_VERSION = 7  # v7: first-hit snap range driven by LIVE_ITER_MIN/MAX constants (100-500)
 
 COLOR_SCALE = 1_000_000.0
 
@@ -59,7 +59,7 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
         log.error(f'Failed to create EGL context: {e}')
         return
 
-    from .renderer import FlameRenderer, N_ITERS
+    from .renderer import FlameRenderer, N_ITERS, LIVE_ITER_MIN, LIVE_ITER_MAX
     from .storage import _genome_from_json, _ensure_schema
     from flame_sheep_audio import N_BINS
     from .genome import _score_from_histogram
@@ -124,17 +124,18 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 renderer.clear_transform_hits()
 
                 # First-hit iteration response: track when each pixel first appears.
-                # Snapshot within the live render range (150-500 iters) so the
-                # model learns emergence at iteration counts it'll actually see
-                # at runtime. Outside that range, hits accumulate normally to
-                # build the long-exposure hist_static.
+                # Snapshot within the live render range (LIVE_ITER_MIN to
+                # LIVE_ITER_MAX) so the model learns emergence at iteration
+                # counts it'll actually see at runtime. Outside that range,
+                # hits accumulate normally to build the long-exposure hist_static.
                 #
                 # Cumulative semantics: each snapshot records "what pixels have
                 # any hits by iteration N". Do NOT clear the histogram between
                 # dispatches — that would only show single-frame hits, which
                 # collapses to binary (in-attractor vs not).
                 n_snapshots = 16
-                snap_iters = np.linspace(150, 500, n_snapshots, dtype=int)
+                snap_iters = np.linspace(LIVE_ITER_MIN, LIVE_ITER_MAX,
+                                         n_snapshots, dtype=int)
                 total_iters = N_ITERS * n_frames
 
                 # Build dispatch schedule: small chunks to hit each snapshot

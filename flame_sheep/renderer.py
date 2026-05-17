@@ -62,7 +62,15 @@ def _resolve_includes(source: str, shader_dir: Path) -> str:
 # the half-res canvas size without hammering the GPU.
 # ---------------------------------------------------------------------------
 N_WALKERS  = 1024 * 64   # 65536 walkers — more parallelism for modern GPUs
-N_ITERS    = 150          # iterations per walker per frame (same total points)
+N_ITERS    = 150          # default iterations per walker per frame
+
+# Live render iteration range. At runtime, DetailAxis maps audio energy to
+# an iteration count in [LIVE_ITER_MIN, LIVE_ITER_MAX] per dispatch.
+# Anything that wants to mirror "what the user will actually see" — batch
+# rendering, first-hit snapshots, benchmarks — should use these constants
+# so changes propagate.
+LIVE_ITER_MIN = 100
+LIVE_ITER_MAX = 500
 
 
 class Viewport:
