@@ -35,7 +35,7 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
     from .storage import _ensure_schema, _genome_from_json
 
     conn = sqlite3.connect(db_path)
-    conn.execute('PRAGMA busy_timeout=5000')
+    conn.execute('PRAGMA busy_timeout=30000')
     _ensure_schema(conn)
 
     log.info('pruner worker started')
@@ -73,6 +73,16 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                         (gid,))
                 conn.commit()
 
+            except sqlite3.OperationalError as e:
+                if 'locked' in str(e):
+                    log.debug(f'DB locked checking genome #{gid}, will retry')
+                    stop_event.wait(2.0)
+                else:
+                    log.exception(f'failed to check genome #{gid}')
+                    conn.execute(
+                        'UPDATE genomes SET pruner_checked=1 WHERE id=?',
+                        (gid,))
+                    conn.commit()
             except Exception:
                 log.exception(f'failed to check genome #{gid}')
                 conn.execute(
