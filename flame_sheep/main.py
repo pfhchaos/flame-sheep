@@ -1057,7 +1057,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 pair = _compare_mode.pair
                 cr = _compare_renderer
                 if pair.left is not None and pair.right is not None:
-                    rot = core._genome_axis._rotation_phase
+                    rot = core._genome_axis._rotation.phase
                     left_g = pair.left.rotated(rot) if rot != 0.0 else pair.left
                     right_g = pair.right.rotated(rot) if rot != 0.0 else pair.right
                     n_px = cr.canvas_w * cr.canvas_h

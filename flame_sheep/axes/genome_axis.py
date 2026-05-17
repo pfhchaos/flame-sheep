@@ -143,6 +143,16 @@ class GenomeAxis:
         self._morph.t = value
 
     @property
+    def active_loop_id(self) -> int | None:
+        return self._loop.active_loop_id
+
+    @active_loop_id.setter
+    def active_loop_id(self, value: int | None) -> None:
+        self._loop.active_loop_id = value
+
+    # --- Compatibility shims (used by integration tests) ---
+
+    @property
     def _morph_t(self) -> float:
         return self._morph.t
 
@@ -152,7 +162,6 @@ class GenomeAxis:
 
     @property
     def _morph_state(self) -> _MorphState:
-        """Compatibility shim — maps MorphState to _MorphState."""
         return _MORPH_STATE_MAP[self._morph.state]
 
     @_morph_state.setter
@@ -176,60 +185,12 @@ class GenomeAxis:
         self._rotation.phase = value
 
     @property
-    def _section_change_pending(self) -> bool:
-        return self._beat.section_change_pending
-
-    @_section_change_pending.setter
-    def _section_change_pending(self, value: bool) -> None:
-        self._beat.section_change_pending = value
-
-    @property
-    def _section_warmup(self) -> int:
-        return self._beat.section_warmup
-
-    @_section_warmup.setter
-    def _section_warmup(self, value: int) -> None:
-        self._beat.section_warmup = value
-
-    @property
-    def _section_cooldown(self) -> int:
-        return self._beat.section_cooldown
-
-    @_section_cooldown.setter
-    def _section_cooldown(self, value: int) -> None:
-        self._beat.section_cooldown = value
-
-    @property
-    def _break_damping(self) -> float:
-        return self._beat.break_damping
-
-    @_break_damping.setter
-    def _break_damping(self, value: float) -> None:
-        self._beat.break_damping = value
-
-    @property
-    def active_loop_id(self) -> int | None:
-        return self._loop.active_loop_id
-
-    @active_loop_id.setter
-    def active_loop_id(self, value: int | None) -> None:
-        self._loop.active_loop_id = value
-
-    @property
     def _loop_genomes(self) -> list:
         return self._loop.loop_genomes
 
     @_loop_genomes.setter
     def _loop_genomes(self, value: list) -> None:
         self._loop._loop_genomes = value
-
-    @property
-    def _loop_step(self) -> int:
-        return self._loop._loop_step
-
-    @property
-    def _loop_cycle_len(self) -> int:
-        return self._loop._loop_cycle_len
 
     @property
     def _loop_history(self) -> deque:
