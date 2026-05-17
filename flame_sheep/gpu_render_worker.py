@@ -22,7 +22,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-RENDER_VERSION = 8  # v8: scoring walker count derived from assumed-live-render density (~14.6K at 512²)
+RENDER_VERSION = 9  # v9: hist_static is single fresh dispatch (not 60-frame accumulation regression from v6)
 
 COLOR_SCALE = 1_000_000.0
 
@@ -180,6 +180,17 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                         mapped = snap_idx * 255 // max(n_snapshots - 1, 1)
                         first_hit[(hits > 0) & (first_hit == 255)] = mapped
                         snap_idx += 1
+
+                # The snapshot loop accumulated hits across many dispatches
+                # to drive the first-hit emergence map. That cumulative state
+                # is wrong for hist_static — it should represent a single
+                # live frame at peak detail, not a long exposure. Clear and
+                # do one fresh dispatch at LIVE_ITER_MAX. Walkers stay at
+                # their converged positions, matching live frame behavior.
+                renderer.clear_histogram()
+                renderer.clear_transform_hits()
+                renderer.dispatch_chaos_game(iterations=LIVE_ITER_MAX)
+                ctx.memory_barrier()
 
                 render_static = renderer.snapshot_png()
 
