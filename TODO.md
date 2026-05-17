@@ -74,3 +74,9 @@ Both genomes dispatch through the same walker buffer (65536 walkers). The offset
 Side monitors show stale/flickering data during compare mode because the main renderer's histogram isn't being updated (compare renderer owns the dispatch). Currently ignored.
 
 **Vulkan fix:** Multiple render passes — compare renderer handles center monitor, main renderer handles side monitors, each with their own pipeline state.
+
+### Extend leak tracking to images/framebuffers/samplers
+
+`VkCompute` currently tracks `buffer_count` and `pipeline_count` via `_live_buffers` / `_live_pipelines` sets. Used by `tests/visualizer/test_vk_leaks.py` to catch buffer/pipeline leaks in training loops (a real bug that caused a full system lockup before the leak fix).
+
+When the renderer moves to Vulkan, add the same pattern for image-class resources: `_live_images`, `_live_framebuffers`, `_live_samplers`, `_live_descriptor_pools` if not subsumed by pipeline. Each new resource wrapper should accept `ctx=self` in its constructor and call `ctx._live_<type>.discard(id(self))` in `destroy()`. Then add a render-loop leak test mirroring `test_training_step_no_leak`: warm up, snapshot, render N frames, assert counts flat.
