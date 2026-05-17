@@ -268,3 +268,201 @@ class TestBeatCRNNForward:
         # Linear(48→3): 48*3 + 3 = 147
         # Total: 18899
         assert n == 6944 + 11808 + 147
+
+
+class TestVkLinearBackward:
+    """VkLinear backward must match PyTorch autograd."""
+
+    def test_linear_backward_no_relu(self):
+        from flame_sheep.wallpaper_ml import VkLinear
+
+        B, I, O = 2, 8, 4
+        rng = np.random.default_rng(55)
+
+        x = rng.standard_normal((B, I)).astype(np.float32)
+        W = rng.standard_normal((I, O)).astype(np.float32)
+        b = rng.standard_normal(O).astype(np.float32)
+        dy = rng.standard_normal((B, O)).astype(np.float32)
+
+        # --- Vulkan ---
+        layer = VkLinear(gpu, I, O, batch_size=B, relu=False)
+        gpu.upload(layer.weight_buf, W.ravel())
+        gpu.upload(layer.bias_buf, b)
+
+        in_buf = gpu.create_buffer(B * I * 4)
+        gpu.upload(in_buf, x.ravel())
+
+        # Forward (saves input for backward)
+        layer.forward(in_buf, B, (I,))
+        layer.zero_grad()
+
+        # Backward
+        grad_out_buf = gpu.create_buffer(B * O * 4)
+        gpu.upload(grad_out_buf, dy.ravel())
+        grad_in_buf = layer.backward(grad_out_buf, B)
+
+        vk_dx = gpu.download(grad_in_buf, np.float32, B * I).reshape(B, I)
+        vk_dW = gpu.download(layer.grad_weight_buf, np.uint32, I * O)
+        vk_dW = vk_dW.view(np.float32).reshape(I, O)
+        vk_db = gpu.download(layer.grad_bias_buf, np.uint32, O)
+        vk_db = vk_db.view(np.float32)
+
+        # --- PyTorch reference ---
+        x_t = torch.from_numpy(x).requires_grad_(True)
+        W_t = torch.from_numpy(W.T.copy())  # [O, I]
+        b_t = torch.from_numpy(b)
+        lin = torch.nn.Linear(I, O, bias=True)
+        lin.weight.data = W_t
+        lin.bias.data = b_t
+
+        out_t = lin(x_t)
+        out_t.backward(torch.from_numpy(dy))
+
+        pt_dx = x_t.grad.numpy()
+        pt_dW = lin.weight.grad.numpy().T  # [O, I] → [I, O]
+        pt_db = lin.bias.grad.numpy()
+
+        np.testing.assert_allclose(vk_dx, pt_dx, atol=1e-4, rtol=1e-4)
+        np.testing.assert_allclose(vk_dW, pt_dW, atol=1e-4, rtol=1e-4)
+        np.testing.assert_allclose(vk_db, pt_db, atol=1e-4, rtol=1e-4)
+
+    def test_linear_backward_with_relu(self):
+        from flame_sheep.wallpaper_ml import VkLinear
+
+        B, I, O = 2, 8, 4
+        rng = np.random.default_rng(77)
+
+        x = rng.standard_normal((B, I)).astype(np.float32)
+        W = rng.standard_normal((I, O)).astype(np.float32)
+        b = rng.standard_normal(O).astype(np.float32)
+        dy = rng.standard_normal((B, O)).astype(np.float32)
+
+        # --- Vulkan ---
+        layer = VkLinear(gpu, I, O, batch_size=B, relu=True)
+        gpu.upload(layer.weight_buf, W.ravel())
+        gpu.upload(layer.bias_buf, b)
+
+        in_buf = gpu.create_buffer(B * I * 4)
+        gpu.upload(in_buf, x.ravel())
+
+        layer.forward(in_buf, B, (I,))
+        layer.zero_grad()
+
+        grad_out_buf = gpu.create_buffer(B * O * 4)
+        gpu.upload(grad_out_buf, dy.ravel())
+        grad_in_buf = layer.backward(grad_out_buf, B)
+
+        vk_dx = gpu.download(grad_in_buf, np.float32, B * I).reshape(B, I)
+        vk_dW = gpu.download(layer.grad_weight_buf, np.uint32, I * O).view(np.float32).reshape(I, O)
+        vk_db = gpu.download(layer.grad_bias_buf, np.uint32, O).view(np.float32)
+
+        # --- PyTorch reference ---
+        x_t = torch.from_numpy(x).requires_grad_(True)
+        lin = torch.nn.Linear(I, O, bias=True)
+        lin.weight.data = torch.from_numpy(W.T.copy())
+        lin.bias.data = torch.from_numpy(b)
+
+        out_t = torch.relu(lin(x_t))
+        out_t.backward(torch.from_numpy(dy))
+
+        pt_dx = x_t.grad.numpy()
+        pt_dW = lin.weight.grad.numpy().T
+        pt_db = lin.bias.grad.numpy()
+
+        np.testing.assert_allclose(vk_dx, pt_dx, atol=1e-4, rtol=1e-4)
+        np.testing.assert_allclose(vk_dW, pt_dW, atol=1e-4, rtol=1e-4)
+        np.testing.assert_allclose(vk_db, pt_db, atol=1e-4, rtol=1e-4)
+
+
+class TestVkGRUBackward:
+    """VkGRU backward (single timestep) must match PyTorch autograd."""
+
+    def test_single_step_bptt(self):
+        from flame_sheep.wallpaper_ml import VkGRU
+
+        B, I, H = 2, 8, 4
+        rng = np.random.default_rng(123)
+
+        x = rng.standard_normal((B, I)).astype(np.float32)
+        h0 = rng.standard_normal((B, H)).astype(np.float32)
+        dh = rng.standard_normal((B, H)).astype(np.float32)
+
+        # PyTorch GRU
+        gru = torch.nn.GRU(I, H, num_layers=1, batch_first=True, bias=True)
+        with torch.no_grad():
+            wih = gru.weight_ih_l0.numpy()
+            whh = gru.weight_hh_l0.numpy()
+            bih = gru.bias_ih_l0.numpy()
+            bhh = gru.bias_hh_l0.numpy()
+
+        # Convert weights to our layout
+        perm = [1, 0, 2]  # PyTorch: r,z,n → ours: z,r,h
+        W = np.zeros((3, I, H), dtype=np.float32)
+        U = np.zeros((3, H, H), dtype=np.float32)
+        bias = np.zeros(6 * H, dtype=np.float32)
+        for g in range(3):
+            pg = perm[g]
+            W[g] = wih[pg*H:(pg+1)*H, :].T
+            U[g] = whh[pg*H:(pg+1)*H, :].T
+            bias[g * H:(g+1) * H] = bih[pg*H:(pg+1)*H]
+            bias[(g+3) * H:(g+4) * H] = bhh[pg*H:(pg+1)*H]
+
+        # --- Vulkan: forward then backward ---
+        layer = VkGRU(gpu, I, H, batch_size=B, max_seq_len=4)
+        gpu.upload(layer.W_buf, W.ravel())
+        gpu.upload(layer.U_buf, U.ravel())
+        gpu.upload(layer.bias_buf, bias)
+        gpu.upload(layer.hidden_buf, h0.ravel())
+        layer._saved_inputs = []
+        layer._seq_pos = 0
+
+        in_buf = gpu.create_buffer(B * I * 4)
+        gpu.upload(in_buf, x.ravel())
+
+        layer.forward(in_buf, B, (I,))
+        layer.zero_grad()
+
+        grad_h_buf = gpu.create_buffer(B * H * 4)
+        gpu.upload(grad_h_buf, dh.ravel())
+
+        grad_in_buf = layer.backward(grad_h_buf, B)
+
+        vk_dx = gpu.download(grad_in_buf, np.float32, B * I).reshape(B, I)
+        vk_dW = gpu.download(layer.grad_W_buf, np.uint32, 3 * I * H).view(np.float32).reshape(3, I, H)
+        vk_dU = gpu.download(layer.grad_U_buf, np.uint32, 3 * H * H).view(np.float32).reshape(3, H, H)
+        vk_dbias = gpu.download(layer.grad_bias_buf, np.uint32, 6 * H).view(np.float32)
+
+        # --- PyTorch reference ---
+        x_t = torch.from_numpy(x).unsqueeze(1).requires_grad_(True)
+        h0_t = torch.from_numpy(h0).unsqueeze(0).requires_grad_(True)
+
+        _, hn = gru(x_t, h0_t)
+        hn.backward(torch.from_numpy(dh).unsqueeze(0))
+
+        pt_dx = x_t.grad.squeeze(1).numpy()
+        pt_dh0 = h0_t.grad.squeeze(0).numpy()
+
+        # Weight gradients from PyTorch
+        pt_dWih = gru.weight_ih_l0.grad.numpy()  # [3H, I]
+        pt_dWhh = gru.weight_hh_l0.grad.numpy()  # [3H, H]
+        pt_dbih = gru.bias_ih_l0.grad.numpy()    # [3H]
+        pt_dbhh = gru.bias_hh_l0.grad.numpy()    # [3H]
+
+        # Convert PyTorch grads to our layout for comparison
+        pt_dW = np.zeros((3, I, H), dtype=np.float32)
+        pt_dU = np.zeros((3, H, H), dtype=np.float32)
+        pt_dbias = np.zeros(6 * H, dtype=np.float32)
+        for g in range(3):
+            pg = perm[g]
+            pt_dW[g] = pt_dWih[pg*H:(pg+1)*H, :].T
+            pt_dU[g] = pt_dWhh[pg*H:(pg+1)*H, :].T
+            pt_dbias[g * H:(g+1) * H] = pt_dbih[pg*H:(pg+1)*H]
+            pt_dbias[(g+3) * H:(g+4) * H] = pt_dbhh[pg*H:(pg+1)*H]
+
+        # Check input gradient
+        np.testing.assert_allclose(vk_dx, pt_dx, atol=1e-4, rtol=1e-3)
+
+        # Check weight gradients
+        np.testing.assert_allclose(vk_dW, pt_dW, atol=1e-4, rtol=1e-3)
+        np.testing.assert_allclose(vk_dU, pt_dU, atol=1e-4, rtol=1e-3)
+        np.testing.assert_allclose(vk_dbias, pt_dbias, atol=1e-4, rtol=1e-3)
