@@ -152,10 +152,13 @@ class Genome:
     def is_viable(self, n_test: int = 2000, bound: float = 4.0) -> bool:
         """Quick CPU chaos game including variations to check attractor stays in bounds.
         Returns True if enough points land inside the viewport."""
-        # existing fast bounds check stays as-is for now
-        # TODO: once _aesthetic_score_cpu is implemented, consider:
-        # scores = self._aesthetic_score_cpu(n_test)
-        # return scores['coverage'] > 0.05 and scores['entropy'] > 0.1
+        old_err = np.seterr(over='ignore', invalid='ignore')
+        try:
+            return self._is_viable_impl(n_test, bound)
+        finally:
+            np.seterr(**old_err)
+
+    def _is_viable_impl(self, n_test: int = 2000, bound: float = 4.0) -> bool:
         rng  = np.random.default_rng()
         x, y = 0.0, 0.0
         hits = 0
@@ -213,8 +216,17 @@ class Genome:
         point positions (not grid cells) for accurate centroid estimation.
 
         Returns dict with: centroid_x, centroid_y, bbox_min_x, bbox_min_y,
-        bbox_max_x, bbox_max_y, coverage, in_viewport.
+        bbox_max_x, bbox_max_y, coverage, occupied_cells, in_viewport.
         """
+        # Suppress overflow/invalid warnings from variations hitting infinity.
+        # The non-finite check at line 254 handles these gracefully.
+        old_err = np.seterr(over='ignore', invalid='ignore')
+        try:
+            return self._survey_attractor_impl(n_test, survey_bound)
+        finally:
+            np.seterr(**old_err)
+
+    def _survey_attractor_impl(self, n_test: int = 5000, survey_bound: float = 8.0) -> dict:
         rng = np.random.default_rng()
         x, y = 0.0, 0.0
         fuse = 20
