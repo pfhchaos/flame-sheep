@@ -125,20 +125,35 @@ def normalize_channels(
     L = L.astype(np.float32)
 
     # --- Channel H: average palette index ---
+    # Compress active range to [0, 240/255] so 1.0 (255/255) can serve as
+    # a sentinel for never-hit pixels. Otherwise never-hit pixels (color=0,
+    # hits=0 → safe_hits=1 → H=0) collide with "hit with low palette index".
     safe_hits = np.maximum(static_hits, 1).astype(np.float64)
     H = static_colors.astype(np.float64) / (safe_hits * COLOR_SCALE)
-    H = np.clip(H, 0.0, 1.0).astype(np.float32)
+    H = np.clip(H, 0.0, 1.0)
+    H = H * (240.0 / 255.0)
+    H[static_hits == 0] = 1.0
+    H = H.astype(np.float32)
 
     # --- Channel S: swept rotation density ---
-    # log + linear (no gamma compression). The corrected swept render
-    # (with real angular structure, not a repeated spirograph) produces a
-    # broad-and-bright distribution where every pixel in the attractor
-    # at any rotation accumulates hits. Gamma=1/6 (as used for L) would
-    # compress this to ~1.0 everywhere, killing the input signal.
+    # log compresses the heavy tail, then per-image percentile contrast
+    # stretch boosts edge contrast. Without the stretch, the corrected
+    # swept render produces a mid-gray-to-white range with almost no pure
+    # black — hard for conv filters to detect shape boundaries.
+    # Gamma compression (as used for L) is not applied: the swept
+    # distribution is broad-and-bright (every pixel hits at some rotation),
+    # so gamma would just push everything to ~1.0.
     S = np.log1p(swept_hits.astype(np.float64))
     S_max = S.max()
     if S_max > 0:
         S /= S_max
+    # Per-image contrast stretch: clip bottom 5% to black, top 5% to white,
+    # linearly stretch the middle. Guard against degenerate genomes (all-zero
+    # S, flying dots that snuck through).
+    lo = np.percentile(S, 5)
+    hi = np.percentile(S, 95)
+    if hi > lo:
+        S = np.clip((S - lo) / (hi - lo), 0.0, 1.0)
     S = S.astype(np.float32)
 
     # --- Channel A: first-hit iteration (emergence order) ---
