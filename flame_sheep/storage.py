@@ -206,6 +206,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # from indices 15/17/21/22 to 70/71/72/73.  The originals now read from
     # the affine at render time.
     _migrate_variation_reindex(conn)
+    _migrate_blob_separation(conn)
 
 
 def _migrate_variation_reindex(conn: sqlite3.Connection) -> None:
@@ -268,6 +269,84 @@ def _migrate_variation_reindex(conn: sqlite3.Connection) -> None:
         import sys
         print(f'[storage] Migrated {migrated}/{len(rows)} genomes '
               f'(variation reindex v1)', file=sys.stderr)
+
+
+# Blob columns that live in the separate `genome_blobs` table
+BLOB_COLS = ('render_static', 'render_swept',
+             'hist_static', 'hist_swept', 'hist_transform', 'hist_first_hit')
+
+
+def _migrate_blob_separation(conn: sqlite3.Connection) -> None:
+    """Move 6 BLOB columns off `genomes` into a sibling `genome_blobs` table.
+
+    Inline blobs on a wide table force SQLite to walk multi-MB row pages
+    for queries that only touch scalars (compare mode candidate building
+    stalled hundreds of ms before this migration). Moving them to a
+    sibling table keeps the scalar pages dense.
+
+    One-shot — guarded by metadata key 'blob_separation_v1'.
+    """
+    if 'metadata' not in {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}:
+        conn.execute('CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)')
+        conn.commit()
+
+    row = conn.execute(
+        "SELECT value FROM metadata WHERE key='blob_separation_v1'").fetchone()
+    if row is not None:
+        return
+
+    # Need foreign_keys for ON DELETE CASCADE to actually fire on row delete.
+    conn.execute('PRAGMA foreign_keys = ON')
+
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS genome_blobs (
+            genome_id      INTEGER PRIMARY KEY
+                                    REFERENCES genomes(id) ON DELETE CASCADE,
+            render_static  BLOB,
+            render_swept   BLOB,
+            hist_static    BLOB,
+            hist_swept     BLOB,
+            hist_transform BLOB,
+            hist_first_hit BLOB
+        )
+    ''')
+
+    # Check whether the old columns even exist (fresh DBs won't have them).
+    existing = {r[1] for r in conn.execute('PRAGMA table_info(genomes)').fetchall()}
+    have_old_cols = all(c in existing for c in BLOB_COLS)
+
+    if have_old_cols:
+        # Copy any non-empty blob rows.
+        n_before = conn.execute(
+            'SELECT COUNT(*) FROM genomes '
+            'WHERE render_static IS NOT NULL OR hist_static IS NOT NULL '
+            'OR render_swept IS NOT NULL OR hist_swept IS NOT NULL '
+            'OR hist_transform IS NOT NULL OR hist_first_hit IS NOT NULL'
+        ).fetchone()[0]
+        conn.execute('''
+            INSERT INTO genome_blobs
+                (genome_id, render_static, render_swept,
+                 hist_static, hist_swept, hist_transform, hist_first_hit)
+            SELECT id, render_static, render_swept,
+                   hist_static, hist_swept, hist_transform, hist_first_hit
+              FROM genomes
+             WHERE render_static IS NOT NULL OR hist_static IS NOT NULL
+               OR render_swept IS NOT NULL OR hist_swept IS NOT NULL
+               OR hist_transform IS NOT NULL OR hist_first_hit IS NOT NULL
+        ''')
+        n_after = conn.execute('SELECT COUNT(*) FROM genome_blobs').fetchone()[0]
+        if n_after != n_before:
+            raise RuntimeError(
+                f'blob migration row count mismatch: {n_before} expected, {n_after} copied')
+        if n_after:
+            import sys
+            print(f'[storage] Copied {n_after} blob rows to genome_blobs '
+                  f'(blob separation v1)', file=sys.stderr)
+
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('blob_separation_v1', 'done')")
+    conn.commit()
 
 
 # ------------------------------------------------------------------
@@ -726,6 +805,59 @@ class Library:
         )
         self.conn.commit()
         return cur.lastrowid
+
+    # --- Blob storage (separate table) ---
+
+    def load_genome_blobs(self, genome_id: int,
+                          cols: list[str] | None = None) -> dict:
+        """Fetch named blob columns for a genome.
+
+        cols: subset of BLOB_COLS. None = all columns.
+        Returns {col_name: bytes | None}. Missing rows return all-None.
+        """
+        if cols is None:
+            cols = list(BLOB_COLS)
+        cols_sql = ', '.join(cols)
+        row = self.conn.execute(
+            f'SELECT {cols_sql} FROM genome_blobs WHERE genome_id = ?',
+            (genome_id,)
+        ).fetchone()
+        if row is None:
+            return {c: None for c in cols}
+        return dict(zip(cols, row))
+
+    def has_render(self, genome_id: int) -> bool:
+        """Quick existence check — does this genome have a stored render?"""
+        row = self.conn.execute(
+            'SELECT render_static IS NOT NULL FROM genome_blobs '
+            'WHERE genome_id = ?', (genome_id,)
+        ).fetchone()
+        return bool(row and row[0])
+
+    def save_genome_blobs(self, genome_id: int, **blobs) -> None:
+        """INSERT OR REPLACE blob columns for a genome.
+
+        Pass any subset of the 6 blob columns as keyword arguments.
+        Existing values for unspecified columns are PRESERVED (unlike
+        INSERT OR REPLACE which would null them).
+        """
+        invalid = set(blobs) - set(BLOB_COLS)
+        if invalid:
+            raise ValueError(f'unknown blob columns: {invalid}')
+
+        # Fetch existing row so we don't null out unspecified columns
+        existing = self.load_genome_blobs(genome_id)
+        existing.update(blobs)
+
+        cols = list(BLOB_COLS)
+        placeholders = ', '.join(['?'] * len(cols))
+        cols_sql = ', '.join(cols)
+        self.conn.execute(
+            f'INSERT OR REPLACE INTO genome_blobs '
+            f'(genome_id, {cols_sql}) VALUES (?, {placeholders})',
+            (genome_id, *(existing[c] for c in cols))
+        )
+        self.conn.commit()
 
     def load_genome(self, genome_id: int) -> Genome:
         """Load a genome by ID.

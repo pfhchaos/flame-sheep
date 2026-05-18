@@ -86,7 +86,7 @@ class DbImageStore:
 
         if self._channels == 'domain':
             row = self.conn.execute(
-                'SELECT hist_static, hist_swept, hist_first_hit FROM genomes WHERE id=?',
+                'SELECT hist_static, hist_swept, hist_first_hit FROM genome_blobs WHERE genome_id=?',
                 (genome_id,)).fetchone()
             if row is None or row['hist_static'] is None or row['hist_swept'] is None:
                 return None
@@ -95,7 +95,7 @@ class DbImageStore:
                 self.image_size)
         else:
             row = self.conn.execute(
-                'SELECT render_static, render_swept FROM genomes WHERE id=?',
+                'SELECT render_static, render_swept FROM genome_blobs WHERE genome_id=?',
                 (genome_id,)).fetchone()
             if row is None or row['render_static'] is None:
                 return None
@@ -152,7 +152,7 @@ def load_training_pairs(db_path: str) -> tuple[list[tuple[int, int]], dict]:
 
     # Filter to genomes that have renders
     rendered = set(r[0] for r in conn.execute(
-        'SELECT id FROM genomes WHERE render_static IS NOT NULL'
+        'SELECT genome_id FROM genome_blobs WHERE render_static IS NOT NULL'
     ).fetchall())
     liked_ids = [gid for gid in liked_ids if gid in rendered]
     disliked_ids = [gid for gid in disliked_ids if gid in rendered]

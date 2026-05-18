@@ -192,6 +192,7 @@ def _db_path() -> Path:
 
 def _update_genome(conn: sqlite3.Connection, gid: int,
                    scores: dict[str, float]) -> None:
+    # Scalar metrics on the genomes table
     conn.execute(
         '''UPDATE genomes
            SET coverage=?, entropy=?, color_entropy=?,
@@ -207,7 +208,6 @@ def _update_genome(conn: sqlite3.Connection, gid: int,
                cluster_detail=?,
                tf_coverage=?, tf_n_clusters=?, tf_avg_purity=?,
                tf_symmetry_best=?, tf_balance=?, tf_separation=?,
-               render_static=?, render_swept=?,
                score_version=?
            WHERE id=?''',
         (scores['coverage'], scores['entropy'],
@@ -234,11 +234,29 @@ def _update_genome(conn: sqlite3.Connection, gid: int,
          scores.get('tf_symmetry_best'),
          scores.get('tf_balance'),
          scores.get('tf_separation'),
-         scores.get('render_static'),
-         scores.get('render_swept'),
          SCORE_VERSION,
          gid),
     )
+    # Render blobs on genome_blobs — preserve any existing blobs we didn't render.
+    rs = scores.get('render_static')
+    rw = scores.get('render_swept')
+    if rs is not None or rw is not None:
+        existing = conn.execute(
+            'SELECT render_static, render_swept, hist_static, hist_swept, '
+            'hist_transform, hist_first_hit FROM genome_blobs WHERE genome_id=?',
+            (gid,)
+        ).fetchone()
+        cur_rs, cur_rw, hs, hsw, ht, hfh = existing or (None,) * 6
+        conn.execute(
+            '''INSERT OR REPLACE INTO genome_blobs
+               (genome_id, render_static, render_swept,
+                hist_static, hist_swept, hist_transform, hist_first_hit)
+               VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            (gid,
+             rs if rs is not None else cur_rs,
+             rw if rw is not None else cur_rw,
+             hs, hsw, ht, hfh),
+        )
 
 
 def main():

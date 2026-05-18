@@ -129,11 +129,11 @@ def main():
     conn = sqlite3.connect(str(args.db))
     if args.channels == 'domain':
         rows = conn.execute(
-            'SELECT id FROM genomes WHERE hist_static IS NOT NULL AND hist_swept IS NOT NULL'
+            'SELECT genome_id FROM genome_blobs WHERE hist_static IS NOT NULL AND hist_swept IS NOT NULL'
         ).fetchall()
     else:
         rows = conn.execute(
-            'SELECT id FROM genomes WHERE render_static IS NOT NULL'
+            'SELECT genome_id FROM genome_blobs WHERE render_static IS NOT NULL'
         ).fetchall()
     conn.close()
     all_ids = [r[0] for r in rows]

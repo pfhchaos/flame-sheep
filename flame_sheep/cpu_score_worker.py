@@ -265,14 +265,15 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                 continue
 
             row = conn.execute(
-                '''SELECT id, render_static, render_swept,
-                          hist_static, hist_transform,
-                          hist_swept, hist_first_hit
-                   FROM genomes
-                   WHERE render_version >= ?
-                     AND (score_version IS NULL OR score_version < ?)
-                     AND render_static IS NOT NULL
-                   LIMIT 1''',
+                '''SELECT g.id, b.render_static, b.render_swept,
+                          b.hist_static, b.hist_transform,
+                          b.hist_swept, b.hist_first_hit
+                     FROM genomes g
+                     JOIN genome_blobs b ON b.genome_id = g.id
+                    WHERE g.render_version >= ?
+                      AND (g.score_version IS NULL OR g.score_version < ?)
+                      AND b.render_static IS NOT NULL
+                    LIMIT 1''',
                 (RENDER_VERSION, SCORE_VERSION),
             ).fetchone()
 
@@ -281,13 +282,14 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                 cnn_row = None
                 if cnn_model is not None and cnn_weights_hash:
                     cnn_row = conn.execute(
-                        '''SELECT id, render_static, render_swept,
-                                  hist_static, hist_swept, hist_first_hit
-                           FROM genomes
-                           WHERE render_version >= ?
-                             AND render_static IS NOT NULL
-                             AND (cnn_weights_hash IS NULL OR cnn_weights_hash != ?)
-                           LIMIT 1''',
+                        '''SELECT g.id, b.render_static, b.render_swept,
+                                  b.hist_static, b.hist_swept, b.hist_first_hit
+                             FROM genomes g
+                             JOIN genome_blobs b ON b.genome_id = g.id
+                            WHERE g.render_version >= ?
+                              AND b.render_static IS NOT NULL
+                              AND (g.cnn_weights_hash IS NULL OR g.cnn_weights_hash != ?)
+                            LIMIT 1''',
                         (RENDER_VERSION, cnn_weights_hash),
                     ).fetchone()
                     if cnn_row is not None:

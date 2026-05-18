@@ -224,22 +224,27 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 swept_scores = _score_from_histogram(swept_hit_grid, swept_color_grid)
 
                 # --- Store results ---
+                # Scalar metadata stays on the genomes table.
                 conn.execute(
                     '''UPDATE genomes
-                       SET render_static=?, render_swept=?,
-                           hist_static=?, hist_swept=?, hist_transform=?,
-                           hist_first_hit=?,
-                           centroid_x=?, centroid_y=?, balance=?,
+                       SET centroid_x=?, centroid_y=?, balance=?,
                            render_version=?
                        WHERE id=?''',
-                    (render_static, render_swept,
-                     hist_static_blob, hist_swept_blob, hist_transform_blob,
-                     hist_first_hit_blob,
-                     swept_scores.get('centroid_offset_x'),
+                    (swept_scores.get('centroid_offset_x'),
                      swept_scores.get('centroid_offset_y'),
                      swept_scores.get('balance'),
                      RENDER_VERSION,
                      gid),
+                )
+                # Blobs go to the sibling table — keep them off the wide row.
+                conn.execute(
+                    '''INSERT OR REPLACE INTO genome_blobs
+                       (genome_id, render_static, render_swept,
+                        hist_static, hist_swept, hist_transform, hist_first_hit)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                    (gid, render_static, render_swept,
+                     hist_static_blob, hist_swept_blob, hist_transform_blob,
+                     hist_first_hit_blob),
                 )
                 conn.commit()
 
