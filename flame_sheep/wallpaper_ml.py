@@ -211,7 +211,12 @@ class VkConv2d(VkLayer):
         fan_in = self.in_channels * self.kernel_size * self.kernel_size
         std = float(np.sqrt(2.0 / fan_in))
         kernel = (rng.standard_normal(n_k) * std).astype(np.float32)
-        bias = np.zeros(self.out_channels, dtype=np.float32)
+        # Small positive bias to keep ReLU active on first forward — avoids
+        # the dead-ReLU trap when inputs aren't zero-mean (our domain
+        # channels run high because sentinel=1.0 dominates sparse regions).
+        # If outputs land below zero, ReLU kills them AND the backward
+        # shader masks their gradients, freezing the layer permanently.
+        bias = np.full(self.out_channels, 0.1, dtype=np.float32)
         self.gpu.upload(self.kernel_buf, kernel)
         self.gpu.upload(self.bias_buf, bias)
 
