@@ -26,8 +26,12 @@ def tmp_lib():
             gid = lib.save_genome(g, scores)
             # Fake a render blob so the genome is "rendered"
             lib.conn.execute(
-                'UPDATE genomes SET render_static=?, cnn_score=? WHERE id=?',
-                (b'fake_png', float(i) * 0.1, gid),
+                'INSERT OR REPLACE INTO genome_blobs (genome_id, render_static) VALUES (?, ?)',
+                (gid, b'fake_png'),
+            )
+            lib.conn.execute(
+                'UPDATE genomes SET cnn_score=? WHERE id=?',
+                (float(i) * 0.1, gid),
             )
         lib.conn.commit()
         yield lib
@@ -45,8 +49,8 @@ def tmp_lib_unscored():
             scores = g.aesthetic_score()
             gid = lib.save_genome(g, scores)
             lib.conn.execute(
-                'UPDATE genomes SET render_static=? WHERE id=?',
-                (b'fake_png', gid),
+                'INSERT OR REPLACE INTO genome_blobs (genome_id, render_static) VALUES (?, ?)',
+                (gid, b'fake_png'),
             )
         lib.conn.commit()
         yield lib
@@ -102,8 +106,8 @@ class TestPairSelection:
             g = Genome.random(rng)
             gid = lib.save_genome(g, g.aesthetic_score())
             lib.conn.execute(
-                'UPDATE genomes SET render_static=? WHERE id=?',
-                (b'fake', gid))
+                'INSERT OR REPLACE INTO genome_blobs (genome_id, render_static) VALUES (?, ?)',
+                (gid, b'fake'))
             lib.conn.commit()
             cm = CompareMode(lib)
             pair = cm.pick_pair()

@@ -56,12 +56,15 @@ class CompareMode:
 
     def _build_candidates(self) -> None:
         """Score all genomes and sort by score for pair selection."""
-        # Get all genomes with renders
+        # Get all genomes with renders. The render presence check goes to
+        # genome_blobs (where the column is dense) — the main genomes table
+        # only has cheap scalars after blob separation.
         rows = self.lib.conn.execute(
-            '''SELECT id, cnn_score FROM genomes
-               WHERE render_static IS NOT NULL
-                 AND COALESCE(archived, 0) = 0
-               ORDER BY id'''
+            '''SELECT g.id, g.cnn_score FROM genomes g
+                JOIN genome_blobs b ON b.genome_id = g.id
+               WHERE b.render_static IS NOT NULL
+                 AND COALESCE(g.archived, 0) = 0
+               ORDER BY g.id'''
         ).fetchall()
 
         scored = []

@@ -30,7 +30,7 @@ def render_genome(genome_id: int, conn, output_dir: Path,
     row = conn.execute(
         '''SELECT render_static, render_swept,
                   hist_static, hist_swept, hist_first_hit
-           FROM genomes WHERE id = ?''',
+           FROM genome_blobs WHERE genome_id = ?''',
         (genome_id,)
     ).fetchone()
 
