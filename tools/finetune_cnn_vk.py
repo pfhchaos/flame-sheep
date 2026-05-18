@@ -214,6 +214,13 @@ def main():
                         datefmt='%H:%M:%S')
 
     parser = argparse.ArgumentParser(description='Fine-tune CNN scorer on personal preferences from DB')
+    parser.add_argument('--from-scratch', action='store_true',
+                        help='Skip --base-weights, init the model from Kaiming. '
+                             'Use this when starting fresh against the current '
+                             'normalization version. Loading legacy .npy as base '
+                             'weights with new standardization gives the model '
+                             'two contradictory things to learn at once and '
+                             'training stalls.')
     parser.add_argument('--base-weights', type=str,
                         default=str(Path(__file__).resolve().parent.parent /
                                     'flame_sheep/data/cnn_scorer_vk.npy'),
@@ -243,20 +250,31 @@ def main():
     output = Path(args.output) if args.output else (
         Path(__file__).resolve().parent.parent / 'flame_sheep/data/cnn_scorer_personal_vk.npy')
 
-    # Load base weights + normalization version stamp (None for legacy .npy)
+    # Load base weights + normalization version stamp (None for legacy .npy).
+    # --from-scratch skips this and Kaiming-inits the model after we know
+    # the layer config (decided below from --model-size).
     from flame_sheep.cnn_scorer import (
         load_cnn_weights_file, save_cnn_weights_file,
     )
-    base_weights, base_norm_version = load_cnn_weights_file(args.base_weights)
-    n_params = len(base_weights)
-    log.info('Base weights: %d params from %s (norm_version=%s)',
-             n_params, args.base_weights, base_norm_version)
+    base_weights = None
+    base_norm_version = None
+    if not args.from_scratch:
+        base_weights, base_norm_version = load_cnn_weights_file(args.base_weights)
+        n_params = len(base_weights)
+        log.info('Base weights: %d params from %s (norm_version=%s)',
+                 n_params, args.base_weights, base_norm_version)
+    else:
+        log.info('--from-scratch: skipping --base-weights, will Kaiming-init')
 
     import train_cnn_vk
 
     if args.model_size:
         train_cnn_vk.LAYERS = MODEL_CONFIGS[args.model_size]
         train_cnn_vk.MLP_HEAD = args.mlp_head
+    elif base_weights is None:
+        log.error('--from-scratch requires --model-size to be specified '
+                  '(no base weights to auto-detect from).')
+        sys.exit(1)
     else:
         # Auto-detect model size and head type from param count
         matched = False
@@ -347,8 +365,12 @@ def main():
                               batch_size=args.batch_size,
                               image_size=args.image_size,
                               mlp_head=train_cnn_vk.MLP_HEAD)
-    model.load_weights(base_weights)
-    log.info('Loaded base weights: %d params', model.param_count())
+    if base_weights is not None:
+        model.load_weights(base_weights)
+        log.info('Loaded base weights: %d params', model.param_count())
+    else:
+        model.init_weights()
+        log.info('Initialized fresh weights: %d params', model.param_count())
 
     # Input/gradient buffers
     input_buf = gpu.create_buffer(args.batch_size * 4 * args.image_size * args.image_size * 4)
