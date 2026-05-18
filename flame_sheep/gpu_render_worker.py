@@ -236,15 +236,40 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                      RENDER_VERSION,
                      gid),
                 )
-                # Blobs go to the sibling table — keep them off the wide row.
+                # Per-channel normalization stats for the trainer. Compute
+                # by re-running normalize_channels on this render's
+                # histograms; trivial CPU cost relative to the render.
+                from .scoring_channels import normalize_channels
+                try:
+                    channels = normalize_channels(hit_counts, color_accs,
+                                                  swept_hits, first_hit)
+                    chan_means = channels.mean(axis=(1, 2)).astype(np.float64)
+                    chan_stds = channels.std(axis=(1, 2)).astype(np.float64)
+                except Exception as _e:
+                    log.warning(f'channel stats failed for gid {gid}: {_e}')
+                    chan_means = (None, None, None, None)
+                    chan_stds = (None, None, None, None)
+
+                # Blobs + stats go to the sibling table — keep them off the wide row.
                 conn.execute(
                     '''INSERT OR REPLACE INTO genome_blobs
                        (genome_id, render_static, render_swept,
-                        hist_static, hist_swept, hist_transform, hist_first_hit)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                        hist_static, hist_swept, hist_transform, hist_first_hit,
+                        mean_h, mean_s, mean_l, mean_a,
+                        std_h,  std_s,  std_l,  std_a)
+                       VALUES (?, ?, ?, ?, ?, ?, ?,
+                               ?, ?, ?, ?, ?, ?, ?, ?)''',
                     (gid, render_static, render_swept,
                      hist_static_blob, hist_swept_blob, hist_transform_blob,
-                     hist_first_hit_blob),
+                     hist_first_hit_blob,
+                     float(chan_means[0]) if chan_means[0] is not None else None,
+                     float(chan_means[1]) if chan_means[1] is not None else None,
+                     float(chan_means[2]) if chan_means[2] is not None else None,
+                     float(chan_means[3]) if chan_means[3] is not None else None,
+                     float(chan_stds[0]) if chan_stds[0] is not None else None,
+                     float(chan_stds[1]) if chan_stds[1] is not None else None,
+                     float(chan_stds[2]) if chan_stds[2] is not None else None,
+                     float(chan_stds[3]) if chan_stds[3] is not None else None),
                 )
                 conn.commit()
 

@@ -64,15 +64,24 @@ def _load_image_domain(hist_static: bytes, hist_swept: bytes,
 
 
 class DbImageStore:
-    """Lazy-loading image store backed by the library DB."""
+    """Lazy-loading image store backed by the library DB.
+
+    normalization: optional (mean, std) tuple of (4,) arrays. If provided,
+    every loaded image is standardized so model inputs match what Kaiming
+    weight init expects (zero mean / unit variance per channel). Cached
+    after standardization, so changing this in the middle of a run won't
+    affect already-loaded images.
+    """
 
     def __init__(self, db_path: str, image_size: int, channels: str = 'rgb',
-                 cache_gb: float = 2.0):
+                 cache_gb: float = 2.0,
+                 normalization: tuple | None = None):
         import sqlite3
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.image_size = image_size
         self._channels = channels
+        self._normalization = normalization
 
         bytes_per_image = 4 * image_size * image_size * 4
         self.max_cache = int(cache_gb * 1e9 / bytes_per_image)
@@ -102,6 +111,10 @@ class DbImageStore:
             img = _load_image_rgb(
                 row['render_static'], row['render_swept'], self.image_size)
 
+        if self._normalization is not None:
+            from flame_sheep.scoring_channels import standardize_channels
+            img = standardize_channels(img, *self._normalization)
+
         # LRU cache
         while len(self._cache) >= self.max_cache:
             old = self._access_order.pop(0)
@@ -124,8 +137,12 @@ class DbImageStore:
         self.conn.close()
 
 
-def load_training_pairs(db_path: str) -> tuple[list[tuple[int, int]], dict]:
-    """Load all training pairs from DB.
+def load_training_pairs(db_path: str, mode: str = 'mixed') -> tuple[list[tuple[int, int]], dict]:
+    """Load training pairs from DB.
+
+    Args:
+        db_path: Path to library DB
+        mode: 'mixed' (pairwise + thumbs), 'thumbs' (thumbs only), 'pairwise' (pairwise only)
 
     Returns:
         pairs: list of (winner_id, loser_id)
@@ -157,18 +174,26 @@ def load_training_pairs(db_path: str) -> tuple[list[tuple[int, int]], dict]:
     liked_ids = [gid for gid in liked_ids if gid in rendered]
     disliked_ids = [gid for gid in disliked_ids if gid in rendered]
 
-    # Sample liked-vs-disliked pairs (cap to avoid overwhelming pairwise data)
     rng = np.random.default_rng()
     thumbs_pairs = []
     if liked_ids and disliked_ids:
-        # Generate up to 2x the pairwise count from thumbs
-        max_thumbs = len(pairwise_pairs) * 2
-        for _ in range(max_thumbs):
+        # In thumbs mode, generate enough pairs to make training meaningful
+        # In mixed mode, cap at 2x pairwise count
+        if mode == 'thumbs':
+            n_thumbs = len(liked_ids) * len(disliked_ids)  # all combinations
+        else:
+            n_thumbs = max(len(pairwise_pairs) * 2, 1000)
+        for _ in range(n_thumbs):
             w = rng.choice(liked_ids)
             l = rng.choice(disliked_ids)
             thumbs_pairs.append((w, l))
 
-    all_pairs = pairwise_pairs + thumbs_pairs
+    if mode == 'thumbs':
+        all_pairs = thumbs_pairs
+    elif mode == 'pairwise':
+        all_pairs = pairwise_pairs
+    else:  # mixed
+        all_pairs = pairwise_pairs + thumbs_pairs
     rng.shuffle(all_pairs)
 
     conn.close()
@@ -179,6 +204,7 @@ def load_training_pairs(db_path: str) -> tuple[list[tuple[int, int]], dict]:
         'thumbs_disliked': len(disliked_ids),
         'thumbs_pairs': len(thumbs_pairs),
         'total': len(all_pairs),
+        'mode': mode,
     }
     return all_pairs, stats
 
@@ -207,6 +233,9 @@ def main():
     parser.add_argument('--channels', type=str, default='rgb',
                         choices=['rgb', 'domain'],
                         help='Input channels: rgb (RGB+swept) or domain (histogram H/S/L/A)')
+    parser.add_argument('--data-mode', type=str, default='mixed',
+                        choices=['mixed', 'thumbs', 'pairwise'],
+                        help='Training data: mixed (default), thumbs only (curriculum stage 1), pairwise only (stage 2)')
     parser.add_argument('--output', type=str, default=None,
                         help='Output weights path (default: cnn_scorer_personal_vk.npy)')
     args = parser.parse_args()
@@ -214,10 +243,14 @@ def main():
     output = Path(args.output) if args.output else (
         Path(__file__).resolve().parent.parent / 'flame_sheep/data/cnn_scorer_personal_vk.npy')
 
-    # Detect model size from base weights
-    base_weights = np.load(args.base_weights).astype(np.float32)
+    # Load base weights + normalization version stamp (None for legacy .npy)
+    from flame_sheep.cnn_scorer import (
+        load_cnn_weights_file, save_cnn_weights_file,
+    )
+    base_weights, base_norm_version = load_cnn_weights_file(args.base_weights)
     n_params = len(base_weights)
-    log.info('Base weights: %d params from %s', n_params, args.base_weights)
+    log.info('Base weights: %d params from %s (norm_version=%s)',
+             n_params, args.base_weights, base_norm_version)
 
     import train_cnn_vk
 
@@ -256,7 +289,7 @@ def main():
     # Load training data from DB
     from flame_sheep.storage import _db_path
     db = str(_db_path())
-    all_pairs, stats = load_training_pairs(db)
+    all_pairs, stats = load_training_pairs(db, mode=args.data_mode)
     log.info('Training data: %d pairwise + %d thumbs-derived = %d total pairs',
              stats['pairwise'], stats['thumbs_pairs'], stats['total'])
     log.info('Thumbs: %d liked, %d disliked genomes',
@@ -275,8 +308,34 @@ def main():
     val_pairs = [all_pairs[i] for i in indices[split:]]
     log.info('Split: %d train, %d val', len(train_pairs), len(val_pairs))
 
+    # Load normalization stats. If present, all model inputs get
+    # standardized (zero mean / unit variance per channel) so Kaiming
+    # init's assumptions hold. Trained weights are stamped with the
+    # version so they can never be silently loaded with mismatched stats.
+    from flame_sheep.storage import Library as _Lib, NORMALIZATION_VERSION
+    _lib_norm = _Lib()
+    normalization = _lib_norm.get_normalization(NORMALIZATION_VERSION)
+    _lib_norm.close()
+    if normalization is None:
+        log.warning('No normalization stats — run tools/compute_normalization.py first. '
+                    'Training will proceed with identity normalization (legacy mode).')
+    else:
+        log.info('Normalization %s: mean=%s std=%s',
+                 NORMALIZATION_VERSION,
+                 [f'{x:.4f}' for x in normalization[0]],
+                 [f'{x:.4f}' for x in normalization[1]])
+
+    if base_norm_version is not None and base_norm_version != NORMALIZATION_VERSION:
+        raise RuntimeError(
+            f'Base weights normalization version mismatch: weights are '
+            f'{base_norm_version}, codebase expects {NORMALIZATION_VERSION}. '
+            f'Refusing to load — output scores would be silently wrong. '
+            f'Either bump NORMALIZATION_VERSION and rerun '
+            f'tools/compute_normalization.py, or load weights that match.')
+
     # Image store
-    store = DbImageStore(db, args.image_size, channels=args.channels)
+    store = DbImageStore(db, args.image_size, channels=args.channels,
+                          normalization=normalization)
 
     # Init GPU model
     gpu = VkCompute()
@@ -398,7 +457,7 @@ def main():
         if val_acc > best_acc:
             best_acc = val_acc
             best_weights = model.save_weights()
-            np.save(output, best_weights)
+            save_cnn_weights_file(output, best_weights, NORMALIZATION_VERSION)
             saved = f'  -> saved (best={best_acc:.3f})'
             patience = 0
         else:

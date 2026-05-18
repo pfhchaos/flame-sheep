@@ -19,9 +19,12 @@ from __future__ import annotations
 import csv
 import importlib.resources
 import io
+import logging
 from pathlib import Path
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 def rgb_to_hsl(rgb: np.ndarray) -> np.ndarray:
@@ -173,15 +176,56 @@ class AestheticNetVk(nn.Module):
         return self.head(x).squeeze(-1)
 
 
+def load_cnn_weights_file(path: str | Path) -> tuple[np.ndarray, str | None]:
+    """Load weight array + normalization version from a .npy or .npz file.
+
+    .npz: must contain 'weights' and 'normalization_version' keys (new format).
+    .npy: legacy single-array format; returns (weights, None) for the version,
+    callers must apply identity normalization or refuse.
+
+    TODO: remove the .npy load path once v1 normalization-aware weights are
+    deployed and stable across the codebase. (Tracked alongside the bias
+    init change; one full retraining cycle should make .npy obsolete.)
+    """
+    path = str(path)
+    if path.endswith('.npz'):
+        data = np.load(path)
+        if 'weights' not in data:
+            raise ValueError(f'{path}: .npz missing "weights" key')
+        weights = data['weights'].astype(np.float32)
+        version = (str(data['normalization_version'])
+                   if 'normalization_version' in data else None)
+        return weights, version
+    # Legacy .npy
+    log.warning(f'{path}: legacy .npy format predates input standardization. '
+                f'Loading without normalization (model trained pre-v1).')
+    return np.load(path).astype(np.float32), None
+
+
+def save_cnn_weights_file(path: str | Path, weights: np.ndarray,
+                          normalization_version: str) -> None:
+    """Save weights as .npz with normalization version stamped in.
+
+    If path ends in .npy, it's rewritten to .npz with the same stem.
+    The trainer should always call this rather than np.save directly.
+    """
+    from pathlib import Path as _P
+    p = _P(str(path))
+    if p.suffix == '.npy':
+        p = p.with_suffix('.npz')
+    np.savez(p, weights=weights.astype(np.float32),
+             normalization_version=normalization_version)
+
+
 def load_vk_weights(model: AestheticNetVk, npy_path: str | Path) -> None:
-    """Load flat .npy weights from Vulkan trainer into AestheticNetVk.
+    """Load flat weights from Vulkan trainer into AestheticNetVk.
 
     Auto-detects model size (linear vs MLP head) from weight count.
     Weight layout:
       Linear: [...conv..., W(C), b(1)]
       MLP:    [...conv..., W1(C×16), b1(16), W2(16), b2(1)]
     """
-    flat = np.load(npy_path).astype(np.float32)
+    flat, _ = load_cnn_weights_file(npy_path)
     n_params = len(flat)
 
     if n_params not in AestheticNetVk.MODEL_CONFIGS:
@@ -384,8 +428,13 @@ def _default_weights_path() -> Path:
     return Path(str(ref))
 
 
-def _prepare_input(static_png: bytes, swept_png: bytes) -> torch.Tensor:
-    """Convert rendered PNGs to model input tensor (1, 4, 256, 256) as RGB+swept."""
+def _prepare_input(static_png: bytes, swept_png: bytes,
+                   normalization: tuple | None = None) -> torch.Tensor:
+    """Convert rendered PNGs to model input tensor (1, 4, 256, 256) as RGB+swept.
+
+    normalization: optional (mean, std) tuple of (4,) arrays for per-channel
+    standardization. If None, returns raw [0, 1] values (legacy path).
+    """
     from PIL import Image
 
     static_img = Image.open(io.BytesIO(static_png)).convert('RGB').resize((256, 256), Image.LANCZOS)
@@ -395,18 +444,30 @@ def _prepare_input(static_png: bytes, swept_png: bytes) -> torch.Tensor:
     swept_arr = np.array(swept_img, dtype=np.float32) / 255.0
 
     combined = np.concatenate([static_arr, swept_arr[:, :, None]], axis=2)
-    return torch.from_numpy(combined.transpose(2, 0, 1)).unsqueeze(0)
+    channels = combined.transpose(2, 0, 1)  # (4, H, W)
+
+    if normalization is not None:
+        from .scoring_channels import standardize_channels
+        channels = standardize_channels(channels, *normalization)
+
+    return torch.from_numpy(channels).unsqueeze(0)
 
 
 def _prepare_input_domain(hist_static: bytes, hist_swept: bytes,
-                          hist_first_hit: bytes | None = None) -> torch.Tensor:
+                          hist_first_hit: bytes | None = None,
+                          normalization: tuple | None = None) -> torch.Tensor:
     """Convert histogram DB blobs to model input tensor (1, 4, 256, 256).
 
     Uses scoring_channels.normalize_channels() for domain-native representation:
     H=palette index, S=swept density, L=hit count structure, A=first-hit emergence.
+
+    normalization: optional (mean, std) tuple of (4,) arrays for per-channel
+    standardization. Must match the version the loaded weights were trained
+    against — caller's responsibility to verify.
     """
     from .scoring_channels import (
         unpack_static_histogram, unpack_histogram, normalize_channels,
+        standardize_channels,
     )
 
     hits, colors = unpack_static_histogram(hist_static)
@@ -414,6 +475,8 @@ def _prepare_input_domain(hist_static: bytes, hist_swept: bytes,
     first_hit = unpack_histogram(hist_first_hit, dtype=np.uint8) if hist_first_hit else None
 
     channels = normalize_channels(hits, colors, swept, first_hit, output_size=256)
+    if normalization is not None:
+        channels = standardize_channels(channels, *normalization)
     return torch.from_numpy(channels).unsqueeze(0)  # (1, 4, 256, 256)
 
 

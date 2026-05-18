@@ -100,6 +100,25 @@ def load_raw_histograms(path: str) -> dict[str, np.ndarray]:
     return dict(np.load(path))
 
 
+def standardize_channels(channels: np.ndarray,
+                         mean: np.ndarray, std: np.ndarray) -> np.ndarray:
+    """Per-channel standardization: (x - mean) / std.
+
+    channels: (4, H, W) float32.
+    mean, std: (4,) arrays of per-channel statistics.
+
+    Guards against std=0 (degenerate channel) by passing through.
+    Result: zero-mean / unit-variance per channel, which matches what
+    Kaiming weight initialization expects. Without this the first conv
+    layer's outputs can land below zero everywhere and ReLU kills the
+    gradient flow permanently.
+    """
+    mean = np.asarray(mean, dtype=np.float32)
+    std = np.asarray(std, dtype=np.float32)
+    std_safe = np.where(std > 1e-6, std, 1.0).astype(np.float32)
+    return ((channels - mean[:, None, None]) / std_safe[:, None, None]).astype(np.float32)
+
+
 def normalize_channels(
     static_hits: np.ndarray,
     static_colors: np.ndarray,
