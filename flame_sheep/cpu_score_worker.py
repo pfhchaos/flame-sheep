@@ -31,6 +31,7 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
                   hist_first_hit: bytes | None = None,
                   render_size: int = 512,
                   cnn_model=None,
+                  cnn_normalization: tuple | None = None,
                   ) -> dict[str, float]:
     """Compute all metrics from stored blobs."""
     from .image_scorer import score_from_image
@@ -59,10 +60,13 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
 
             if hist_static is not None and hist_swept is not None:
                 from .cnn_scorer import _prepare_input_domain
-                tensor = _prepare_input_domain(hist_static, hist_swept, hist_first_hit)
+                tensor = _prepare_input_domain(hist_static, hist_swept,
+                                               hist_first_hit,
+                                               normalization=cnn_normalization)
             elif render_swept is not None:
                 from .cnn_scorer import _prepare_input
-                tensor = _prepare_input(render_static, render_swept)
+                tensor = _prepare_input(render_static, render_swept,
+                                        normalization=cnn_normalization)
             else:
                 tensor = None
 
@@ -144,7 +148,7 @@ def _refresh_loop_fitness(conn: sqlite3.Connection, log: logging.Logger) -> None
 
 
 def _rescore_cnn(conn, row, cnn_model, weights_hash, log,
-                 store_detail: bool = False):
+                 store_detail: bool = False, cnn_normalization=None):
     """Re-score a single genome with CNN only (heuristics unchanged)."""
     import torch
 
@@ -155,10 +159,13 @@ def _rescore_cnn(conn, row, cnn_model, weights_hash, log,
     try:
         if hist_static is not None and hist_swept is not None:
             from .cnn_scorer import _prepare_input_domain
-            tensor = _prepare_input_domain(hist_static, hist_swept, hist_first_hit)
+            tensor = _prepare_input_domain(hist_static, hist_swept,
+                                           hist_first_hit,
+                                           normalization=cnn_normalization)
         elif render_swept is not None:
             from .cnn_scorer import _prepare_input
-            tensor = _prepare_input(render_static, render_swept)
+            tensor = _prepare_input(render_static, render_swept,
+                                    normalization=cnn_normalization)
         else:
             conn.execute(
                 'UPDATE genomes SET cnn_weights_hash=? WHERE id=?',
@@ -236,6 +243,7 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     # Load CNN model once (if weights available) + compute weights hash
     cnn_model = None
     cnn_weights_hash = None
+    cnn_normalization = None  # (mean, std) tuple or None for legacy mode
     try:
         import hashlib
         from .cnn_scorer import load_model, _default_weights_path
@@ -251,6 +259,38 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
         log.exception('Failed to load CNN scorer — CNN scoring disabled')
 
     cnn_weights_mtime = weights_path.stat().st_mtime if (cnn_model and weights_path.exists()) else 0
+
+    # Load matching input normalization (zero mean / unit variance per channel).
+    # If the weights file is legacy .npy, we run in identity-normalization
+    # mode to match how those weights were trained. If it's a .npz with a
+    # normalization_version tag, that tag must match what's in metadata or
+    # we refuse — silent-garbage scores are exactly the failure mode this
+    # whole machinery is meant to prevent.
+    if cnn_model is not None:
+        try:
+            from .cnn_scorer import load_cnn_weights_file
+            from .storage import NORMALIZATION_VERSION, Library
+            _, _wver = load_cnn_weights_file(str(weights_path))
+            if _wver is None:
+                log.warning('CNN weights are legacy .npy — running without normalization. '
+                            'Retrain to v1 for proper input standardization.')
+            elif _wver != NORMALIZATION_VERSION:
+                log.error('CNN weights normalization mismatch (%s vs %s) — '
+                          'disabling CNN scoring to avoid silent garbage.',
+                          _wver, NORMALIZATION_VERSION)
+                cnn_model = None
+            else:
+                _lib_norm = Library()
+                cnn_normalization = _lib_norm.get_normalization(NORMALIZATION_VERSION)
+                _lib_norm.close()
+                if cnn_normalization is None:
+                    log.error('CNN weights are %s but metadata has no '
+                              'normalization stats. Run tools/compute_normalization.py. '
+                              'Disabling CNN scoring.', _wver)
+                    cnn_model = None
+        except Exception:
+            log.exception('Failed to wire normalization — disabling CNN scoring')
+            cnn_model = None
 
     # Config for multi-model detail tracking
     from .config import cfg
@@ -294,7 +334,8 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                     ).fetchone()
                     if cnn_row is not None:
                         _rescore_cnn(conn, cnn_row, cnn_model, cnn_weights_hash, log,
-                                     store_detail=store_cnn_detail)
+                                     store_detail=store_cnn_detail,
+                                     cnn_normalization=cnn_normalization)
                         was_scoring = True
                         continue
 
@@ -336,7 +377,8 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                                        hist_static, hist_transform,
                                        hist_swept=hist_swept,
                                        hist_first_hit=hist_first_hit,
-                                       cnn_model=cnn_model)
+                                       cnn_model=cnn_model,
+                                       cnn_normalization=cnn_normalization)
 
                 # Build SET clause dynamically from available scores
                 score_cols = [

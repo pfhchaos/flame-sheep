@@ -63,10 +63,12 @@ class ImageStore:
 
     def __init__(self, manifest_path: Path, image_dir: Path,
                  image_size: int, cache_gb: float = 4.0,
-                 channels: str = 'rgb'):
+                 channels: str = 'rgb',
+                 normalization: tuple | None = None):
         self.image_dir = image_dir
         self.image_size = image_size
         self._channels = channels
+        self._normalization = normalization
 
         self.entries = []
         with open(manifest_path) as f:
@@ -89,16 +91,21 @@ class ImageStore:
         sz = self.image_size
 
         if self._channels == 'domain':
-            from flame_sheep.scoring_channels import normalize_channels, load_raw_histograms
+            from flame_sheep.scoring_channels import (
+                normalize_channels, load_raw_histograms, standardize_channels,
+            )
             hist_name = static.replace('_static.png', '_hist.npz')
             hist_path = self.image_dir / hist_name
             if hist_path.exists():
                 raw = load_raw_histograms(str(hist_path))
-                return normalize_channels(
+                img = normalize_channels(
                     raw['static_hits'], raw['static_colors'],
                     raw['swept_hits'], raw.get('first_hit'),
                     output_size=sz,
                 )
+                if self._normalization is not None:
+                    img = standardize_channels(img, *self._normalization)
+                return img
             # Fall through to RGB if no .npz
 
         s_img = Image.open(self.image_dir / static).convert('RGB').resize(
@@ -108,6 +115,9 @@ class ImageStore:
         img = np.zeros((4, sz, sz), dtype=np.float32)
         img[:3] = np.array(s_img, dtype=np.float32).transpose(2, 0, 1) / 255.0
         img[3] = np.array(w_img, dtype=np.float32) / 255.0
+        if self._normalization is not None:
+            from flame_sheep.scoring_channels import standardize_channels
+            img = standardize_channels(img, *self._normalization)
         return img
 
     def get_batch(self, indices: list[int] | np.ndarray) -> np.ndarray:
@@ -245,9 +255,26 @@ def main():
     data_dir = Path(args.data)
     output_path = Path(args.output) if args.output else data_dir / 'cnn_scorer_vk.npy'
 
+    # Load normalization stats (zero mean / unit variance per channel) so
+    # Kaiming weight init's distributional assumptions hold. Without this,
+    # the sentinel-heavy domain channels (mean H ≈ 0.76) blow up the first
+    # conv layer into a dead-ReLU collapse.
+    from flame_sheep.storage import Library as _Lib, NORMALIZATION_VERSION
+    _lib_norm = _Lib()
+    normalization = _lib_norm.get_normalization(NORMALIZATION_VERSION)
+    _lib_norm.close()
+    if normalization is None:
+        log.warning('No normalization stats found — run tools/compute_normalization.py first. '
+                    'Training will proceed with identity normalization (legacy mode).')
+    else:
+        log.info('Normalization %s: mean=%s std=%s', NORMALIZATION_VERSION,
+                 [f'{x:.4f}' for x in normalization[0]],
+                 [f'{x:.4f}' for x in normalization[1]])
+
     # Streaming image store (loads from disk on demand)
     store = ImageStore(data_dir / 'manifest.csv', data_dir, args.image_size,
-                       cache_gb=args.cache_gb, channels=args.channels)
+                       cache_gb=args.cache_gb, channels=args.channels,
+                       normalization=normalization)
     entries = store.entries
     log.info('Dataset: %d genomes, image cache: %.1f GB (%d images)',
              len(entries), args.cache_gb, store.max_cache)
@@ -261,9 +288,16 @@ def main():
                               image_size=args.image_size, mlp_head=MLP_HEAD)
 
     if args.init_weights:
-        init_w = np.load(args.init_weights).astype(np.float32)
+        from flame_sheep.cnn_scorer import load_cnn_weights_file
+        init_w, init_norm_version = load_cnn_weights_file(args.init_weights)
+        if init_norm_version is not None and init_norm_version != NORMALIZATION_VERSION:
+            raise RuntimeError(
+                f'init_weights normalization mismatch: file is '
+                f'{init_norm_version}, codebase is {NORMALIZATION_VERSION}. '
+                f'Refusing to load — scores would be silently wrong.')
         model.load_weights(init_w)
-        log.info('Loaded initial weights: %d params from %s', len(init_w), args.init_weights)
+        log.info('Loaded initial weights: %d params (norm_version=%s)',
+                 len(init_w), init_norm_version)
     else:
         model.init_weights()
 
@@ -385,7 +419,8 @@ def main():
             best_val_acc = val_acc
             patience = 0
             weights = model.save_weights()
-            np.save(str(output_path), weights)
+            from flame_sheep.cnn_scorer import save_cnn_weights_file
+            save_cnn_weights_file(str(output_path), weights, NORMALIZATION_VERSION)
             log.info('  -> saved (best val_acc=%.3f)', best_val_acc)
         else:
             patience += 1

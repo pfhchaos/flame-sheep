@@ -19,10 +19,13 @@ Motion fields:
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 from .genome import Genome, Transform, NUM_VARIATIONS
 
@@ -207,6 +210,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # the affine at render time.
     _migrate_variation_reindex(conn)
     _migrate_blob_separation(conn)
+    _migrate_channel_stats(conn)
 
 
 def _migrate_variation_reindex(conn: sqlite3.Connection) -> None:
@@ -274,6 +278,16 @@ def _migrate_variation_reindex(conn: sqlite3.Connection) -> None:
 # Blob columns that live in the separate `genome_blobs` table
 BLOB_COLS = ('render_static', 'render_swept',
              'hist_static', 'hist_swept', 'hist_transform', 'hist_first_hit')
+
+# Per-channel normalization stats columns (added in channel_stats_v1 migration)
+STATS_COLS = ('mean_h', 'mean_s', 'mean_l', 'mean_a',
+              'std_h',  'std_s',  'std_l',  'std_a')
+
+# Normalization version this codebase currently produces.
+# Bump when normalize_channels semantics change (gamma, sentinels, etc.).
+# Weights trained against an older version must not be loaded with a
+# newer normalization or scores are silently garbage.
+NORMALIZATION_VERSION = 'v1'
 
 
 def _migrate_blob_separation(conn: sqlite3.Connection) -> None:
@@ -346,6 +360,80 @@ def _migrate_blob_separation(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT INTO metadata (key, value) VALUES ('blob_separation_v1', 'done')")
+    conn.commit()
+
+
+def _migrate_channel_stats(conn: sqlite3.Connection) -> None:
+    """Add 8 per-channel stats columns to genome_blobs + backfill existing rows.
+
+    Stats are per-genome mean/std for each of the 4 input channels
+    (H, S, L, A) after normalize_channels. Trainer aggregates them into
+    global normalization constants (zero-mean / unit-variance) to make
+    Kaiming init's distributional assumptions hold.
+
+    One-shot — guarded by metadata key 'channel_stats_v1'. Backfills
+    inline by re-running normalize_channels on stored histograms.
+    """
+    row = conn.execute(
+        "SELECT value FROM metadata WHERE key='channel_stats_v1'").fetchone()
+    if row is not None:
+        return
+
+    existing = {r[1] for r in conn.execute(
+        'PRAGMA table_info(genome_blobs)').fetchall()}
+    added = 0
+    for col in STATS_COLS:
+        if col not in existing:
+            conn.execute(f'ALTER TABLE genome_blobs ADD COLUMN {col} REAL')
+            added += 1
+    conn.commit()
+
+    # Backfill: compute stats for every row with histograms.
+    from .scoring_channels import (
+        unpack_static_histogram, unpack_histogram, normalize_channels,
+    )
+
+    rows = conn.execute(
+        '''SELECT genome_id, hist_static, hist_swept, hist_first_hit
+             FROM genome_blobs
+            WHERE hist_static IS NOT NULL AND hist_swept IS NOT NULL'''
+    ).fetchall()
+
+    if rows:
+        import time as _time
+        t0 = _time.time()
+        for gid, hs, hsw, hfh in rows:
+            try:
+                hits, colors = unpack_static_histogram(hs)
+                swept = unpack_histogram(hsw)
+                first_hit = (unpack_histogram(hfh, dtype=np.uint8)
+                             if hfh is not None else None)
+                channels = normalize_channels(hits, colors, swept, first_hit)
+                # channels shape: (4, H, W); axes 1,2 are spatial.
+                means = channels.mean(axis=(1, 2)).astype(np.float64)
+                stds = channels.std(axis=(1, 2)).astype(np.float64)
+                conn.execute(
+                    '''UPDATE genome_blobs
+                          SET mean_h=?, mean_s=?, mean_l=?, mean_a=?,
+                              std_h=?,  std_s=?,  std_l=?,  std_a=?
+                        WHERE genome_id=?''',
+                    (float(means[0]), float(means[1]),
+                     float(means[2]), float(means[3]),
+                     float(stds[0]), float(stds[1]),
+                     float(stds[2]), float(stds[3]),
+                     gid),
+                )
+            except Exception as e:
+                import sys
+                print(f'[storage] channel stats backfill skipped gid {gid}: {e}',
+                      file=sys.stderr)
+        elapsed = _time.time() - t0
+        import sys
+        print(f'[storage] Backfilled channel stats for {len(rows)} genomes '
+              f'in {elapsed:.1f}s (channel_stats_v1)', file=sys.stderr)
+
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('channel_stats_v1', 'done')")
     conn.commit()
 
 
@@ -856,6 +944,58 @@ class Library:
             f'INSERT OR REPLACE INTO genome_blobs '
             f'(genome_id, {cols_sql}) VALUES (?, {placeholders})',
             (genome_id, *(existing[c] for c in cols))
+        )
+        self.conn.commit()
+
+    # --- Channel stats / normalization ---
+
+    def save_channel_stats(self, genome_id: int,
+                           means: np.ndarray, stds: np.ndarray) -> None:
+        """Store per-channel mean/std for a genome. means/stds: (4,) arrays."""
+        self.conn.execute(
+            '''UPDATE genome_blobs
+                  SET mean_h=?, mean_s=?, mean_l=?, mean_a=?,
+                      std_h=?,  std_s=?,  std_l=?,  std_a=?
+                WHERE genome_id=?''',
+            (float(means[0]), float(means[1]), float(means[2]), float(means[3]),
+             float(stds[0]), float(stds[1]), float(stds[2]), float(stds[3]),
+             genome_id),
+        )
+        self.conn.commit()
+
+    def get_normalization(self, version: str = NORMALIZATION_VERSION):
+        """Read aggregated normalization stats from metadata.
+
+        Returns (mean, std) as (4,) np.float32 arrays, or None if the
+        version isn't stored yet (run tools/compute_normalization.py first).
+        """
+        row = self.conn.execute(
+            "SELECT value FROM metadata WHERE key=?",
+            (f'normalization_{version}',)
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            data = json.loads(row[0])
+            return (np.asarray(data['mean'], dtype=np.float32),
+                    np.asarray(data['std'], dtype=np.float32))
+        except (json.JSONDecodeError, KeyError) as e:
+            log.error(f'malformed normalization_{version} metadata: {e}')
+            return None
+
+    def set_normalization(self, mean: np.ndarray, std: np.ndarray,
+                          n_samples: int,
+                          version: str = NORMALIZATION_VERSION) -> None:
+        """Store aggregated normalization stats in metadata."""
+        payload = json.dumps({
+            'mean': [float(x) for x in mean],
+            'std': [float(x) for x in std],
+            'n_samples': int(n_samples),
+            'version': version,
+        })
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+            (f'normalization_{version}', payload),
         )
         self.conn.commit()
 
