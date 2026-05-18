@@ -47,12 +47,22 @@ class VkBuffer:
 
 
 class VkPipeline:
-    """Wraps a compute pipeline + descriptor set."""
+    """Wraps a compute pipeline + descriptor set.
+
+    If `_cached=True`, destroy() is a no-op — the pipeline is owned by the
+    VkCompute pipeline cache and lives until the compute context is torn
+    down. Callers can still call destroy() unconditionally; cached
+    pipelines just don't release resources, which avoids the
+    create/destroy churn that stresses the Mesa/Arc driver during
+    training (millions of pipeline lifecycles → kernel-level GPU hang).
+    """
     __slots__ = ('pipeline', 'pipeline_layout', 'descriptor_set',
-                 'descriptor_set_layout', 'descriptor_pool', 'device', '_ctx')
+                 'descriptor_set_layout', 'descriptor_pool', 'device',
+                 '_ctx', '_cached')
 
     def __init__(self, pipeline, pipeline_layout, descriptor_set,
-                 descriptor_set_layout, descriptor_pool, device, ctx=None):
+                 descriptor_set_layout, descriptor_pool, device, ctx=None,
+                 cached=False):
         self.pipeline = pipeline
         self.pipeline_layout = pipeline_layout
         self.descriptor_set = descriptor_set
@@ -60,10 +70,13 @@ class VkPipeline:
         self.descriptor_pool = descriptor_pool
         self.device = device
         self._ctx = ctx
+        self._cached = cached
 
     def destroy(self):
         if self.pipeline is None:
             return  # already destroyed
+        if self._cached:
+            return  # owned by the pipeline cache, freed at context teardown
         vk.vkDestroyPipeline(self.device, self.pipeline, None)
         vk.vkDestroyPipelineLayout(self.device, self.pipeline_layout, None)
         vk.vkDestroyDescriptorPool(self.device, self.descriptor_pool, None)
@@ -87,6 +100,10 @@ class VkCompute:
         self._create_device()
         self._create_command_pool()
         self._shader_cache: dict[str, int] = {}  # path → shader module
+        # Pipeline cache keyed by (shader_path, buffer-handle tuple, push size).
+        # Avoids destroy/recreate churn on Mesa/Arc — training runs millions
+        # of dispatches, the driver doesn't reclaim resources fast enough.
+        self._pipeline_cache: dict[tuple, VkPipeline] = {}
         # Leak-detection counters (incremented in create_*, decremented in destroy)
         self._live_buffers: set = set()
         self._live_pipelines: set = set()
@@ -293,7 +310,23 @@ class VkCompute:
 
         Each buffer gets binding = its index in the list.
         Optional push constants for per-dispatch parameters.
+
+        Cached by (shader_path, buffer handles, push_constant_size) so
+        repeat calls during a training loop return the same pipeline
+        instead of recreating Vulkan objects every dispatch. The Mesa/Arc
+        driver doesn't reclaim resources fast enough under the churn
+        from thousands of training steps and will eventually hang the
+        whole GPU.
         """
+        cache_key = (
+            str(shader_path),
+            tuple(buf.buffer for buf in buffers),
+            push_constant_size,
+        )
+        cached = self._pipeline_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         shader_module = self.compile_shader(shader_path)
 
         # Descriptor set layout — one storage buffer per binding
@@ -381,8 +414,10 @@ class VkCompute:
         vk.vkUpdateDescriptorSets(self.device, len(writes), writes, 0, None)
 
         pipe = VkPipeline(pipeline, pipeline_layout, descriptor_set,
-                          ds_layout, descriptor_pool, self.device, ctx=self)
+                          ds_layout, descriptor_pool, self.device,
+                          ctx=self, cached=True)
         self._live_pipelines.add(id(pipe))
+        self._pipeline_cache[cache_key] = pipe
         return pipe
 
     # -----------------------------------------------------------------
@@ -431,6 +466,12 @@ class VkCompute:
 
     def destroy(self):
         vk.vkDeviceWaitIdle(self.device)
+        # Tear down cached pipelines — they're flagged _cached so their
+        # destroy() is a no-op, force the real teardown here.
+        for pipe in self._pipeline_cache.values():
+            pipe._cached = False
+            pipe.destroy()
+        self._pipeline_cache.clear()
         for module in self._shader_cache.values():
             vk.vkDestroyShaderModule(self.device, module, None)
         vk.vkDestroyFence(self.device, self.fence, None)

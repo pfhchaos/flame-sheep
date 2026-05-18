@@ -62,6 +62,9 @@ class TestLinearLeaks:
         in_buf = gpu.create_buffer(B * I * 4)
         gpu.upload(in_buf, np.zeros(B * I, dtype=np.float32))
 
+        # Warm up — first call populates the pipeline cache.
+        layer.forward(in_buf, B, (I,))
+
         n_before = gpu.buffer_count
         p_before = gpu.pipeline_count
         for _ in range(20):
@@ -214,3 +217,103 @@ class TestBeatCRNNLeaks:
 
         in_buf.destroy()
         grad_buf.destroy()
+
+
+class TestCNNScorerLeaks:
+    """End-to-end CNN scorer training step — the exact path that locks up
+    the GPU during long training runs."""
+
+    def test_full_training_step_no_leak(self):
+        from flame_sheep.wallpaper_ml import build_cnn_scorer
+
+        B = 2
+        layers_config = [
+            (4, 8, 3, 1, 1),
+            (8, 16, 3, 2, 1),
+            (16, 16, 3, 1, 1),
+        ]
+        model = build_cnn_scorer(gpu, layers_config, batch_size=B,
+                                  image_size=64, mlp_head=False)
+        model.init_weights(seed=0)
+
+        in_buf = gpu.create_buffer(B * 4 * 64 * 64 * 4)
+        grad_buf = gpu.create_buffer(B * 4)
+        gpu.upload(in_buf, np.random.randn(B * 4 * 64 * 64).astype(np.float32))
+        gpu.upload(grad_buf, np.random.randn(B).astype(np.float32))
+
+        def one_step():
+            model.zero_grad()
+            model.forward(in_buf, B, (4, 64, 64))
+            model.backward(grad_buf, B)
+            model.sgd_step(0.001)
+
+        one_step()  # warm up — lazy buffer allocation, pipeline cache
+
+        n_before = gpu.buffer_count
+        b_before = gpu.buffer_bytes
+        p_before = gpu.pipeline_count
+
+        for _ in range(10):
+            one_step()
+
+        assert gpu.buffer_count == n_before, \
+            f"CNN training leaked {gpu.buffer_count - n_before} buffers " \
+            f"({(gpu.buffer_bytes - b_before) / 1e6:.1f} MB) over 10 steps"
+        assert gpu.pipeline_count == p_before, \
+            f"CNN training leaked {gpu.pipeline_count - p_before} pipelines over 10 steps"
+
+        in_buf.destroy()
+        grad_buf.destroy()
+
+    def test_pairwise_training_step_no_leak(self):
+        """Pairwise (winner/loser re-forward + double backward) — what the
+        finetune script does."""
+        from flame_sheep.wallpaper_ml import build_cnn_scorer
+
+        B = 2
+        layers_config = [
+            (4, 8, 3, 1, 1),
+            (8, 16, 3, 2, 1),
+        ]
+        model = build_cnn_scorer(gpu, layers_config, batch_size=B,
+                                  image_size=64, mlp_head=False)
+        model.init_weights(seed=0)
+
+        in_buf = gpu.create_buffer(B * 4 * 64 * 64 * 4)
+        d_scores_buf = gpu.create_buffer(B * 4)
+        winner = np.random.randn(B * 4 * 64 * 64).astype(np.float32)
+        loser = np.random.randn(B * 4 * 64 * 64).astype(np.float32)
+        d_loser = np.full(B, 1.0 / B, dtype=np.float32)
+        d_winner = np.full(B, -1.0 / B, dtype=np.float32)
+
+        def pairwise_step():
+            model.zero_grad()
+            gpu.upload(in_buf, winner)
+            model.forward(in_buf, B, (4, 64, 64))
+            gpu.upload(in_buf, loser)
+            model.forward(in_buf, B, (4, 64, 64))
+            gpu.upload(d_scores_buf, d_loser)
+            model.backward(d_scores_buf, B)
+            gpu.upload(in_buf, winner)
+            model.forward(in_buf, B, (4, 64, 64))
+            gpu.upload(d_scores_buf, d_winner)
+            model.backward(d_scores_buf, B)
+            model.sgd_step(0.001)
+
+        pairwise_step()  # warm up
+
+        n_before = gpu.buffer_count
+        b_before = gpu.buffer_bytes
+        p_before = gpu.pipeline_count
+
+        for _ in range(10):
+            pairwise_step()
+
+        assert gpu.buffer_count == n_before, \
+            f"Pairwise training leaked {gpu.buffer_count - n_before} buffers " \
+            f"({(gpu.buffer_bytes - b_before) / 1e6:.1f} MB) over 10 steps"
+        assert gpu.pipeline_count == p_before, \
+            f"Pairwise training leaked {gpu.pipeline_count - p_before} pipelines over 10 steps"
+
+        in_buf.destroy()
+        d_scores_buf.destroy()
