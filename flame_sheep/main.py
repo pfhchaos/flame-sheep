@@ -245,44 +245,6 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                         spectrum_engine=spectrum_engine)
     core = FlameSheepCore(orchestrator=orch, lib=lib)
 
-    _vote_count = 0
-    _votes_per_evolve = 5       # first few cycles need more votes
-    _evolve_count = 0
-    _evolving = False
-
-    def _maybe_evolve():
-        """Trigger evolution if enough votes have accumulated."""
-        nonlocal _vote_count, _votes_per_evolve, _evolve_count, _evolving
-        _vote_count += 1
-        if _evolving:
-            log.debug(f'[evolve] already running, vote queued ({_vote_count})')
-            return
-        if _vote_count < _votes_per_evolve:
-            log.debug(f'[evolve] {_vote_count}/{_votes_per_evolve} votes until next evolution')
-            return
-        if lib.loop_count() < 2:
-            log.warning('not enough loops to evolve')
-            return
-        _vote_count = 0
-        _evolve_count += 1
-        if _evolve_count >= 3:
-            _votes_per_evolve = 3
-        _evolving = True
-        log.info(f'[evolve] starting evolution cycle {_evolve_count} in subprocess...')
-        import subprocess, sys as _sys
-        proc = subprocess.Popen(
-            [_sys.executable, '-m', 'flame_sheep', '--evolve', '--loop-length', str(6)],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        )
-        def _wait_evolve():
-            nonlocal _evolving
-            out, _ = proc.communicate()
-            if out:
-                for line in out.decode().strip().split('\n'):
-                    log.info(f'[evolve] {line}')
-            _evolving = False
-        threading.Thread(target=_wait_evolve, daemon=True).start()
-
     # --- background workers ---
     # GPU render worker is NOT started here — it competes for the GPU and
     # kills desktop performance. Run separately: python -m flame_sheep.gpu_render_worker
@@ -300,169 +262,13 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         pruner.start()
 
     # --- Register command handlers on orchestrator ---
-    quit_requested = False
-
-    def _handle_quit(event):
-        nonlocal quit_requested
-        quit_requested = True
-
-    def _handle_swap(event):
-        core.force_genome_swap()
-
-    def _handle_like(event):
-        gid = core.active_genome_db_id
-        if gid is not None:
-            lib.rate('genome', gid, +1)
-            log.debug(f'[ctl] liked genome #{gid}')
-            _maybe_evolve()
-        else:
-            log.warning('no active genome to rate')
-
-    def _handle_dislike(event):
-        gid = core.active_genome_db_id
-        if gid is not None:
-            lib.rate('genome', gid, -1)
-            log.debug(f'[ctl] disliked genome #{gid}')
-            _maybe_evolve()
-        core.user_next()
-
-    def _handle_next(event):
-        core.user_next()
-        log.debug(f'[ctl] next loop #{core.active_loop_id}')
-
-    def _handle_song(event):
-        core.song_started()
-        core.force_genome_swap()
-
-    def _handle_tempo(event):
-        if event.args:
-            try:
-                bpm = float(event.args[0])
-                core.hint_tempo(bpm)
-            except ValueError:
-                log.info(f'[ctl] invalid tempo: {event.args[0]}')
-
-    def _handle_pause(event):
-        core._genome_axis.on_playback_paused()
-
-    def _handle_resume(event):
-        core._genome_axis.on_playback_resumed()
-
-    def _handle_seek(event):
-        orch.audio.reset_tempo()
-        log.debug('[ctl] seek — reset tempo + drop state')
-
-    def _handle_config(event):
-        if event.args and event.args[0] == 'reload':
-            from .config import cfg
-            from flame_sheep_audio.config import cfg as audio_cfg
-            cfg.reload()
-            audio_cfg.reload()
-            log.debug('[ctl] config reloaded (viz + audio)')
-
-    orch.on_command('quit', _handle_quit)
-    orch.on_command('swap', _handle_swap)
-    orch.on_command('like', _handle_like)
-    orch.on_command('dislike', _handle_dislike)
-    orch.on_command('next', _handle_next)
-    orch.on_command('song', _handle_song)
-    orch.on_command('tempo', _handle_tempo)
-    orch.on_command('pause', _handle_pause)
-    orch.on_command('resume', _handle_resume)
-    orch.on_command('seek', _handle_seek)
-    orch.on_command('config', _handle_config)
-
-    def _handle_evolve(event):
-        """Force an evolution cycle regardless of vote count."""
-        nonlocal _vote_count
-        _vote_count = _votes_per_evolve  # pretend we have enough votes
-        _maybe_evolve()
-    orch.on_command('evolve', _handle_evolve)
-
-    # --- Compare mode ---
-    from .compare import CompareMode
-    _compare_mode: CompareMode | None = None
-    _compare_renderer: FlameRenderer | None = None
-    _comparing = False
-    _compare_needs_reset = False
-    _CMP_SCALE = 2
-
-    def _ensure_compare_renderer():
-        nonlocal _compare_renderer
-        if _compare_renderer is not None:
-            return
-        center_name = max(viewports, key=lambda n: viewports[n].w)
-        center_surf = surfaces.get(center_name, first_surf)
-        cmp_w = center_surf.width // 2 // _CMP_SCALE
-        cmp_h = center_surf.height // _CMP_SCALE
-        _compare_renderer = FlameRenderer(ctx, cmp_w, cmp_h)
-        _compare_renderer.blur_radius = 0.0
-        _compare_renderer.set_ppmm(canvas_ppmm / _CMP_SCALE)
-        # Restore main renderer's bindings
-        renderer.bind_buffers()
-        log.info(f'[compare] created renderer at {cmp_w}x{cmp_h}')
-
-    def _handle_compare(event):
-        nonlocal _compare_mode, _comparing, _compare_needs_reset
-        if _comparing:
-            return
-        import time as _time
-        _t0 = _time.perf_counter()
-        _ensure_compare_renderer()
-        _t1 = _time.perf_counter()
-        log.info(f'[compare] renderer: {(_t1-_t0)*1000:.0f}ms')
-        _compare_mode = CompareMode(lib)
-        _t2 = _time.perf_counter()
-        log.info(f'[compare] CompareMode init: {(_t2-_t1)*1000:.0f}ms')
-        _compare_mode.pick_pair()
-        _t3 = _time.perf_counter()
-        log.info(f'[compare] pick_pair: {(_t3-_t2)*1000:.0f}ms')
-        _comparing = True
-        _compare_needs_reset = True
-        # Reclaim compare renderer's SSBO bindings after main renderer's exit rebind
-        if _compare_renderer is not None:
-            _compare_renderer.bind_buffers()
-            # CPU-side zero to ensure clean state regardless of binding cache
-            import numpy as _np
-            n_px = _compare_renderer.canvas_w * _compare_renderer.canvas_h
-            _compare_renderer.histogram_buf.write(
-                _np.zeros(n_px * 2, dtype=_np.uint32).tobytes())
-        log.info('[ctl] entered compare mode')
-
-    def _handle_left(event):
-        nonlocal _compare_needs_reset
-        if _comparing and _compare_mode:
-            _compare_mode.on_left_wins()
-            _compare_needs_reset = True
-
-    def _handle_right(event):
-        nonlocal _compare_needs_reset
-        if _comparing and _compare_mode:
-            _compare_mode.on_right_wins()
-            _compare_needs_reset = True
-
-    def _handle_skip(event):
-        nonlocal _compare_needs_reset
-        if _comparing and _compare_mode:
-            _compare_mode.on_skip()
-            _compare_needs_reset = True
-
-    def _handle_wallpaper(event):
-        nonlocal _comparing
-        if _comparing:
-            _comparing = False
-            # Restore main renderer to normal mode
-            renderer.set_histogram_offset(0)
-            renderer.bind_buffers()
-            renderer.reset_walkers()
-            core.needs_walker_reset = True
-            log.info('[ctl] exited compare mode')
-
-    orch.on_command('compare', _handle_compare)
-    orch.on_command('left', _handle_left)
-    orch.on_command('right', _handle_right)
-    orch.on_command('skip', _handle_skip)
-    orch.on_command('wallpaper', _handle_wallpaper)
+    from .command_handlers import WallpaperCommands
+    commands = WallpaperCommands(
+        core=core, lib=lib, orch=orch, renderer=renderer, ctx=ctx,
+        viewports=viewports, surfaces=surfaces, first_surf=first_surf,
+        canvas_ppmm=canvas_ppmm,
+    )
+    commands.register_all()
 
     orch.start()
 
@@ -483,7 +289,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         on large canvases (3+ monitors, Arc GPU). After that, 3s stall = exit.
         """
         start = time.perf_counter()
-        while not quit_requested:
+        while not commands.quit_requested:
             time.sleep(2.0)
             elapsed = time.perf_counter() - start
             timeout = 15.0 if elapsed < 20.0 else 3.0
@@ -495,7 +301,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     _wd_thread.start()
 
     try:
-        while not quit_requested and not all(s.should_close for s in surfaces.values()):
+        while not commands.quit_requested and not all(s.should_close for s in surfaces.values()):
             _frame += 1
             _watchdog_last = time.perf_counter()
             orch.tick()
@@ -507,11 +313,11 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 if orch.session.gpu_paused:
                     log.info('[render] wayland connection lost during VT switch, '
                              'waiting for session to resume...')
-                    while not quit_requested and not orch.session.is_active():
+                    while not commands.quit_requested and not orch.session.is_active():
                         time.sleep(0.5)
                         _watchdog_last = time.perf_counter()
                         orch.tick()
-                    if not quit_requested:
+                    if not commands.quit_requested:
                         log.info('[render] session resumed, restarting wallpaper')
                         # Re-exec ourselves to get fresh Wayland connection
                         import sys
@@ -523,7 +329,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             # If no frame callback arrives for 2s, assume VT switch or
             # compositor suspended — pause rendering and keep watchdog alive.
             _wait_start = time.perf_counter()
-            while not quit_requested:
+            while not commands.quit_requested:
                 ready = {n: s for n, s in surfaces.items()
                          if s._frame_pending and not s.should_close}
                 if ready or all(s.should_close for s in surfaces.values()):
@@ -534,7 +340,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 if time.perf_counter() - _wait_start > 2.0:
                     log.info('[render] no frame callbacks — compositor suspended? '
                              'Pausing render loop.')
-                    while not quit_requested:
+                    while not commands.quit_requested:
                         session.wait_for_events(timeout=0.5)
                         _watchdog_last = time.perf_counter()
                         orch.tick()
@@ -583,10 +389,10 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 session.release_current()
                 continue
 
-            if _comparing and _compare_mode and _compare_renderer:
+            if commands.comparing and commands.compare_mode and commands.compare_renderer:
                 # --- Compare mode: offset-based dual dispatch, no buffer swapping ---
-                pair = _compare_mode.pair
-                cr = _compare_renderer
+                pair = commands.compare_mode.pair
+                cr = commands.compare_renderer
                 if pair.left is not None and pair.right is not None:
                     rot = core._genome_axis._rotation.phase
                     left_g = pair.left.rotated(rot) if rot != 0.0 else pair.left
@@ -595,13 +401,13 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
                     _compare_surf_name = max(viewports, key=lambda n: viewports[n].w)
 
-                    if _compare_needs_reset:
+                    if commands.compare_needs_reset:
                         cr.ensure_double_histogram()
                         import numpy as _np
                         cr.histogram_buf.write(
                             _np.zeros(n_px * 4, dtype=_np.uint32).tobytes())
                         cr.reset_walkers()
-                        _compare_needs_reset = False
+                        commands.compare_needs_reset = False
 
                     # Left genome: offset=0
                     cr.set_histogram_offset(0)
@@ -641,8 +447,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 renderer.set_skew(_monitor_skew.get(name, 0.0))
                 if _test_pattern:
                     renderer.render_test_pattern(viewports[name], surf.width, surf.height)
-                elif _comparing and _compare_renderer and name == _compare_surf_name:
-                    cr = _compare_renderer
+                elif commands.comparing and commands.compare_renderer and name == _compare_surf_name:
+                    cr = commands.compare_renderer
                     half_w = surf.width // 2
                     n_px = cr.canvas_w * cr.canvas_h
                     _cr_vp = Viewport(0, 0, cr.canvas_w, cr.canvas_h)
@@ -660,7 +466,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                     cr.render_tonemap(_cr_vp, surf.width, surf.height,
                                      brightness=frame.brightness,
                                      screen_rect=(half_w, 0, surf.width - half_w, surf.height))
-                elif _comparing:
+                elif commands.comparing:
                     # Side monitors: black during compare mode
                     ctx.clear(0.0, 0.0, 0.0, 1.0)
                 elif _blur_comparison and surf.width >= 3000:
@@ -678,7 +484,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         log.error(f'[render] exception in render loop: {e}', exc_info=True)
     finally:
         # If surfaces closed during VT switch, wait and restart
-        if not quit_requested and orch.session.gpu_paused:
+        if not commands.quit_requested and orch.session.gpu_paused:
             log.info('[render] surfaces closed during VT switch, waiting for resume...')
             while not orch.session.is_active():
                 time.sleep(0.5)
@@ -686,7 +492,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             import sys
             os.execv(sys.executable, [sys.executable, '-m', 'flame_sheep'] + sys.argv[1:])
 
-        log.debug(f'[render] exiting render loop (quit_requested={quit_requested})')
+        log.debug(f'[render] exiting render loop (commands.quit_requested={commands.quit_requested})')
         if feature_logger:
             feature_logger.close()
         cpu_scorer.stop()
