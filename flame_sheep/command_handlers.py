@@ -13,9 +13,8 @@ import sys
 import threading
 from typing import TYPE_CHECKING
 
-import numpy as np
-
 from .renderer import FlameRenderer
+from .compare import CompareRenderer
 
 if TYPE_CHECKING:
     from .core import FlameSheepCore
@@ -34,8 +33,6 @@ class WallpaperCommands:
     `compare_needs_reset`, `compare_renderer`, `compare_mode` directly.
     """
 
-    CMP_SCALE = 2
-
     def __init__(self,
                  core: FlameSheepCore,
                  lib: Library | None,
@@ -50,11 +47,6 @@ class WallpaperCommands:
         self.lib = lib
         self.orch = orch
         self.renderer = renderer
-        self.ctx = ctx
-        self.viewports = viewports
-        self.surfaces = surfaces
-        self.first_surf = first_surf
-        self.canvas_ppmm = canvas_ppmm
 
         # Quit signal — render loop reads this each iteration
         self.quit_requested = False
@@ -67,9 +59,11 @@ class WallpaperCommands:
 
         # Compare mode state — render loop reads these
         self.compare_mode: CompareMode | None = None
-        self.compare_renderer: FlameRenderer | None = None
+        self.compare = CompareRenderer(
+            ctx=ctx, viewports=viewports, surfaces=surfaces,
+            first_surf=first_surf, canvas_ppmm=canvas_ppmm,
+        )
         self.comparing = False
-        self.compare_needs_reset = False
 
     def register_all(self) -> None:
         """Wire all handlers to the orchestrator."""
@@ -191,27 +185,13 @@ class WallpaperCommands:
 
     # --- Compare mode ---
 
-    def _ensure_compare_renderer(self) -> None:
-        if self.compare_renderer is not None:
-            return
-        center_name = max(self.viewports, key=lambda n: self.viewports[n].w)
-        center_surf = self.surfaces.get(center_name, self.first_surf)
-        cmp_w = center_surf.width // 2 // self.CMP_SCALE
-        cmp_h = center_surf.height // self.CMP_SCALE
-        self.compare_renderer = FlameRenderer(self.ctx, cmp_w, cmp_h)
-        self.compare_renderer.blur_radius = 0.0
-        self.compare_renderer.set_ppmm(self.canvas_ppmm / self.CMP_SCALE)
-        # Restore main renderer's bindings
-        self.renderer.bind_buffers()
-        log.info(f'[compare] created renderer at {cmp_w}x{cmp_h}')
-
     def _handle_compare(self, event) -> None:
         from .compare import CompareMode
         if self.comparing:
             return
         import time
         _t0 = time.perf_counter()
-        self._ensure_compare_renderer()
+        self.compare.ensure_renderer(self.renderer)
         _t1 = time.perf_counter()
         log.info(f'[compare] renderer: {(_t1-_t0)*1000:.0f}ms')
         self.compare_mode = CompareMode(self.lib)
@@ -221,30 +201,24 @@ class WallpaperCommands:
         _t3 = time.perf_counter()
         log.info(f'[compare] pick_pair: {(_t3-_t2)*1000:.0f}ms')
         self.comparing = True
-        self.compare_needs_reset = True
-        # Reclaim compare renderer's SSBO bindings after main renderer's exit rebind
-        if self.compare_renderer is not None:
-            self.compare_renderer.bind_buffers()
-            # CPU-side zero to ensure clean state regardless of binding cache
-            n_px = self.compare_renderer.canvas_w * self.compare_renderer.canvas_h
-            self.compare_renderer.histogram_buf.write(
-                np.zeros(n_px * 2, dtype=np.uint32).tobytes())
+        self.compare.needs_reset = True
+        self.compare.reclaim_bindings()
         log.info('[ctl] entered compare mode')
 
     def _handle_left(self, event) -> None:
         if self.comparing and self.compare_mode:
             self.compare_mode.on_left_wins()
-            self.compare_needs_reset = True
+            self.compare.needs_reset = True
 
     def _handle_right(self, event) -> None:
         if self.comparing and self.compare_mode:
             self.compare_mode.on_right_wins()
-            self.compare_needs_reset = True
+            self.compare.needs_reset = True
 
     def _handle_skip(self, event) -> None:
         if self.comparing and self.compare_mode:
             self.compare_mode.on_skip()
-            self.compare_needs_reset = True
+            self.compare.needs_reset = True
 
     def _handle_wallpaper(self, event) -> None:
         if self.comparing:

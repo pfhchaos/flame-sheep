@@ -1,21 +1,27 @@
 """Comparison mode for pairwise genome rating.
 
-Manages pair selection, active learning, and state for A/B comparison.
-The renderer handles the visual split — this module handles the logic.
+CompareMode manages pair selection and active learning (which pair to
+present next, vote handling).
+
+CompareRenderer manages the visual split — lazy renderer creation at half
+resolution, offset-based dual chaos game dispatch, and split-screen
+tonemap of the largest output surface.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .genome import Genome
+from .renderer import FlameRenderer, Viewport
+
+if TYPE_CHECKING:
+    from .storage import Library
 
 log = logging.getLogger(__name__)
-
-if __name__ != '__main__':
-    from .storage import Library
 
 
 @dataclass
@@ -222,3 +228,114 @@ class CompareMode:
             self.pair.right_id = best
 
         log.debug(f'[compare] new opponent #{best} (gap={best_gap:.3f})')
+
+
+class CompareRenderer:
+    """Half-resolution renderer for the side-by-side compare view.
+
+    Lazily created on first compare-mode entry. Uses an offset-based dual
+    histogram (one buffer, two halves) so a single render program can
+    dispatch and tonemap both genomes without rebinding SSBOs — works
+    around Mesa's per-program SSBO binding cache on Arc.
+    """
+
+    CMP_SCALE = 2  # half-resolution renderer
+
+    def __init__(self, ctx, viewports: dict, surfaces: dict, first_surf,
+                 canvas_ppmm: float):
+        self.ctx = ctx
+        self.viewports = viewports
+        self.surfaces = surfaces
+        self.first_surf = first_surf
+        self.canvas_ppmm = canvas_ppmm
+        self.renderer: FlameRenderer | None = None
+        self.surf_name: str | None = None  # output we render compare on
+        self.needs_reset = False
+
+    def ensure_renderer(self, main_renderer: FlameRenderer) -> None:
+        """Create the compare renderer the first time it's needed."""
+        if self.renderer is not None:
+            return
+        center_name = max(self.viewports, key=lambda n: self.viewports[n].w)
+        center_surf = self.surfaces.get(center_name, self.first_surf)
+        cmp_w = center_surf.width // 2 // self.CMP_SCALE
+        cmp_h = center_surf.height // self.CMP_SCALE
+        self.renderer = FlameRenderer(self.ctx, cmp_w, cmp_h)
+        self.renderer.blur_radius = 0.0
+        self.renderer.set_ppmm(self.canvas_ppmm / self.CMP_SCALE)
+        # Restore main renderer's bindings after our pipeline creation
+        main_renderer.bind_buffers()
+        log.info(f'[compare] created renderer at {cmp_w}x{cmp_h}')
+
+    def reclaim_bindings(self) -> None:
+        """Re-bind compare renderer's SSBOs after main renderer's bindings
+        clobbered ours (Mesa per-program binding cache workaround)."""
+        if self.renderer is None:
+            return
+        self.renderer.bind_buffers()
+        # CPU-side zero to ensure clean state regardless of binding cache
+        n_px = self.renderer.canvas_w * self.renderer.canvas_h
+        self.renderer.histogram_buf.write(
+            np.zeros(n_px * 2, dtype=np.uint32).tobytes())
+
+    def dispatch(self, pair: PairState, frame, rotation_phase: float) -> None:
+        """Run chaos game for left + right genomes into offset halves of
+        the dual histogram."""
+        if self.renderer is None or pair.left is None or pair.right is None:
+            return
+        cr = self.renderer
+        rot = rotation_phase
+        left_g = pair.left.rotated(rot) if rot != 0.0 else pair.left
+        right_g = pair.right.rotated(rot) if rot != 0.0 else pair.right
+        n_px = cr.canvas_w * cr.canvas_h
+
+        # Cache which output surface gets the compare view (largest viewport)
+        if self.surf_name is None:
+            self.surf_name = max(self.viewports, key=lambda n: self.viewports[n].w)
+
+        if self.needs_reset:
+            cr.ensure_double_histogram()
+            cr.histogram_buf.write(
+                np.zeros(n_px * 4, dtype=np.uint32).tobytes())
+            cr.reset_walkers()
+            self.needs_reset = False
+
+        # Left genome: offset=0
+        cr.set_histogram_offset(0)
+        cr.upload_audio(frame.spectrum)
+        cr.upload_genome(left_g)
+        cr.upload_palette(frame.palette)
+        cr.clear_histogram(decay=0.3)
+        cr.dispatch_chaos_game(iterations=frame.iterations)
+        self.ctx.memory_barrier()
+
+        # Right genome: offset=n_pixels
+        cr.set_histogram_offset(n_px)
+        cr.upload_genome(right_g)
+        cr.upload_palette(frame.palette)
+        cr.clear_histogram(decay=0.3)
+        cr.dispatch_chaos_game(iterations=frame.iterations)
+        self.ctx.memory_barrier()
+
+    def tonemap_surface(self, surf, frame) -> None:
+        """Tonemap the dual histogram into a split-screen view on `surf`."""
+        if self.renderer is None:
+            return
+        cr = self.renderer
+        half_w = surf.width // 2
+        n_px = cr.canvas_w * cr.canvas_h
+        cr_vp = Viewport(0, 0, cr.canvas_w, cr.canvas_h)
+
+        # Left half: offset=0
+        cr.set_histogram_offset(0)
+        cr.reduce_histogram_max()
+        cr.render_tonemap(cr_vp, surf.width, surf.height,
+                         brightness=frame.brightness,
+                         screen_rect=(0, 0, half_w, surf.height))
+
+        # Right half: offset=n_pixels
+        cr.set_histogram_offset(n_px)
+        cr.reduce_histogram_max()
+        cr.render_tonemap(cr_vp, surf.width, surf.height,
+                         brightness=frame.brightness,
+                         screen_rect=(half_w, 0, surf.width - half_w, surf.height))

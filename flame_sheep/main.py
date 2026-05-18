@@ -389,42 +389,10 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 session.release_current()
                 continue
 
-            if commands.comparing and commands.compare_mode and commands.compare_renderer:
-                # --- Compare mode: offset-based dual dispatch, no buffer swapping ---
-                pair = commands.compare_mode.pair
-                cr = commands.compare_renderer
-                if pair.left is not None and pair.right is not None:
-                    rot = core._genome_axis._rotation.phase
-                    left_g = pair.left.rotated(rot) if rot != 0.0 else pair.left
-                    right_g = pair.right.rotated(rot) if rot != 0.0 else pair.right
-                    n_px = cr.canvas_w * cr.canvas_h
-
-                    _compare_surf_name = max(viewports, key=lambda n: viewports[n].w)
-
-                    if commands.compare_needs_reset:
-                        cr.ensure_double_histogram()
-                        import numpy as _np
-                        cr.histogram_buf.write(
-                            _np.zeros(n_px * 4, dtype=_np.uint32).tobytes())
-                        cr.reset_walkers()
-                        commands.compare_needs_reset = False
-
-                    # Left genome: offset=0
-                    cr.set_histogram_offset(0)
-                    cr.upload_audio(frame.spectrum)
-                    cr.upload_genome(left_g)
-                    cr.upload_palette(frame.palette)
-                    cr.clear_histogram(decay=0.3)
-                    cr.dispatch_chaos_game(iterations=frame.iterations)
-                    ctx.memory_barrier()
-
-                    # Right genome: offset=n_pixels
-                    cr.set_histogram_offset(n_px)
-                    cr.upload_genome(right_g)
-                    cr.upload_palette(frame.palette)
-                    cr.clear_histogram(decay=0.3)
-                    cr.dispatch_chaos_game(iterations=frame.iterations)
-                    ctx.memory_barrier()
+            if commands.comparing and commands.compare_mode:
+                commands.compare.dispatch(
+                    commands.compare_mode.pair, frame,
+                    rotation_phase=core._genome_axis._rotation.phase)
 
             elif not _test_pattern:
                 # --- Normal mode: single chaos game ---
@@ -447,25 +415,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 renderer.set_skew(_monitor_skew.get(name, 0.0))
                 if _test_pattern:
                     renderer.render_test_pattern(viewports[name], surf.width, surf.height)
-                elif commands.comparing and commands.compare_renderer and name == _compare_surf_name:
-                    cr = commands.compare_renderer
-                    half_w = surf.width // 2
-                    n_px = cr.canvas_w * cr.canvas_h
-                    _cr_vp = Viewport(0, 0, cr.canvas_w, cr.canvas_h)
-
-                    # Left half: offset=0
-                    cr.set_histogram_offset(0)
-                    cr.reduce_histogram_max()
-                    cr.render_tonemap(_cr_vp, surf.width, surf.height,
-                                     brightness=frame.brightness,
-                                     screen_rect=(0, 0, half_w, surf.height))
-
-                    # Right half: offset=n_pixels
-                    cr.set_histogram_offset(n_px)
-                    cr.reduce_histogram_max()
-                    cr.render_tonemap(_cr_vp, surf.width, surf.height,
-                                     brightness=frame.brightness,
-                                     screen_rect=(half_w, 0, surf.width - half_w, surf.height))
+                elif commands.comparing and name == commands.compare.surf_name:
+                    commands.compare.tonemap_surface(surf, frame)
                 elif commands.comparing:
                     # Side monitors: black during compare mode
                     ctx.clear(0.0, 0.0, 0.0, 1.0)
