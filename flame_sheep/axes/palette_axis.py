@@ -17,7 +17,7 @@ from flame_sheep.config import cfg
 from flame_sheep.role_mapper import RoleMapper, SUBDIVISION
 
 if TYPE_CHECKING:
-    from flame_sheep.main import FlameSheepCore
+    from flame_sheep.core import FlameSheepCore
     from flame_sheep.storage import Library
 
 
