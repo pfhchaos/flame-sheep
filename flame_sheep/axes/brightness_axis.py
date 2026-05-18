@@ -15,7 +15,7 @@ from flame_sheep_audio.response import AsymmetricEnvelope
 from flame_sheep.role_mapper import RoleMapper, ENERGY
 
 if TYPE_CHECKING:
-    from flame_sheep.main import FlameSheepCore
+    from flame_sheep.core import FlameSheepCore
 
 HOP_TIME = HOP_SIZE / SAMPLE_RATE
 

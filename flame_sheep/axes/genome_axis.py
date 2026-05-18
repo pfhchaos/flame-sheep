@@ -39,7 +39,7 @@ from flame_sheep.genome import Genome
 from flame_sheep.variations import Variation
 
 if TYPE_CHECKING:
-    from flame_sheep.main import FlameSheepCore
+    from flame_sheep.core import FlameSheepCore
     from flame_sheep.storage import Library
 
 

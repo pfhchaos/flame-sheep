@@ -12,7 +12,7 @@ from flame_sheep.config import cfg
 from flame_sheep.role_mapper import RoleMapper, DOWNBEAT
 
 if TYPE_CHECKING:
-    from flame_sheep.main import FlameSheepCore
+    from flame_sheep.core import FlameSheepCore
 
 
 class ZoomAxis:

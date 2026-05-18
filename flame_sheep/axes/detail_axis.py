@@ -14,7 +14,7 @@ from flame_sheep.role_mapper import RoleMapper, ENERGY
 from flame_sheep.renderer import LIVE_ITER_MIN, LIVE_ITER_MAX
 
 if TYPE_CHECKING:
-    from flame_sheep.main import FlameSheepCore
+    from flame_sheep.core import FlameSheepCore
 
 HOP_TIME = HOP_SIZE / SAMPLE_RATE
 

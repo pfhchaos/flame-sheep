@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from flame_sheep_audio import AudioState
-    from flame_sheep.main import FlameSheepCore
+    from flame_sheep.core import FlameSheepCore
 
 
 class VisualAxis(Protocol):
