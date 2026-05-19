@@ -156,14 +156,100 @@ def soft_cross_entropy(logits: np.ndarray, targets: np.ndarray) -> tuple:
     return loss, grad.astype(np.float32)
 
 
+def save_checkpoint(path: Path, weights: np.ndarray, next_epoch: int,
+                    best_val_loss: float) -> None:
+    """Save weights + training metadata in .npz format.
+
+    Layout: {weights, next_epoch, best_val_loss}.
+
+    `next_epoch` semantically means "first epoch to do on resume" — so an
+    end-of-epoch save (just finished epoch N) stores next_epoch=N+1, but
+    a mid-epoch save (still doing epoch N) stores next_epoch=N. Resume
+    sets start_epoch = next_epoch directly. This way mid-epoch
+    checkpoints correctly cause the resume to re-do that epoch's
+    remaining data with the saved (mid-epoch-improved) weights, rather
+    than skipping ahead.
+
+    Atomic write via tmp + rename so partial writes don't corrupt a
+    good checkpoint.
+    """
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    np.savez(tmp, weights=weights, next_epoch=next_epoch,
+             best_val_loss=best_val_loss)
+    # numpy adds .npz if path didn't have one — pick whichever landed.
+    actual_tmp = tmp if tmp.exists() else tmp.with_suffix(tmp.suffix + '.npz')
+    actual_dst = path if path.suffix == '.npz' else path.with_suffix('.npz')
+    actual_tmp.replace(actual_dst)
+
+
+def load_checkpoint(path: Path):
+    """Load checkpoint. Returns (weights, next_epoch, best_val_loss) or None.
+
+    `next_epoch` is the index of the first epoch to (re)do on resume.
+    Accepts both new .npz format (with metadata) and legacy formats
+    (raw .npy weights, or .npz with the older 'epoch' field meaning
+    "last completed epoch"). Legacy 'epoch' is converted: next_epoch =
+    epoch + 1.
+    Returns None if path doesn't exist or load fails.
+    """
+    # Allow either explicit .npz or fall back to whatever np.save wrote.
+    candidates = [path]
+    if path.suffix != '.npz':
+        candidates.append(path.with_suffix('.npz'))
+    if path.suffix != '.npy':
+        candidates.append(path.with_suffix('.npy'))
+    for p in candidates:
+        if p.exists():
+            path = p
+            break
+    else:
+        return None
+    try:
+        obj = np.load(path, allow_pickle=False)
+    except Exception as e:
+        print(f"  WARN: couldn't load checkpoint at {path}: {e}", file=sys.stderr)
+        return None
+    if isinstance(obj, np.lib.npyio.NpzFile):
+        weights = obj['weights'].astype(np.float32)
+        if 'next_epoch' in obj.files:
+            next_epoch = int(obj['next_epoch'])
+        elif 'epoch' in obj.files:
+            # Older field: 'epoch' meant "last completed epoch."
+            next_epoch = int(obj['epoch']) + 1
+        else:
+            next_epoch = 0
+        best_val_loss = (float(obj['best_val_loss'])
+                         if 'best_val_loss' in obj.files else float('inf'))
+        obj.close()
+        return weights, next_epoch, best_val_loss
+    # Raw .npy — weights only.
+    return obj.astype(np.float32), 0, float('inf')
+
+
 def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
-                in_buf, grad_buf, dataset, cache: LazyFileCache):
+                in_buf, grad_buf, dataset, cache: LazyFileCache,
+                val_batches=None, val_data=None, val_interval: float = 0.0,
+                best_val_state=None, save_path: Path | None = None,
+                epoch_num: int = 0):
     """Train one epoch. Reuses pre-allocated GPU buffers.
 
     `batches` is a list of batch specs (file_idx, start tuples).
     Arrays are materialized per-batch via the shared cache.
+
+    Optional mid-epoch validation by wall time: if val_interval > 0,
+    runs validate() whenever val_interval seconds have elapsed since the
+    last validation (or since the epoch start), and saves the checkpoint
+    via save_path if val_loss improves on best_val_state[0]. Wall time
+    is more useful than batch count when batch processing time varies
+    (different cache hit rates, GPU contention, etc.) — guarantees you
+    get a checkpoint within a known time budget regardless of throughput.
     """
+    import time
     losses = []
+    mid_epoch_val_active = (val_batches and val_data is not None
+                            and val_interval > 0 and best_val_state is not None
+                            and save_path is not None)
+    last_val_time = time.monotonic()
 
     for batch_idx, batch_spec in enumerate(batches):
         inputs, labels = materialize_batch(batch_spec, dataset, chunk_len, cache)
@@ -206,6 +292,24 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
 
         if (batch_idx + 1) % 10 == 0:
             print(f"    batch {batch_idx+1}/{len(batches)} loss={chunk_loss:.4f}")
+
+        # Mid-epoch validation: runs whenever val_interval seconds have
+        # elapsed since the last validation. Wall-time-based instead of
+        # batch-count-based so the user gets a checkpoint within a known
+        # time budget regardless of throughput swings.
+        if mid_epoch_val_active and (time.monotonic() - last_val_time) >= val_interval:
+            elapsed_min = (time.monotonic() - last_val_time) / 60.0
+            val_loss, val_acc = validate(model, gpu, val_batches,
+                                         chunk_len, in_buf, val_data, cache)
+            print(f"    [mid-epoch +{elapsed_min:.1f}min] batch {batch_idx+1}/{len(batches)}  "
+                  f"val_loss={val_loss:.4f}  val_acc={val_acc:.3f}")
+            if val_loss < best_val_state[0]:
+                best_val_state[0] = val_loss
+                # next_epoch=epoch_num: still mid-epoch_num, retry it on resume.
+                save_checkpoint(save_path, model.save_weights(),
+                                epoch_num, val_loss)
+                print(f"    [mid-epoch] -> saved best (val_loss={val_loss:.4f})")
+            last_val_time = time.monotonic()
 
     return np.mean(losses) if losses else 0.0
 
@@ -271,6 +375,13 @@ def main():
                         help='Validation split ratio (default: 0.1)')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--max-files', type=int, default=None)
+    parser.add_argument('--val-interval', type=float, default=7200.0,
+                        help='Mid-epoch validation cadence in seconds of '
+                             'wall-clock training time. 0 disables. '
+                             'Default: 7200 (2 hours)')
+    parser.add_argument('--no-resume', action='store_true',
+                        help='Ignore an existing checkpoint at --output and '
+                             'start training from scratch (Kaiming init)')
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -295,9 +406,35 @@ def main():
     model = build_beat_crnn(gpu, input_size=216, hidden_size=args.hidden,
                             n_classes=3, batch_size=args.batch_size,
                             max_seq_len=args.chunk_len)
-    model.init_weights(seed=args.seed)
+
+    # Resume from checkpoint if it exists (unless --no-resume).
+    start_epoch = 0
+    best_val_loss = float('inf')
+    if not args.no_resume:
+        ckpt = load_checkpoint(args.output)
+        if ckpt is not None:
+            weights, next_epoch, best_val_loss = ckpt
+            if len(weights) != model.param_count():
+                print(f"WARN: checkpoint has {len(weights)} params but model "
+                      f"expects {model.param_count()} — init from scratch instead",
+                      file=sys.stderr)
+                model.init_weights(seed=args.seed)
+            else:
+                model.load_weights(weights)
+                start_epoch = next_epoch
+                print(f"Resumed from checkpoint: next_epoch={next_epoch+1}, "
+                      f"best_val_loss={best_val_loss:.4f}")
+        else:
+            model.init_weights(seed=args.seed)
+            print(f"Fresh init (seed={args.seed})")
+    else:
+        model.init_weights(seed=args.seed)
+        print(f"--no-resume: starting fresh (seed={args.seed})")
+
     print(f"Model: {model.param_count()} parameters (hidden={args.hidden})")
     print(f"Chunk length: {args.chunk_len} frames ({args.chunk_len / 93.75:.2f}s)")
+    if args.val_interval > 0:
+        print(f"Mid-epoch validation: every {args.val_interval / 60:.0f} minutes")
     print()
 
     # Pre-allocate GPU buffers once (reused across all batches/epochs)
@@ -309,9 +446,11 @@ def main():
     # working set for typical chunk shuffles without thrashing.
     file_cache = LazyFileCache(max_files=getattr(args, 'file_cache_size', 64))
 
-    # Training loop
-    best_val_loss = float('inf')
-    for epoch in range(args.epochs):
+    # Training loop. best_val_state is a one-element list so train_epoch
+    # can mutate it across mid-epoch checkpoint saves and the main loop
+    # sees the running best.
+    best_val_state = [best_val_loss]
+    for epoch in range(start_epoch, args.epochs):
         print(f"Epoch {epoch+1}/{args.epochs}")
 
         train_batches = make_chunks(train_data, args.chunk_len, args.batch_size, rng)
@@ -319,7 +458,11 @@ def main():
 
         train_loss = train_epoch(model, gpu, train_batches, args.lr,
                                  args.chunk_len, in_buf, grad_buf,
-                                 train_data, file_cache)
+                                 train_data, file_cache,
+                                 val_batches=val_batches, val_data=val_data,
+                                 val_interval=args.val_interval,
+                                 best_val_state=best_val_state,
+                                 save_path=args.output, epoch_num=epoch)
         val_loss, val_acc = validate(model, gpu, val_batches,
                                      args.chunk_len, in_buf,
                                      val_data, file_cache)
@@ -327,15 +470,21 @@ def main():
         print(f"  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  "
               f"val_acc={val_acc:.3f}")
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            weights = model.save_weights()
-            np.save(args.output, weights)
-            print(f"  -> saved best weights ({len(weights)} params)")
+        # End-of-epoch save: store next_epoch=epoch+1 since this one is done.
+        if val_loss < best_val_state[0]:
+            best_val_state[0] = val_loss
+            save_checkpoint(args.output, model.save_weights(),
+                            epoch + 1, val_loss)
+            print(f"  -> saved best weights (val_loss={val_loss:.4f})")
+        else:
+            # Always save end-of-epoch progress so resume picks up at the
+            # next epoch, even if val didn't improve this one.
+            save_checkpoint(args.output, model.save_weights(),
+                            epoch + 1, best_val_state[0])
 
         print()
 
-    print(f"Training complete. Best val_loss={best_val_loss:.4f}")
+    print(f"Training complete. Best val_loss={best_val_state[0]:.4f}")
     print(f"Weights saved to: {args.output}")
 
 
