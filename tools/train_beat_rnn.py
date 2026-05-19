@@ -21,64 +21,114 @@ from flame_sheep.wallpaper_ml import build_beat_crnn, VkGRU
 
 
 def load_dataset(data_dir: Path, max_files: int | None = None):
-    """Load all .npz label files. Returns list of (spectrum, diff, labels) arrays."""
+    """Scan .npz label files and return list of (path, n_frames) tuples.
+
+    Lazy: array data is NOT loaded here. The 7.5K-file beat corpus expands
+    to ~170 GB if all arrays are materialized — would OOM any reasonable
+    machine. Instead we record file paths + frame counts (cheap, ~one
+    np.load per file just to read array shapes), and load actual arrays
+    on demand during batching via LazyFileCache.
+    """
     files = sorted(data_dir.glob('*.npz'))
     if max_files:
         files = files[:max_files]
 
+    n_total = len(files)
+    print(f"Scanning {n_total} .npz files from {data_dir}...")
+    report_every = max(1, n_total // 20)
+
     dataset = []
     total_frames = 0
-    for f in files:
-        d = np.load(f)
-        spec = d['spectrum']   # [T, 108]
-        diff = d['diff']       # [T, 108]
-        labels = d['labels']   # [T, 3]
-        dataset.append((spec, diff, labels))
-        total_frames += len(spec)
+    for i, f in enumerate(files):
+        with np.load(f) as d:
+            n_frames = len(d['spectrum'])
+        dataset.append((f, n_frames))
+        total_frames += n_frames
+        if (i + 1) % report_every == 0 or i + 1 == n_total:
+            print(f"  scanned {i + 1}/{n_total} ({total_frames} frames so far)")
 
-    print(f"Loaded {len(dataset)} files, {total_frames} total frames "
+    print(f"Scanned {len(dataset)} files, {total_frames} total frames "
           f"({total_frames / 93.75 / 60:.1f} minutes)")
     return dataset
 
 
-def make_chunks(dataset, chunk_len: int, batch_size: int, rng):
-    """Extract random chunks from dataset for one epoch.
+class LazyFileCache:
+    """LRU cache of decompressed .npz arrays, keyed by file path.
 
-    Returns list of (input_batch, label_batch) where:
-      input_batch: [B, T, 216] float32 (spectrum + diff concatenated)
-      label_batch: [B, T, 3] float32 (soft probabilities)
+    .npz is compressed zip, so np.load(mmap_mode='r') silently no-ops —
+    the data has to be decompressed into a real ndarray on access. This
+    cache holds the most-recently-used N files' (spec, diff, labels)
+    tuples, evicting oldest entries when the cache fills. At ~10 MB per
+    file × 64 cached, that's a ~640 MB working set instead of all-files-
+    in-RAM (~170 GB for the full corpus).
+
+    Cache shared across train and validate so files don't repeatedly
+    reload between phases.
     """
-    # Collect all valid chunk start positions
+
+    def __init__(self, max_files: int = 64):
+        self.max_files = max_files
+        self._cache: dict = {}
+        self._order: list = []
+
+    def get(self, path):
+        key = str(path)
+        if key in self._cache:
+            self._order.remove(key)
+            self._order.append(key)
+            return self._cache[key]
+        d = np.load(path)
+        # Copy to plain ndarrays so the underlying npz file handle can close.
+        arrays = (np.array(d['spectrum']), np.array(d['diff']), np.array(d['labels']))
+        self._cache[key] = arrays
+        self._order.append(key)
+        while len(self._cache) > self.max_files:
+            oldest = self._order.pop(0)
+            del self._cache[oldest]
+        return arrays
+
+
+def make_chunks(dataset, chunk_len: int, batch_size: int, rng):
+    """Build chunk specs (NOT materialized arrays) for one epoch.
+
+    Returns list of batch specs, each spec a list of (file_idx, start)
+    tuples. Materialize per-batch via materialize_batch() at iteration
+    time — keeps memory footprint bounded by LazyFileCache rather than
+    growing with epoch size.
+    """
     chunks = []
-    for file_idx, (spec, diff, labels) in enumerate(dataset):
-        n_frames = len(spec)
+    for file_idx, (_, n_frames) in enumerate(dataset):
         n_chunks = n_frames // chunk_len
         for c in range(n_chunks):
-            start = c * chunk_len
-            chunks.append((file_idx, start))
+            chunks.append((file_idx, c * chunk_len))
 
     rng.shuffle(chunks)
 
-    # Form batches
     batches = []
     for i in range(0, len(chunks) - batch_size + 1, batch_size):
-        batch_inputs = []
-        batch_labels = []
-        for j in range(batch_size):
-            file_idx, start = chunks[i + j]
-            spec, diff, labels = dataset[file_idx]
-            end = start + chunk_len
-            # Concatenate spectrum + diff → 216 features
-            inp = np.concatenate([spec[start:end], diff[start:end]], axis=1)
-            batch_inputs.append(inp)
-            batch_labels.append(labels[start:end])
-
-        batches.append((
-            np.array(batch_inputs, dtype=np.float32),  # [B, T, 216]
-            np.array(batch_labels, dtype=np.float32),  # [B, T, 3]
-        ))
-
+        batches.append(chunks[i:i + batch_size])
     return batches
+
+
+def materialize_batch(batch_spec, dataset, chunk_len: int, cache: LazyFileCache):
+    """Load files for a single batch via cache, return (inputs, labels) arrays.
+
+    inputs: [B, T, 216] float32 (spectrum + diff concatenated)
+    labels: [B, T, 3]   float32 (soft probabilities)
+    """
+    batch_inputs = []
+    batch_labels = []
+    for file_idx, start in batch_spec:
+        path, _ = dataset[file_idx]
+        spec, diff, labels = cache.get(path)
+        end = start + chunk_len
+        inp = np.concatenate([spec[start:end], diff[start:end]], axis=1)
+        batch_inputs.append(inp)
+        batch_labels.append(labels[start:end])
+    return (
+        np.array(batch_inputs, dtype=np.float32),
+        np.array(batch_labels, dtype=np.float32),
+    )
 
 
 def soft_cross_entropy(logits: np.ndarray, targets: np.ndarray) -> tuple:
@@ -107,11 +157,16 @@ def soft_cross_entropy(logits: np.ndarray, targets: np.ndarray) -> tuple:
 
 
 def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
-                in_buf, grad_buf):
-    """Train one epoch. Reuses pre-allocated GPU buffers."""
+                in_buf, grad_buf, dataset, cache: LazyFileCache):
+    """Train one epoch. Reuses pre-allocated GPU buffers.
+
+    `batches` is a list of batch specs (file_idx, start tuples).
+    Arrays are materialized per-batch via the shared cache.
+    """
     losses = []
 
-    for batch_idx, (inputs, labels) in enumerate(batches):
+    for batch_idx, batch_spec in enumerate(batches):
+        inputs, labels = materialize_batch(batch_spec, dataset, chunk_len, cache)
         # inputs: [B, T, 216], labels: [B, T, 3]
         B_actual = inputs.shape[0]
         T = inputs.shape[1]
@@ -155,13 +210,15 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
     return np.mean(losses) if losses else 0.0
 
 
-def validate(model, gpu, batches, chunk_len: int, in_buf):
+def validate(model, gpu, batches, chunk_len: int, in_buf,
+             dataset, cache: LazyFileCache):
     """Run validation. Reuses pre-allocated input buffer."""
     losses = []
     correct_beats = 0
     total_beats = 0
 
-    for inputs, labels in batches:
+    for batch_spec in batches:
+        inputs, labels = materialize_batch(batch_spec, dataset, chunk_len, cache)
         B = inputs.shape[0]
         T = inputs.shape[1]
 
@@ -191,6 +248,10 @@ def validate(model, gpu, batches, chunk_len: int, in_buf):
 
 
 def main():
+    # Line-buffer stdout so progress prints flush on each newline.
+    # Without this, output sits in a 4KB buffer and a GPU lockup leaves
+    # no breadcrumb in the log file.
+    sys.stdout.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(description='Train beat detection RNN')
     parser.add_argument('data_dir', type=Path, help='Directory with .npz label files')
     parser.add_argument('-o', '--output', type=Path,
@@ -243,6 +304,11 @@ def main():
     in_buf = gpu.create_buffer(args.batch_size * 216 * 4)
     grad_buf = gpu.create_buffer(args.batch_size * 3 * 4)
 
+    # Lazy file cache shared across train + validate. Holds the N most
+    # recently used files; cap at ~64 files (~640 MB) which is enough
+    # working set for typical chunk shuffles without thrashing.
+    file_cache = LazyFileCache(max_files=getattr(args, 'file_cache_size', 64))
+
     # Training loop
     best_val_loss = float('inf')
     for epoch in range(args.epochs):
@@ -252,9 +318,11 @@ def main():
         val_batches = make_chunks(val_data, args.chunk_len, args.batch_size, rng)
 
         train_loss = train_epoch(model, gpu, train_batches, args.lr,
-                                 args.chunk_len, in_buf, grad_buf)
+                                 args.chunk_len, in_buf, grad_buf,
+                                 train_data, file_cache)
         val_loss, val_acc = validate(model, gpu, val_batches,
-                                     args.chunk_len, in_buf)
+                                     args.chunk_len, in_buf,
+                                     val_data, file_cache)
 
         print(f"  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  "
               f"val_acc={val_acc:.3f}")
