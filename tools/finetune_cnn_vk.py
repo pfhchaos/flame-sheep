@@ -52,15 +52,23 @@ def _load_image_rgb(static_png: bytes, swept_png: bytes | None,
 
 def _load_image_domain(hist_static: bytes, hist_swept: bytes,
                        hist_first_hit: bytes | None,
-                       image_size: int) -> np.ndarray:
-    """Convert histogram blobs to (4, H, W) float32 domain-native input."""
+                       image_size: int,
+                       normalization: tuple | None = None) -> np.ndarray:
+    """Convert histogram blobs to (4, H, W) float32 domain-native input.
+
+    With normalization=(mean, std), applies sentinel-aware standardization
+    (hit pixels z-scored, sentinels snapped to SENTINEL_STANDARDIZED).
+    Without normalization, returns the raw channels at native sentinel
+    encoding (1.0 = never hit) for inspection/visualization.
+    """
     from flame_sheep.scoring_channels import (
-        unpack_static_histogram, unpack_histogram, normalize_channels,
+        unpack_static_histogram, unpack_histogram, build_cnn_input,
     )
     hits, colors = unpack_static_histogram(hist_static)
     swept = unpack_histogram(hist_swept)
     first_hit = unpack_histogram(hist_first_hit, dtype=np.uint8) if hist_first_hit else None
-    return normalize_channels(hits, colors, swept, first_hit, output_size=image_size)
+    return build_cnn_input(hits, colors, swept, first_hit,
+                           normalization=normalization, output_size=image_size)
 
 
 class DbImageStore:
@@ -99,9 +107,10 @@ class DbImageStore:
                 (genome_id,)).fetchone()
             if row is None or row['hist_static'] is None or row['hist_swept'] is None:
                 return None
+            # Domain path standardizes inside _load_image_domain (sentinel-aware).
             img = _load_image_domain(
                 row['hist_static'], row['hist_swept'], row['hist_first_hit'],
-                self.image_size)
+                self.image_size, normalization=self._normalization)
         else:
             row = self.conn.execute(
                 'SELECT render_static, render_swept FROM genome_blobs WHERE genome_id=?',
@@ -110,10 +119,10 @@ class DbImageStore:
                 return None
             img = _load_image_rgb(
                 row['render_static'], row['render_swept'], self.image_size)
-
-        if self._normalization is not None:
-            from flame_sheep.scoring_channels import standardize_channels
-            img = standardize_channels(img, *self._normalization)
+            # RGB path: no sentinel concept, use legacy whole-image standardize.
+            if self._normalization is not None:
+                from flame_sheep.scoring_channels import standardize_channels
+                img = standardize_channels(img, *self._normalization)
 
         # LRU cache
         while len(self._cache) >= self.max_cache:
@@ -158,10 +167,22 @@ def load_training_pairs(db_path: str, mode: str = 'mixed') -> tuple[list[tuple[i
     pairwise_pairs = [(r[0], r[1]) for r in pairwise]
 
     # 2. Thumbs up/down → synthetic pairs
+    #
+    # A thumb is an absolute corpus-relative judgment: "this is liked
+    # compared to whatever else was in front of me when I rated it." If
+    # the genome was later archived (pruned for any reason), the implicit
+    # comparison context is gone and the label is no longer meaningful
+    # against the current corpus. Filter to active genomes only.
+    #
+    # Pairwise pairs (below) don't need this filter — they carry their
+    # own comparison context (the other side of the pair), so they remain
+    # valid training data even if either genome was later archived.
     ratings = conn.execute('''
-        SELECT target_id, SUM(rating) as net
-        FROM ratings WHERE target_type='genome'
-        GROUP BY target_id
+        SELECT r.target_id, SUM(r.rating) as net
+        FROM ratings r
+        JOIN genomes g ON g.id = r.target_id
+        WHERE r.target_type='genome' AND g.archived = 0
+        GROUP BY r.target_id
     ''').fetchall()
 
     liked_ids = [r[0] for r in ratings if r[1] > 0]
@@ -232,6 +253,9 @@ def main():
     parser.add_argument('--image-size', type=int, default=256)
     parser.add_argument('--val-fraction', type=float, default=0.15,
                         help='Fraction of pairs held out for validation')
+    parser.add_argument('--val-seed', type=int, default=42,
+                        help='Seed for the train/val split RNG (default 42). '
+                             'Independent of --seed which controls model init.')
     parser.add_argument('--model-size', type=str, default=None,
                         choices=['25k', '55k', '100k'],
                         help='Model size (auto-detected from base weights if omitted)')
@@ -243,6 +267,8 @@ def main():
     parser.add_argument('--data-mode', type=str, default='mixed',
                         choices=['mixed', 'thumbs', 'pairwise'],
                         help='Training data: mixed (default), thumbs only (curriculum stage 1), pairwise only (stage 2)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for weight init (only used with --from-scratch)')
     parser.add_argument('--output', type=str, default=None,
                         help='Output weights path (default: cnn_scorer_personal_vk.npy)')
     args = parser.parse_args()
@@ -318,7 +344,7 @@ def main():
         sys.exit(1)
 
     # Train/val split (by pair, not by genome — some genomes appear in both)
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(args.val_seed)
     indices = np.arange(len(all_pairs))
     rng.shuffle(indices)
     split = int(len(indices) * (1 - args.val_fraction))
@@ -369,8 +395,8 @@ def main():
         model.load_weights(base_weights)
         log.info('Loaded base weights: %d params', model.param_count())
     else:
-        model.init_weights()
-        log.info('Initialized fresh weights: %d params', model.param_count())
+        model.init_weights(seed=args.seed)
+        log.info('Initialized fresh weights: %d params (seed=%d)', model.param_count(), args.seed)
 
     # Input/gradient buffers
     input_buf = gpu.create_buffer(args.batch_size * 4 * args.image_size * args.image_size * 4)

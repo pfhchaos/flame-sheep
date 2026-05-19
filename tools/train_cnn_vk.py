@@ -92,20 +92,18 @@ class ImageStore:
 
         if self._channels == 'domain':
             from flame_sheep.scoring_channels import (
-                normalize_channels, load_raw_histograms, standardize_channels,
+                build_cnn_input, load_raw_histograms,
             )
             hist_name = static.replace('_static.png', '_hist.npz')
             hist_path = self.image_dir / hist_name
             if hist_path.exists():
                 raw = load_raw_histograms(str(hist_path))
-                img = normalize_channels(
+                return build_cnn_input(
                     raw['static_hits'], raw['static_colors'],
                     raw['swept_hits'], raw.get('first_hit'),
+                    normalization=self._normalization,
                     output_size=sz,
                 )
-                if self._normalization is not None:
-                    img = standardize_channels(img, *self._normalization)
-                return img
             # Fall through to RGB if no .npz
 
         s_img = Image.open(self.image_dir / static).convert('RGB').resize(
@@ -259,15 +257,34 @@ def main():
     # Kaiming weight init's distributional assumptions hold. Without this,
     # the sentinel-heavy domain channels (mean H ≈ 0.76) blow up the first
     # conv layer into a dead-ReLU collapse.
-    from flame_sheep.storage import Library as _Lib, NORMALIZATION_VERSION
-    _lib_norm = _Lib()
-    normalization = _lib_norm.get_normalization(NORMALIZATION_VERSION)
-    _lib_norm.close()
-    if normalization is None:
-        log.warning('No normalization stats found — run tools/compute_normalization.py first. '
-                    'Training will proceed with identity normalization (legacy mode).')
+    #
+    # Per-dataset: an ES manifest has different render parameters than the
+    # user's library (different walker density / iteration count → different
+    # channel distribution). Each dataset standardizes against its own stats
+    # so the model always sees zero-mean / unit-variance regardless of
+    # source. Features then transfer cleanly between pretrain and fine-tune.
+    from flame_sheep.storage import NORMALIZATION_VERSION
+    from flame_sheep.scoring_channels import load_normalization_sidecar
+    normalization = load_normalization_sidecar(data_dir, NORMALIZATION_VERSION)
+    norm_source = None
+    if normalization is not None:
+        norm_source = f'sidecar {data_dir}/normalization_{NORMALIZATION_VERSION}.json'
     else:
-        log.info('Normalization %s: mean=%s std=%s', NORMALIZATION_VERSION,
+        from flame_sheep.storage import Library as _Lib
+        _lib_norm = _Lib()
+        normalization = _lib_norm.get_normalization(NORMALIZATION_VERSION)
+        _lib_norm.close()
+        if normalization is not None:
+            norm_source = f'Library metadata (no sidecar in {data_dir})'
+    if normalization is None:
+        log.warning('No normalization stats found — run '
+                    'tools/compute_normalization_from_manifest.py on this '
+                    'dataset, or tools/compute_normalization.py for the '
+                    'Library. Training will proceed with identity '
+                    'normalization (legacy mode).')
+    else:
+        log.info('Normalization %s from %s: mean=%s std=%s',
+                 NORMALIZATION_VERSION, norm_source,
                  [f'{x:.4f}' for x in normalization[0]],
                  [f'{x:.4f}' for x in normalization[1]])
 

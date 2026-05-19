@@ -211,12 +211,20 @@ class VkConv2d(VkLayer):
         fan_in = self.in_channels * self.kernel_size * self.kernel_size
         std = float(np.sqrt(2.0 / fan_in))
         kernel = (rng.standard_normal(n_k) * std).astype(np.float32)
-        # Small positive bias to keep ReLU active on first forward — avoids
-        # the dead-ReLU trap when inputs aren't zero-mean (our domain
-        # channels run high because sentinel=1.0 dominates sparse regions).
-        # If outputs land below zero, ReLU kills them AND the backward
-        # shader masks their gradients, freezing the layer permanently.
-        bias = np.full(self.out_channels, 0.1, dtype=np.float32)
+        # Zero bias init. We previously used +0.1 as a dead-ReLU escape
+        # when domain channels had nonzero-mean inputs (sentinel-pixel
+        # dominated). With v3 sentinel-aware standardization in place,
+        # hit pixels are zero-mean / unit-std and sentinels snap to a
+        # fixed out-of-distribution +5.0 — first-conv outputs no longer
+        # land uniformly below zero. The +0.1 bias additionally caused a
+        # systematic init bias: positive-weight filters fired hard on
+        # sentinel pixels (passing ReLU due to +0.1 floor) while
+        # negative-weight filters fired the same as without — so random
+        # init had a positive coefficient on sentinel count. Sentinels
+        # anti-correlate with quality (disliked genomes have ~7pt more
+        # sentinels than liked), so the model started at 0.33 val_acc
+        # instead of 0.50. Zero bias restores symmetry.
+        bias = np.zeros(self.out_channels, dtype=np.float32)
         self.gpu.upload(self.kernel_buf, kernel)
         self.gpu.upload(self.bias_buf, bias)
 

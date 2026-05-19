@@ -211,6 +211,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_variation_reindex(conn)
     _migrate_blob_separation(conn)
     _migrate_channel_stats(conn)
+    _migrate_channel_stats_v2(conn)
 
 
 def _migrate_variation_reindex(conn: sqlite3.Connection) -> None:
@@ -287,7 +288,25 @@ STATS_COLS = ('mean_h', 'mean_s', 'mean_l', 'mean_a',
 # Bump when normalize_channels semantics change (gamma, sentinels, etc.).
 # Weights trained against an older version must not be loaded with a
 # newer normalization or scores are silently garbage.
-NORMALIZATION_VERSION = 'v1'
+#
+# v1: per-channel mean/std over every pixel (sentinels included). Library
+#     and ES distributions diverge because library is 60% sentinel-pixels
+#     and ES is 28% — corpus gap is mostly sentinel coverage, not visual
+#     content.
+# v2: per-channel mean/std over hit pixels only (sentinel mask excluded).
+#     H/L mask = static_hits > 0. S mask = swept_hits > 0. A mask =
+#     first_hit < 255. Library and ES collapse to nearly the same
+#     distribution at the hit-pixel level, so cross-corpus transfer
+#     works without per-dataset stats. Sentinel value (1.0) standardizes
+#     to the same z-score across both corpora.
+# v3: same stats as v2, but standardize_channels now holds sentinels
+#     STATIC at a fixed out-of-distribution value (SENTINEL_STANDARDIZED
+#     in scoring_channels.py) instead of running them through (x-mean)/std.
+#     Also: ES renders without first_hit data fill A with sentinel 1.0
+#     pre-standardization, so the model sees "all pixels are A-sentinel"
+#     consistently. Together, sentinel becomes a stable categorical
+#     feature at a known location across all corpora and versions.
+NORMALIZATION_VERSION = 'v3'
 
 
 def _migrate_blob_separation(conn: sqlite3.Connection) -> None:
@@ -434,6 +453,77 @@ def _migrate_channel_stats(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "INSERT INTO metadata (key, value) VALUES ('channel_stats_v1', 'done')")
+    conn.commit()
+
+
+def _migrate_channel_stats_v2(conn: sqlite3.Connection) -> None:
+    """Recompute genome_blobs stats with sentinel-aware semantics.
+
+    v1 mean/std were taken over every pixel including sentinels (H=1.0
+    for never-hit, A=1.0 for first_hit==255). Library is 60% sentinels,
+    ES is 28% — so per-corpus stats diverged mostly because of the
+    sentinel fraction, not the actual rendered content. The standardized
+    value of "this is a sentinel" landed at different z-scores across
+    corpora, breaking cross-corpus equivalence the model relies on.
+
+    v2 uses hit-only means/stds (H/L masked by static_hits>0, S by
+    swept_hits>0, A by first_hit<255). The hit-pixel distributions of
+    library and ES collapse to within ~5% of each other; sentinel
+    z-scores become consistent across both.
+
+    One-shot — guarded by metadata key 'channel_stats_v2'. Overwrites
+    the same 8 stats columns in-place (v1's per-genome stats become
+    inaccessible once v2 runs; v1's aggregate 'normalization_v1' key
+    in metadata stays for any legacy weights file that wants to verify
+    its origin, but won't be used by current trainers).
+    """
+    row = conn.execute(
+        "SELECT value FROM metadata WHERE key='channel_stats_v2'").fetchone()
+    if row is not None:
+        return
+
+    from .scoring_channels import (
+        unpack_static_histogram, unpack_histogram, channel_stats_hit_only,
+    )
+
+    rows = conn.execute(
+        '''SELECT genome_id, hist_static, hist_swept, hist_first_hit
+             FROM genome_blobs
+            WHERE hist_static IS NOT NULL AND hist_swept IS NOT NULL'''
+    ).fetchall()
+
+    if rows:
+        import time as _time
+        import sys
+        t0 = _time.time()
+        for gid, hs, hsw, hfh in rows:
+            try:
+                hits, colors = unpack_static_histogram(hs)
+                swept = unpack_histogram(hsw)
+                first_hit = (unpack_histogram(hfh, dtype=np.uint8)
+                             if hfh is not None else None)
+                means, stds = channel_stats_hit_only(
+                    hits, colors, swept, first_hit)
+                conn.execute(
+                    '''UPDATE genome_blobs
+                          SET mean_h=?, mean_s=?, mean_l=?, mean_a=?,
+                              std_h=?,  std_s=?,  std_l=?,  std_a=?
+                        WHERE genome_id=?''',
+                    (float(means[0]), float(means[1]),
+                     float(means[2]), float(means[3]),
+                     float(stds[0]), float(stds[1]),
+                     float(stds[2]), float(stds[3]),
+                     gid),
+                )
+            except Exception as e:
+                print(f'[storage] v2 stats backfill skipped gid {gid}: {e}',
+                      file=sys.stderr)
+        elapsed = _time.time() - t0
+        print(f'[storage] Recomputed channel stats v2 for {len(rows)} genomes '
+              f'in {elapsed:.1f}s (channel_stats_v2)', file=sys.stderr)
+
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('channel_stats_v2', 'done')")
     conn.commit()
 
 

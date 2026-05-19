@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
-"""Diagnose the swept-channel unlearn problem.
+"""Diagnose channel imbalance and weight distribution in a CNN scorer.
 
 Loads a CNN scorer's weights and inspects:
-  1. Per-input-channel statistics on a batch of new-render data
-     (mean, std, fraction near zero) — is the corrected S channel
-     wildly different from the others?
-  2. Per-input-channel weight magnitude in conv0
-     (mean(|w|) over conv0.weight[:, c, :, :]) — has the model
-     concentrated weight on or away from S?
+  1. Per-input-channel statistics on a batch of rendered data
+     (mean, std, sentinel %, hit-only mean/std) — is each channel
+     dominated by sentinels, or is the standardization landing in
+     a reasonable range?
+  2. Per-input-channel weight magnitude in conv0 — has the model
+     concentrated weight on or away from any particular channel?
   3. Conv0 output activation stats (mean, std, dead ReLU fraction
      per output channel) — are any feature maps saturated or dead?
 
+Handles both legacy .npy weights (v1, sentinel-included normalization)
+and .npz weights (v2+, sentinel-aware). When a weights file stamps a
+normalization version, this script loads the matching stats from the
+Library and applies them to the input batch — so the "INPUT CHANNEL
+STATS" section reflects what the model actually sees at scoring time.
+
 Channel layout: (H=palette, S=swept density, L=log hits, A=first-hit).
-S is index 1 — the one that just got fixed.
 
 Usage:
     python tools/analyze_channel_stats.py \
-        --weights flame_sheep/data/cnn_scorer_mlp_v5_finetune.npy \
-        --db ~/datasets/esheep-cnn/library.sqlite \
+        --weights /home/chaos/datasets/esheep-cnn/cnn_scorer_es_v3_lr003.npz \
+        --db ~/.local/share/flame-sheep/library.db \
         --model-size 25k --mlp-head --channels domain
 """
 
@@ -32,6 +37,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flame_sheep.vk_compute import VkCompute
 from flame_sheep.wallpaper_ml import build_cnn_scorer
+from flame_sheep.cnn_scorer import load_cnn_weights_file
+from flame_sheep.scoring_channels import SENTINEL_STANDARDIZED
+from flame_sheep.storage import Library, NORMALIZATION_VERSION
 from train_cnn_vk import MODEL_CONFIGS
 from finetune_cnn_vk import DbImageStore
 
@@ -39,19 +47,42 @@ from finetune_cnn_vk import DbImageStore
 CHANNEL_NAMES = ['H (palette)', 'S (swept)', 'L (log hits)', 'A (first-hit)']
 
 
-def input_stats(batch: np.ndarray) -> None:
-    """Per-channel input stats. batch: [B, 4, H, W]."""
+def input_stats(batch: np.ndarray, sentinel_value: float | None = None) -> None:
+    """Per-channel input stats. batch: [B, 4, H, W].
+
+    If sentinel_value is provided (e.g., SENTINEL_STANDARDIZED for v2+
+    sentinel-aware standardization), also reports sentinel fraction and
+    hit-only mean/std — the values the conv layers actually fit against.
+    """
     print()
     print("=" * 70)
     print("INPUT CHANNEL STATS")
     print("=" * 70)
-    print(f"{'channel':<18} {'mean':>10} {'std':>10} {'min':>10} {'max':>10} {'near-zero':>11}")
-    print("-" * 70)
-    for c in range(4):
-        x = batch[:, c, :, :].ravel()
-        near_zero = (np.abs(x) < 0.01).mean()
-        print(f"{CHANNEL_NAMES[c]:<18} {x.mean():>10.4f} {x.std():>10.4f} "
-              f"{x.min():>10.4f} {x.max():>10.4f} {near_zero:>10.1%}")
+    if sentinel_value is not None:
+        print(f"{'channel':<18} {'mean':>9} {'std':>9} {'min':>9} {'max':>9} "
+              f"{'sent %':>8} {'hit mean':>10} {'hit std':>9}")
+        print("-" * 86)
+        for c in range(4):
+            x = batch[:, c, :, :].ravel()
+            sentinel_mask = (np.abs(x - sentinel_value) < 1e-4)
+            sentinel_frac = sentinel_mask.mean()
+            hit_pixels = x[~sentinel_mask]
+            if hit_pixels.size > 0:
+                hm, hs = hit_pixels.mean(), hit_pixels.std()
+            else:
+                hm, hs = float('nan'), float('nan')
+            print(f"{CHANNEL_NAMES[c]:<18} {x.mean():>9.3f} {x.std():>9.3f} "
+                  f"{x.min():>9.3f} {x.max():>9.3f} {sentinel_frac:>7.1%} "
+                  f"{hm:>10.3f} {hs:>9.3f}")
+    else:
+        # Legacy v1 path: no sentinel concept, fall back to near-zero metric.
+        print(f"{'channel':<18} {'mean':>10} {'std':>10} {'min':>10} {'max':>10} {'near-zero':>11}")
+        print("-" * 70)
+        for c in range(4):
+            x = batch[:, c, :, :].ravel()
+            near_zero = (np.abs(x) < 0.01).mean()
+            print(f"{CHANNEL_NAMES[c]:<18} {x.mean():>10.4f} {x.std():>10.4f} "
+                  f"{x.min():>10.4f} {x.max():>10.4f} {near_zero:>10.1%}")
 
 
 def weight_stats(kernel_w: np.ndarray) -> None:
@@ -124,6 +155,34 @@ def main():
 
     rng = np.random.default_rng(args.seed)
 
+    # --- Load weights (with version) BEFORE images, so we can pick the
+    # matching normalization for the input stats reported below. ---
+    weights, weights_norm_version = load_cnn_weights_file(args.weights)
+    print(f"Loaded {len(weights)} params from {args.weights}  "
+          f"(normalization_version={weights_norm_version or 'legacy/.npy'})")
+
+    # --- Resolve normalization stats. Domain channels need sentinel-aware
+    # standardization when the weights file expects it; without it the
+    # input stats and the conv0 output stats reflect a different input
+    # distribution than the model was trained on. ---
+    normalization = None
+    if args.channels == 'domain' and weights_norm_version is not None:
+        lib_for_norm = Library(data_dir=args.db.parent
+                               if args.db.is_file() else args.db)
+        normalization = lib_for_norm.get_normalization(weights_norm_version)
+        lib_for_norm.close()
+        if normalization is None:
+            print(f"WARNING: no normalization_{weights_norm_version} stats "
+                  f"in {args.db}. Diagnostics will run against raw channels.",
+                  file=sys.stderr)
+        else:
+            print(f"Using normalization {weights_norm_version}: "
+                  f"mean={[f'{x:.3f}' for x in normalization[0]]}  "
+                  f"std={[f'{x:.3f}' for x in normalization[1]]}")
+    elif weights_norm_version is None:
+        print("Legacy weights (no normalization stamp) — running raw, "
+              "no standardization applied.", file=sys.stderr)
+
     # --- Sample some rendered genomes ---
     import sqlite3
     conn = sqlite3.connect(str(args.db))
@@ -143,12 +202,16 @@ def main():
     sample_ids = rng.choice(all_ids, size=args.batch_size, replace=False).tolist()
     print(f"Sampled {len(sample_ids)} genomes from {len(all_ids)} available")
 
-    # --- Load images ---
-    store = DbImageStore(str(args.db), args.image_size, channels=args.channels)
+    # --- Load images with matching standardization ---
+    store = DbImageStore(str(args.db), args.image_size,
+                         channels=args.channels,
+                         normalization=normalization)
     batch = store.get_batch(sample_ids)
     print(f"Batch shape: {batch.shape}")
 
-    input_stats(batch)
+    sentinel = SENTINEL_STANDARDIZED if (normalization is not None
+                                         and args.channels == 'domain') else None
+    input_stats(batch, sentinel_value=sentinel)
 
     # --- Build model and load weights ---
     gpu = VkCompute()
@@ -156,12 +219,10 @@ def main():
     model = build_cnn_scorer(gpu, layers, batch_size=args.batch_size,
                               image_size=args.image_size, mlp_head=args.mlp_head)
 
-    weights = np.load(args.weights).astype(np.float32)
     if len(weights) != model.param_count():
         print(f"WARNING: weights file has {len(weights)} params, "
               f"model expects {model.param_count()}", file=sys.stderr)
     model.load_weights(weights)
-    print(f"Loaded {len(weights)} params from {args.weights}")
 
     # --- Conv0 weight inspection ---
     conv0 = model.layers[0]
