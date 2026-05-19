@@ -229,6 +229,7 @@ def load_checkpoint(path: Path):
 def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
                 in_buf, grad_buf, dataset, cache: LazyFileCache,
                 val_batches=None, val_data=None, val_interval: float = 0.0,
+                val_sample_size: int = 200,
                 best_val_state=None, save_path: Path | None = None,
                 epoch_num: int = 0):
     """Train one epoch. Reuses pre-allocated GPU buffers.
@@ -299,10 +300,14 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
         # time budget regardless of throughput swings.
         if mid_epoch_val_active and (time.monotonic() - last_val_time) >= val_interval:
             elapsed_min = (time.monotonic() - last_val_time) / 60.0
+            # Sample a small subset of val for speed; end-of-epoch will run
+            # the full val set for a high-confidence accuracy reading.
             val_loss, val_acc = validate(model, gpu, val_batches,
-                                         chunk_len, in_buf, val_data, cache)
+                                         chunk_len, in_buf, val_data, cache,
+                                         max_batches=val_sample_size)
             print(f"    [mid-epoch +{elapsed_min:.1f}min] batch {batch_idx+1}/{len(batches)}  "
-                  f"val_loss={val_loss:.4f}  val_acc={val_acc:.3f}")
+                  f"val_loss={val_loss:.4f}  val_acc={val_acc:.3f}  "
+                  f"(sampled {val_sample_size}/{len(val_batches)} val batches)")
             if val_loss < best_val_state[0]:
                 best_val_state[0] = val_loss
                 # next_epoch=epoch_num: still mid-epoch_num, retry it on resume.
@@ -315,8 +320,21 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
 
 
 def validate(model, gpu, batches, chunk_len: int, in_buf,
-             dataset, cache: LazyFileCache):
-    """Run validation. Reuses pre-allocated input buffer."""
+             dataset, cache: LazyFileCache,
+             max_batches: int | None = None):
+    """Run validation. Reuses pre-allocated input buffer.
+
+    If max_batches is set and smaller than len(batches), randomly samples
+    that many batches and runs validation only on the sample. Used for
+    mid-epoch validation where the full val set would take hours (~15h on
+    the full 751-file beat val set) and the user just wants a periodic
+    val accuracy reading, not a high-confidence number. End-of-epoch
+    validation passes max_batches=None to run the full set for an
+    honest checkpoint metric.
+    """
+    if max_batches is not None and max_batches < len(batches):
+        import random
+        batches = random.sample(batches, max_batches)
     losses = []
     correct_beats = 0
     total_beats = 0
@@ -379,6 +397,13 @@ def main():
                         help='Mid-epoch validation cadence in seconds of '
                              'wall-clock training time. 0 disables. '
                              'Default: 7200 (2 hours)')
+    parser.add_argument('--val-sample-size', type=int, default=200,
+                        help='Number of val batches sampled per mid-epoch '
+                             'validation pass. The full val set is ~21K '
+                             'batches and takes hours to run; sampling 200 '
+                             'gives a noisy but timely val_acc reading. '
+                             'End-of-epoch validation always uses the full '
+                             'val set. Default: 200')
     parser.add_argument('--no-resume', action='store_true',
                         help='Ignore an existing checkpoint at --output and '
                              'start training from scratch (Kaiming init)')
@@ -461,6 +486,7 @@ def main():
                                  train_data, file_cache,
                                  val_batches=val_batches, val_data=val_data,
                                  val_interval=args.val_interval,
+                                 val_sample_size=args.val_sample_size,
                                  best_val_state=best_val_state,
                                  save_path=args.output, epoch_num=epoch)
         val_loss, val_acc = validate(model, gpu, val_batches,
