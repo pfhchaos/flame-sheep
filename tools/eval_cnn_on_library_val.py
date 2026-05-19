@@ -40,10 +40,19 @@ from finetune_cnn_vk import DbImageStore, load_training_pairs
 log = logging.getLogger(__name__)
 
 
-def evaluate_one(weights_path: Path, val_pairs, db_path: Path,
-                  model_size: str, mlp_head: bool, batch_size: int,
-                  image_size: int, gpu: VkCompute) -> tuple[float, str | None]:
-    """Load weights + matching normalization, score val_pairs, return val_acc."""
+def score_with_weights(weights_path: Path, val_pairs, val_genome_ids,
+                       db_path: Path, model, input_buf, gpu, batch_size: int,
+                       image_size: int) -> tuple[float, str | None]:
+    """Load weights + matching normalization into the pre-built model, score val_pairs.
+
+    Model + input_buf are built once in main() and reused across all
+    checkpoints. Rebuilding the model per checkpoint creates new Vulkan
+    buffer handles, which defeats the pipeline cache in VkCompute (cache
+    keys include buffer handles) and bloats GPU memory with stale
+    pipelines — exactly what commit 80055a3 fixed for training. load_weights
+    just uploads new data into existing weight buffers, so this stays
+    inside the cache's happy path.
+    """
     weights, norm_version = load_cnn_weights_file(str(weights_path))
 
     # Resolve normalization. If the weights file stamps a version, use that
@@ -59,45 +68,36 @@ def evaluate_one(weights_path: Path, val_pairs, db_path: Path,
                         'running unstandardized (results will be garbage)',
                         weights_path.name, norm_version)
 
-    # Build the model and load weights.
-    layers = MODEL_CONFIGS[model_size]
-    model = build_cnn_scorer(gpu, layers, batch_size=batch_size,
-                              image_size=image_size, mlp_head=mlp_head)
     if len(weights) != model.param_count():
         return float('nan'), f'param mismatch (file: {len(weights)}, model: {model.param_count()})'
     model.load_weights(weights)
 
-    # Image store with matching standardization.
+    # Image store rebuilt per checkpoint because normalization may differ.
+    # No GPU buffers involved — store is just a sqlite handle + an in-memory
+    # cache of standardized numpy arrays.
     store = DbImageStore(str(db_path), image_size, channels='domain',
                          cache_gb=2.0, normalization=normalization)
+    try:
+        scores: dict[int, float] = {}
+        for i in range(0, len(val_genome_ids), batch_size):
+            batch_ids = val_genome_ids[i:i + batch_size]
+            batch_imgs = store.get_batch(batch_ids)
+            if len(batch_imgs) < batch_size:
+                pad = np.zeros((batch_size - len(batch_imgs), *batch_imgs.shape[1:]),
+                               dtype=np.float32)
+                batch_imgs = np.concatenate([batch_imgs, pad])
+            gpu.upload(input_buf, batch_imgs)
+            out_buf = model.forward(input_buf, batch_size,
+                                    (4, image_size, image_size))
+            batch_scores = gpu.download(out_buf, np.float32, batch_size)
+            for j, gid in enumerate(batch_ids):
+                scores[gid] = float(batch_scores[j])
 
-    # Score every unique genome that appears in any val pair.
-    val_genome_ids = sorted(set(w for w, _ in val_pairs)
-                            | set(l for _, l in val_pairs))
-    scores: dict[int, float] = {}
-    input_buf = gpu.create_buffer(batch_size * 4 * image_size * image_size * 4)
-
-    for i in range(0, len(val_genome_ids), batch_size):
-        batch_ids = val_genome_ids[i:i + batch_size]
-        batch_imgs = store.get_batch(batch_ids)
-        # Pad to batch_size if needed
-        if len(batch_imgs) < batch_size:
-            pad = np.zeros((batch_size - len(batch_imgs), *batch_imgs.shape[1:]),
-                           dtype=np.float32)
-            batch_imgs = np.concatenate([batch_imgs, pad])
-        gpu.upload(input_buf, batch_imgs)
-        out_buf = model.forward(input_buf, batch_size,
-                                (4, image_size, image_size))
-        batch_scores = gpu.download(out_buf, np.float32, batch_size)
-        for j, gid in enumerate(batch_ids):
-            scores[gid] = float(batch_scores[j])
-
-    correct = sum(1 for w, l in val_pairs
-                  if scores.get(w, 0.0) > scores.get(l, 0.0))
-    val_acc = correct / max(len(val_pairs), 1)
-
-    input_buf.destroy()
-    store.close()
+        correct = sum(1 for w, l in val_pairs
+                      if scores.get(w, 0.0) > scores.get(l, 0.0))
+        val_acc = correct / max(len(val_pairs), 1)
+    finally:
+        store.close()
     return val_acc, f'{len(weights)}p, norm={norm_version or "legacy"}'
 
 
@@ -134,24 +134,37 @@ def main():
              stats['pairwise'], stats['thumbs_liked'], stats['thumbs_disliked'],
              len(val_pairs))
 
-    # Single GPU context shared across all evaluations.
+    # Single GPU context + single model + single input_buf shared across
+    # all evaluations. Rebuilding any of these per-checkpoint would create
+    # new buffer handles and explode the pipeline cache (commit 80055a3
+    # context). load_weights uploads new data into the existing weight
+    # buffers — no buffer churn, no cache pollution.
     gpu = VkCompute()
     log.info('GPU: %s', gpu.device_name)
+    layers = MODEL_CONFIGS[args.model_size]
+    model = build_cnn_scorer(gpu, layers, batch_size=args.batch_size,
+                              image_size=args.image_size, mlp_head=args.mlp_head)
+    input_buf = gpu.create_buffer(args.batch_size * 4 * args.image_size * args.image_size * 4)
 
-    print()
-    print(f'{"checkpoint":<60} {"val_acc":>10}  details')
-    print('-' * 100)
-    for w_path in args.weights:
-        try:
-            val_acc, details = evaluate_one(
-                w_path, val_pairs, args.db,
-                args.model_size, args.mlp_head, args.batch_size,
-                args.image_size, gpu)
-            print(f'{w_path.name:<60} {val_acc:>10.4f}  {details}')
-        except Exception as e:
-            print(f'{w_path.name:<60} {"ERROR":>10}  {e}')
+    # Genome ID set is identical for every checkpoint — compute once.
+    val_genome_ids = sorted(set(w for w, _ in val_pairs)
+                            | set(l for _, l in val_pairs))
 
-    gpu.destroy()
+    try:
+        print()
+        print(f'{"checkpoint":<60} {"val_acc":>10}  details')
+        print('-' * 100)
+        for w_path in args.weights:
+            try:
+                val_acc, details = score_with_weights(
+                    w_path, val_pairs, val_genome_ids, args.db,
+                    model, input_buf, gpu, args.batch_size, args.image_size)
+                print(f'{w_path.name:<60} {val_acc:>10.4f}  {details}')
+            except Exception as e:
+                print(f'{w_path.name:<60} {"ERROR":>10}  {e}')
+    finally:
+        input_buf.destroy()
+        gpu.destroy()
 
 
 if __name__ == '__main__':
