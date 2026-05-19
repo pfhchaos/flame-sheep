@@ -419,13 +419,20 @@ class PairSampler:
 def _default_weights_path() -> Path:
     """Resolve bundled weights via importlib.resources.
 
-    Prefers personal fine-tuned weights if available, falls back to base.
+    Resolution order: personal .npz (v2+ normalization-aware) > personal
+    .npy (legacy) > base .npz > base .npy. .npz files carry a
+    normalization_version stamp; .npy files predate that and run against
+    legacy un-standardized inputs.
     """
-    personal = importlib.resources.files('flame_sheep.data').joinpath('cnn_scorer_personal_vk.npy')
-    if Path(str(personal)).exists():
-        return Path(str(personal))
-    ref = importlib.resources.files('flame_sheep.data').joinpath('cnn_scorer_vk.npy')
-    return Path(str(ref))
+    data = importlib.resources.files('flame_sheep.data')
+    for name in ('cnn_scorer_personal_vk.npz',
+                 'cnn_scorer_personal_vk.npy',
+                 'cnn_scorer_vk.npz',
+                 'cnn_scorer_vk.npy'):
+        path = Path(str(data.joinpath(name)))
+        if path.exists():
+            return path
+    return Path(str(data.joinpath('cnn_scorer_vk.npy')))  # for error message
 
 
 def _prepare_input(static_png: bytes, swept_png: bytes,
@@ -466,17 +473,15 @@ def _prepare_input_domain(hist_static: bytes, hist_swept: bytes,
     against — caller's responsibility to verify.
     """
     from .scoring_channels import (
-        unpack_static_histogram, unpack_histogram, normalize_channels,
-        standardize_channels,
+        unpack_static_histogram, unpack_histogram, build_cnn_input,
     )
 
     hits, colors = unpack_static_histogram(hist_static)
     swept = unpack_histogram(hist_swept)
     first_hit = unpack_histogram(hist_first_hit, dtype=np.uint8) if hist_first_hit else None
 
-    channels = normalize_channels(hits, colors, swept, first_hit, output_size=256)
-    if normalization is not None:
-        channels = standardize_channels(channels, *normalization)
+    channels = build_cnn_input(hits, colors, swept, first_hit,
+                               normalization=normalization, output_size=256)
     return torch.from_numpy(channels).unsqueeze(0)  # (1, 4, 256, 256)
 
 

@@ -5,6 +5,16 @@ cross-referenced against flame-sheep implementation status.
 
 Generated 2026-05-10.
 
+## Selection Rules
+
+1. **No strict subsets.** If a variation is a strict subset of something we already have, skip it. The existing variation already covers its behavior.
+2. **Supersets replace.** If a new variation is a superset of an existing one (same behavior with extra parameters), convert to the superset rather than adding both.
+3. **No 3D.** We render 2D attractors. Variations requiring z-coordinates are not useful.
+4. **No base shapes.** Variations that ignore input coordinates (generate fixed patterns from random sampling) don't fit the chaos game model.
+5. **No stateful.** Variations that maintain state across iterations (turtle graphics, L-systems, Brownian walks) don't map to the per-point chaos game.
+6. **DC requires infrastructure.** Direct-color variations need the DC pipeline first.
+7. **Parameterize siblings.** If two variations differ only by a constant or coefficient that can be continuously interpolated, combine them into one variation with that coefficient as a parameter. Must be smoothly blendable — discrete switches (if-else on waveform type) don't count.
+
 ## Legend
 
 - **DONE**: Implemented in flame-sheep (index shown in parens)
@@ -202,7 +212,7 @@ These are the original Scott Draves variations, also present in Apophysis and JW
 | arcsinh | JWF | yes | TODO | inverse sinh, trivial |
 | arcsech2 | JWF | yes | TODO | inverse sech variant, trivial |
 | arctanh | JWF | yes | TODO | inverse tanh, trivial |
-| arctruchet | JWF | yes | TODO | arc-based truchet pattern, medium |
+| arctruchet | JWF | yes | SKIP - BASE_SHAPE | arc-based truchet pattern, medium |
 | asteria | JWF | yes | TODO | star/pentagon fold, medium |
 | atan | JWF | yes | TODO | atan-based distortion, 2 params, medium |
 | atan2_spirals | JWF | yes | TODO | atan2 spiral patterns, 14 params, medium |
@@ -223,7 +233,7 @@ These are the original Scott Draves variations, also present in Apophysis and JW
 | bent2 | JWF | yes | DONE (99) | parametric bent |
 | bi_linear | JWF | yes | TODO | bilinear mapping, trivial |
 | bipolar | JWF/Apo | yes | DONE (100) | bipolar coordinate transform |
-| bipolar2 | JWF | yes | TODO | extended bipolar with 9 params, medium |
+| bipolar2 | JWF | yes | SUPERSET of bipolar (100) — adds 8 params (a,b,c,d,e,f1,g1,h). Upgrade existing. |
 | blade | JWF | yes | DONE (60) | random blade scatter |
 | blade3D | JWF | yes | SKIP - 3D | 3D blade |
 | blob | JWF | yes | DONE (23) | radial blob distortion |
@@ -236,7 +246,7 @@ These are the original Scott Draves variations, also present in Apophysis and JW
 | blur_pixelize | JWF/Apo | yes | TODO | pixelated blur, cheap |
 | blur_zoom | JWF/Apo | yes | TODO | zoom blur |
 | boarders | JWF | yes | DONE (54) | cell border pattern |
-| boarders2 | JWF | yes | TODO | extended boarders with params, cheap |
+| boarders2 | JWF | yes | SKIP — subset of boarders (54), which already has c/cl/cr params |
 | box3D | JWF | yes | SKIP - 3D | 3D box shape |
 | boxfold | JWF | yes | SKIP - 3D | 3D box fold for mandelbox |
 | brownian_js | JWF | no | SKIP - STATEFUL | Brownian motion, stateful random walk |
@@ -268,7 +278,7 @@ These are the original Scott Draves variations, also present in Apophysis and JW
 | capsule3D | JWF | yes | SKIP - 3D | 3D capsule SDF |
 | cardioid | JWF | yes | TODO | cardioid curve, medium |
 | cell | JWF | yes | DONE (56) | cellular grid fold |
-| cell2 | JWF | no | TODO | extended cell with 16 params, cheap |
+| cell2 | JWF | no | SUPERSET of cell (56) — adds mirror axes, scaling, per-quadrant spacing. Upgrade existing. |
 | cell3D | JWF | yes | SKIP - 3D | 3D cell |
 | chaoscubes | JWF | yes | SKIP - 3D | 3D chaos cubes |
 | checkerboard_wf | JWF | yes | SKIP - BASE_SHAPE | checkerboard base shape |
@@ -276,15 +286,15 @@ These are the original Scott Draves variations, also present in Apophysis and JW
 | chrysanthemum | JWF | yes | SKIP - BASE_SHAPE | chrysanthemum curve shape |
 | chunk | JWF | yes | TODO | angular chunk fold, 7 params, cheap |
 | circleLinear | JWF | yes | TODO | circle-linear hybrid tiling, cheap |
-| circleRand | JWF | yes | TODO | random circle packing, heavy |
+| circleRand | JWF | yes | SKIP - BASE_SHAPE | random circle packing, heavy |
 | circleTrans1 | JWF | yes | TODO | circle transform, 5 params, cheap |
-| circleblur | JWF | yes | TODO | circular blur scatter |
+| circleblur | JWF | yes | SKIP - BASE_SHAPE | circular blur scatter |
 | circlecrop | JWF | yes | SKIP - CROP | circle crop utility |
 | circlesplit | JWF | yes | TODO | circle split distortion, medium |
 | circlize | JWF | yes | TODO | square-to-circle mapping, cheap |
-| circlize2 | JWF | yes | TODO | circlize variant, cheap |
+| circlize2 | JWF | yes | TODO | circlize variant (same params as circlize, different formula). Pick the better one when implementing. |
 | circular | JWF | yes | TODO | circular distortion, 2 params, medium |
-| circular2 | JWF | yes | TODO | circular variant, 4 params, medium |
+| circular2 | JWF | yes | TODO | 4 params (angle, seed, xx, yy). No existing circular to compare against. |
 | circus | JWF | yes | TODO | circus circle fold, medium |
 | clifford_js | JWF | yes | TODO | Clifford attractor, heavy |
 | cloverleaf_wf | JWF | yes | DONE (31) | clover leaf curve (JWF name) |
@@ -300,21 +310,21 @@ These are the original Scott Draves variations, also present in Apophysis and JW
 | conic | JWF | yes | DONE (86) | conic section |
 | corners | JWF | yes | TODO | corner distortion, 9 params, heavy |
 | cos | JWF | yes | DONE (109) | complex cosine |
-| cos2_bs | JWF | yes | TODO | cos with extra params, expensive |
+| cos2_bs | JWF | yes | SUPERSET of cos (109) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
 | cosh | JWF | yes | DONE (115) | complex cosh |
-| cosh2_bs | JWF | yes | TODO | cosh with extra params, expensive |
+| cosh2_bs | JWF | yes | SUPERSET of cosh (115) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
 | cosine | JWF | yes | DONE (20) | cos(pi*x)*cosh(y) |
 | cosq | JWF | yes | SKIP - 3D | quaternion cos |
 | cot | JWF | yes | DONE (113) | complex cot |
-| cot2_bs | JWF | yes | TODO | cot with extra params, expensive |
+| cot2_bs | JWF | yes | SUPERSET of cot (113) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
 | coth | JWF | yes | DONE (119) | complex coth |
-| coth2_bs | JWF | yes | TODO | coth with extra params, expensive |
+| coth2_bs | JWF | yes | SUPERSET of coth (119) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
 | cothq | JWF | yes | SKIP - 3D | quaternion coth |
 | cotq | JWF | yes | SKIP - 3D | quaternion cot |
 | cpow | JWF/Apo | yes | DONE (48) | complex power |
-| cpow2 | JWF | yes | TODO | complex power variant 2, medium |
-| cpow3 | JWF | yes | TODO | complex power variant 3, heavy |
-| cpow3_wf | JWF | yes | TODO | cpow3 with extra params, heavy |
+| cpow2 | JWF | yes | TODO | complex power with angular quantization (r,a,divisor,range). Different formula from cpow (48), not a superset. cpow3_wf is superset of this. |
+| cpow3 | JWF | yes | SKIP — subset of cpow3_wf |
+| cpow3_wf | JWF | yes | TODO | SUPERSET of cpow2 and cpow3. Implement this one only (7 params: r,a,divisor,spread,discrete_spread,spread2,offset2). |
 | crob | JWF | yes | TODO | complex rotation/orbit |
 | crop | JWF | yes | SKIP - CROP | rectangular crop utility |
 | crop_box | JWF | yes | SKIP - CROP | box crop |
@@ -329,10 +339,10 @@ These are the original Scott Draves variations, also present in Apophysis and JW
 | cross | JWF | yes | DONE (35) | 1/(x^2-y^2)^2 scaling |
 | crown_js | JWF | yes | SKIP - 3D/BASE_SHAPE | crown shape |
 | csc | JWF | yes | DONE (112) | complex csc |
-| csc2_bs | JWF | yes | TODO | csc with extra params, expensive |
+| csc2_bs | JWF | yes | SUPERSET of csc (112) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
 | csc_squared | JWF | yes | TODO | csc squared variant, 7 params, medium |
 | csch | JWF | yes | DONE (118) | complex csch |
-| csch2_bs | JWF | yes | TODO | csch with extra params, expensive |
+| csch2_bs | JWF | yes | SUPERSET of csch (118) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
 | cschq | JWF | yes | SKIP - 3D | quaternion csch |
 | cscq | JWF | yes | SKIP - 3D | quaternion csc |
 | csin | JWF | yes | TODO | complex sin variant, trivial |
@@ -483,7 +493,7 @@ rather than transforming coordinates. They require DC pipeline support.
 | dinis_surface_wf | JWF | yes | SKIP - 3D | Dini's surface 3D |
 | disc | JWF | yes | DONE (8) | theta/pi * sin(pi*r) |
 | disc2 | JWF | yes | DONE (58) | parametric disc with twist |
-| disc3 | JWF | no | TODO | disc variant, 8 params, medium |
+| disc3 | JWF | no | SUPERSET of disc (8) — adds a,b,c,d,e,f,g,h multipliers. Upgrade existing. |
 | disc3d | JWF | yes | SKIP - 3D | 3D disc |
 | displacemap_wf | JWF | no | SKIP - IMAGE | displacement map from image |
 | dla_wf | JWF | no | SKIP - SIMULATION | diffusion-limited aggregation |
@@ -491,7 +501,7 @@ rather than transforming coordinates. They require DC pipeline support.
 | dragon_js | JWF | yes | SKIP - BASE_SHAPE | dragon curve IFS, stateful |
 | draw | JWF | no | SKIP - INTERACTIVE | interactive drawing tool |
 | drunken_tiles | JWF | no | TODO | randomized tile pattern, 15 params, expensive |
-| ducks | JWF | yes | TODO | ducks fractal (Petigen), complex iteration |
+| ducks | JWF | yes | SKIP - BASE_SHAPE | ducks fractal (Petigen), complex iteration |
 | dustpoint | JWF | yes | SKIP - 3D | 3D dust point |
 
 ### E
@@ -509,7 +519,7 @@ rather than transforming coordinates. They require DC pipeline support.
 | eclipse | JWF | yes | DONE (65) | eclipse shift |
 | edisc | JWF | yes | DONE (90) | elliptic disc |
 | elliptic | JWF/Apo | yes | DONE (88) | elliptic integral transform |
-| elliptic2 | JWF | yes | TODO | extended elliptic, 11 params, heavy |
+| elliptic2 | JWF | yes | SUPERSET of elliptic (88) — adds 11 params. Upgrade existing. Verify formula match. |
 | ellipsoid3D | JWF | yes | SKIP - 3D | 3D ellipsoid |
 | ennepers | JWF | yes | TODO | Enneper's surface (2D projection), trivial |
 | ennepers2 | JWF | yes | SKIP - 3D | Enneper's surface 3D |
@@ -522,7 +532,7 @@ rather than transforming coordinates. They require DC pipeline support.
 | ex | JWF | yes | DONE (12) | power-of-angle split |
 | exblur | JWF | yes | SKIP - 3D | 3D exblur |
 | exp | JWF | yes | DONE (120) | complex exponential |
-| exp2_bs | JWF | no | TODO | exp with params, 3 params |
+| exp2_bs | JWF | no | SUPERSET of exp (120) — adds frequency params. Upgrade existing. |
 | exp_multi | JWF | no | TODO | multi exponential, 8 params, cheap |
 | exponential | JWF | yes | DONE (18) | exp(x-1)*cos/sin(pi*y) |
 | extrude | JWF/ApoPlugin | yes | SKIP - 3D | 3D extrusion |
@@ -576,7 +586,7 @@ rather than transforming coordinates. They require DC pipeline support.
 | glitchy2 | JWF | no | TODO | 2D glitch, 53 params, cheap (but complex config) |
 | glsl_* | JWF | no | SKIP - GLSL | GLSL shader variations (duplicate dc_*) |
 | glynnia | JWF | yes | DONE (126) | Glynn attractor variant |
-| glynnia3 | JWF | yes | TODO | extended Glynn with 4 params, heavy |
+| glynnia3 | JWF | yes | SUPERSET of glynnia (126) — adds rscale, dscale, rthresh, ythresh. Upgrade existing. | extended Glynn with 4 params, heavy |
 | glynnSim1 | JWF | yes | TODO | Glynn simulation 1, 6 params, medium |
 | glynnSim2 | JWF | yes | TODO | Glynn simulation 2, 6 params, medium |
 | glynnSim2B | JWF | yes | SKIP - 3D | Glynn sim 2B, 3D |
@@ -627,8 +637,8 @@ rather than transforming coordinates. They require DC pipeline support.
 | hypershift | JWF | yes | TODO | hyperbolic shift, 2 params, trivial |
 | hypershift2 | JWF | yes | SKIP - 3D | 3D hypershift |
 | hypertile | JWF | yes | DONE (55) | hyperbolic tiling |
-| hypertile1 | JWF | yes | TODO | hypertile variant 1, cheap |
-| hypertile2 | JWF | yes | TODO | hypertile variant 2, cheap |
+| hypertile1 | JWF | yes | SUPERSET of hypertile (55) — same Moebius core but derives re/im from (p,q) tiling params + random angle. Upgrade existing. |
+| hypertile2 | JWF | yes | TODO | Different hypertile formula (same p,q params as hypertile1). Verify if superset or sibling. |
 | hypertile3D | JWF | yes | SKIP - 3D | 3D hypertile |
 | hypertile3D1 | JWF | yes | SKIP - 3D | 3D hypertile v1 |
 | hypertile3D2 | JWF | yes | SKIP - 3D | 3D hypertile v2 |
@@ -649,7 +659,7 @@ rather than transforming coordinates. They require DC pipeline support.
 | inflateZ_5 | JWF | yes | SKIP - 3D | z-inflate variant 5 |
 | inflateZ_6 | JWF | yes | SKIP - 3D | z-inflate variant 6 |
 | intersection | JWF | yes | TODO | intersection tiling, 10 params, medium |
-| inversion | JWF | no | TODO | circle inversion, 4 params, heavy |
+| inversion | JWF | no | SKIP - 3D | circle inversion, 4 params, heavy |
 | invsquircular | JWF | yes | TODO | inverse squircle mapping, medium |
 | inverted_julia | JWF | yes | TODO | inverted julia, 9 params, medium |
 | invpolar | JWF | yes | TODO | inverse polar, cheap |
@@ -673,8 +683,8 @@ rather than transforming coordinates. They require DC pipeline support.
 | julia3Dz | JWF/Apo | yes | SKIP - 3D | 3D Julia with z |
 | juliac | JWF | yes | TODO | Julia-C, 3 params, medium |
 | julian | JWF/Apo | yes | DONE (32) | julian n-fold symmetry |
-| julian2 | JWF | yes | TODO | julian v2, 8 params, medium |
-| julian3Dx | JWF | yes | TODO | julian 3D-x (2D usable), medium |
+| julian2 | JWF | yes | SUPERSET of julian (32) — adds embedded affine (a,b,c,d,e,f) before julia computation. 8 params. Upgrade existing. | julian v2, 8 params, medium |
+| julian3Dx | JWF | yes | SKIP - 3D | julian 3D-x (2D usable), medium |
 | juliaq | JWF | yes | DONE (124) | julia quotient |
 | juliascope | JWF/Apo | yes | DONE (33) | julia with scope reflection |
 | juliascope3Db | JWF | yes | SKIP - 3D | 3D juliascope |
@@ -713,7 +723,7 @@ rather than transforming coordinates. They require DC pipeline support.
 | log_db | JWF | no | TODO | log with distance buffer, heavy |
 | log_tile2 | JWF | yes | SKIP - 3D | 3D log tiling |
 | loonie | JWF/Apo | yes | DONE (50) | circle inversion variant |
-| loonie2 | JWF | yes | TODO | loonie with params, expensive |
+| loonie2 | JWF | yes | SUPERSET of loonie (50) — adds sides/star/circle params. Same pattern as scry2. Upgrade existing. |
 | loonie3 | JWF | yes | TODO | loonie variant 3, cheap |
 | loonie_3D | JWF | yes | SKIP - 3D | 3D loonie |
 | loq | JWF | yes | SKIP - 3D | 3D log variant |
@@ -725,7 +735,7 @@ rather than transforming coordinates. They require DC pipeline support.
 
 | Name | Source | GPU | Status | Notes |
 |------|--------|-----|--------|-------|
-| macmillan | JWF | no | TODO | MacMillan map, trivial |
+| macmillan | JWF | no | SKIP - BASE_SHAPE | MacMillan map, trivial |
 | mandala | JWF | yes | SKIP - BASE_SHAPE | mandala pattern, complex |
 | mandala2 | JWF | yes | SKIP - BASE_SHAPE | mandala v2, very complex |
 | mandelbrot | JWF | yes | SKIP - FRACTAL_ITER | Mandelbrot iterator |
@@ -748,7 +758,7 @@ rather than transforming coordinates. They require DC pipeline support.
 | msTruchet | JWF | yes | SKIP - BASE_SHAPE | multi-scale truchet, complex |
 | multi_ifs | JWF | no | TODO | multi-IFS system, 7 params, medium |
 | murl | JWF | yes | TODO | murl distortion, 2 params, medium |
-| murl2 | JWF/ApoPlugin | yes | TODO | murl variant 2, heavy |
+| murl2 | JWF/ApoPlugin | yes | TODO | extends murl with power param. If murl is implemented, implement murl2 directly as the superset. |
 
 ### N
 
@@ -820,7 +830,7 @@ rather than transforming coordinates. They require DC pipeline support.
 | primitives_wf | JWF | yes | SKIP - 3D/BASE_SHAPE | 3D primitive shapes |
 | projective | JWF | yes | TODO | projective transform, 9 params, trivial |
 | pulse | JWF | yes | TODO | pulse distortion, 4 params, cheap |
-| pyramid | JWF | yes | TODO | pyramid reflection fold, trivial |
+| pyramid | JWF | yes | SKIP - 3D | pyramid reflection fold, trivial |
 | pyramid3D | JWF | yes | SKIP - 3D | 3D pyramid |
 
 ### Pre/Post variations
@@ -832,16 +842,16 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 |------|--------|-----|--------|-------|
 | pre_blur | JWF/Apo | yes | SKIP - UTILITY | pre-transform blur |
 | pre_blur3D | JWF | yes | SKIP - 3D | 3D pre-blur |
-| pre_boarders2 | JWF | yes | TODO | pre-transform boarders2 |
-| pre_bwraps2 | JWF/ApoPlugin | no | TODO | pre-transform bwraps2 |
-| pre_c_symmetry | JWF | no | TODO | pre-transform c-symmetry |
-| pre_c_var | JWF | no | TODO | pre-transform c-var |
+| pre_boarders2 | JWF | yes | SKIP — pre/post handled natively by pipeline | pre-transform boarders2 |
+| pre_bwraps2 | JWF/ApoPlugin | no | SKIP — pre/post handled natively by pipeline | pre-transform bwraps2 |
+| pre_c_symmetry | JWF | no | SKIP — pre/post handled natively by pipeline | pre-transform c-symmetry |
+| pre_c_var | JWF | no | SKIP — pre/post handled natively by pipeline | pre-transform c-var |
 | pre_circlecrop | JWF/Apo | yes | SKIP - CROP | pre-transform circle crop |
 | pre_crop | JWF/Apo | yes | SKIP - CROP | pre-transform crop |
-| pre_curl | JWF/Apo | yes | TODO | pre-transform curl |
+| pre_curl | JWF/Apo | yes | SKIP — pre/post handled natively by pipeline | pre-transform curl |
 | pre_custom_wf | JWF | yes | SKIP - CUSTOM | pre-transform custom |
 | pre_dcztransl | JWF | yes | SKIP - 3D/DC | pre DC z-translate |
-| pre_disc | JWF/Apo | yes | TODO | pre-transform disc, cheap |
+| pre_disc | JWF/Apo | yes | SKIP — pre/post handled natively by pipeline | pre-transform disc, cheap |
 | pre_disc3d | JWF | yes | SKIP - 3D | pre 3D disc |
 | pre_falloff3 | JWF | yes | SKIP - 3D | pre 3D falloff |
 | pre_flatten | JWF | yes | SKIP - UTILITY | pre z-flatten |
@@ -849,9 +859,9 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | pre_rect_wf | JWF | yes | SKIP - BASE_SHAPE | pre rectangle |
 | pre_recip | JWF | yes | SKIP - 3D | 3D pre-reciprocal |
 | pre_rotate_x | JWF/Apo | yes | SKIP - 3D | 3D x-rotation |
-| pre_rotate_y | JWF/Apo | yes | TODO | pre y-rotation, cheap |
+| pre_rotate_y | JWF/Apo | yes | SKIP — pre/post handled natively by pipeline | pre y-rotation, cheap |
 | pre_sinusoidal3d | JWF | yes | SKIP - 3D | 3D pre-sinusoidal |
-| pre_spherical | JWF/Apo | yes | TODO | pre-transform spherical |
+| pre_spherical | JWF/Apo | yes | SKIP — pre/post handled natively by pipeline | pre-transform spherical |
 | pre_spin_z | JWF/Apo | no | SKIP - 3D | 3D z-spin |
 | pre_stabilize | JWF | yes | SKIP - BASE_SHAPE | pre-stabilize utility |
 | pre_subflame_wf | JWF | yes | SKIP - 3D/SUBFLAME | sub-flame reference |
@@ -865,14 +875,14 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | post_affine3D | JWF | yes | SKIP - 3D | post 3D affine |
 | post_aexion_crop | JWF | yes | SKIP - 3D | post 3D aexion crop |
 | post_asurf_crop | JWF | yes | SKIP - 3D | post 3D amazing surf crop |
-| post_axis_symmetry_wf | JWF | yes | TODO | post axis symmetry, medium |
+| post_axis_symmetry_wf | JWF | yes | SKIP — pre/post handled natively by pipeline | post axis symmetry, medium |
 | post_benesi_crop | JWF | yes | SKIP - 3D | post 3D Benesi crop |
 | post_bristorbrot_crop | JWF | yes | SKIP - 3D | post 3D Bristorbrot crop |
 | post_bulbtorus_crop | JWF | yes | SKIP - 3D | post 3D bulb torus crop |
 | post_bumpmap_wf | JWF | yes | SKIP - 3D/IMAGE | post bump map from image |
-| post_bwraps2 | JWF/Apo | yes | TODO | post boundary wraps, cheap |
-| post_c_symmetry | JWF | no | TODO | post c-symmetry |
-| post_c_var | JWF | no | TODO | post c-var |
+| post_bwraps2 | JWF/Apo | yes | SKIP — pre/post handled natively by pipeline | post boundary wraps, cheap |
+| post_c_symmetry | JWF | no | SKIP — pre/post handled natively by pipeline | post c-symmetry |
+| post_c_var | JWF | no | SKIP — pre/post handled natively by pipeline | post c-var |
 | post_circlecrop | JWF/Apo | yes | SKIP - CROP | post circle crop |
 | post_coastalbrot_crop | JWF | yes | SKIP - 3D | post coastalbrot crop |
 | post_colormap_wf | JWF | no | SKIP - IMAGE | post color map |
@@ -888,7 +898,7 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | post_crop_vesica | JWF | yes | SKIP - CROP | post vesica crop |
 | post_crop_x | JWF | yes | SKIP - CROP | post x-axis crop |
 | post_crosscrop | JWF | yes | SKIP - 3D | post cross crop |
-| post_curl | JWF/Apo | yes | TODO | post curl |
+| post_curl | JWF/Apo | yes | SKIP — pre/post handled natively by pipeline | post curl |
 | post_curl3D | JWF/Apo | yes | SKIP - 3D | post 3D curl |
 | post_custom_wf | JWF | yes | SKIP - CUSTOM | post custom |
 | post_depth | JWF | yes | SKIP - 3D | post depth |
@@ -898,22 +908,22 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | post_flatten | JWF | yes | SKIP - UTILITY | post z-flatten |
 | post_heat | JWF | yes | SKIP - 3D | post heat map |
 | post_julia3Dq | JWF | no | SKIP - 3D | post 3D julia Q |
-| post_juliaq | JWF | no | TODO | post julia quotient |
+| post_juliaq | JWF | no | SKIP — pre/post handled natively by pipeline | post julia quotient |
 | post_log_tile2 | JWF | yes | SKIP - 3D | post log tile |
 | post_mandelbox3d_crop | JWF | yes | SKIP - 3D | post mandelbox crop |
 | post_mandelbulb3d_crop | JWF | yes | SKIP - 3D | post mandelbulb crop |
-| post_mirror_wf | JWF | yes | TODO | post mirror, 11 params, cheap |
+| post_mirror_wf | JWF | yes | SKIP — pre/post handled natively by pipeline | post mirror, 11 params, cheap |
 | post_point_crop | JWF | yes | SKIP - CROP | post point crop |
-| post_point_symmetry_wf | JWF | yes | TODO | post point symmetry, 4 params, trivial |
+| post_point_symmetry_wf | JWF | yes | SKIP — pre/post handled natively by pipeline | post point symmetry, 4 params, trivial |
 | post_prepost_affine | JWF | yes | SKIP - UTILITY | post part of pre/post |
 | post_rblur | JWF | yes | SKIP - 3D | post radial blur |
 | post_rotate_x | JWF | yes | SKIP - 3D | post x-rotate |
 | post_rotate_y | JWF | yes | SKIP - 3D | post y-rotate |
 | post_rotate_z | JWF | yes | SKIP - 3D | post z-rotate |
-| post_smartcrop | JWF | yes | TODO | post smart crop, heavy |
-| post_spherical | JWF/ApoPlugin | yes | TODO | post spherical |
+| post_smartcrop | JWF | yes | SKIP — pre/post handled natively by pipeline | post smart crop, heavy |
+| post_spherical | JWF/ApoPlugin | yes | SKIP — pre/post handled natively by pipeline | post spherical |
 | post_spin_z | JWF | yes | SKIP - 3D | post z-spin |
-| post_trig | JWF | yes | TODO | post trig function, 17 params, heavy |
+| post_trig | JWF | yes | SKIP — pre/post handled natively by pipeline | post trig function, 17 params, heavy |
 | post_ztranslate_wf | JWF | yes | SKIP - 3D | post z-translate |
 
 ### Q
@@ -951,7 +961,7 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | romanesco | JWF | yes | SKIP - 3D/BASE_SHAPE | romanesco pattern |
 | rose_wf | JWF | yes | SKIP - BASE_SHAPE | rose curve |
 | rosoni | JWF | no | TODO | rosoni pattern, 7 params, expensive |
-| roundspher | JWF | yes | TODO | rounded spherical, trivial |
+| roundspher | JWF | yes | SKIP - 3D | rounded spherical (uses z-coordinate despite name) |
 | roundspher3D | JWF | yes | SKIP - 3D | 3D rounded spherical |
 | rsquares_js | JWF | yes | SKIP - BASE_SHAPE | R-squares IFS |
 
@@ -962,14 +972,14 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | sattractor_js | JWF | yes | TODO | strange attractor scatter, trivial |
 | scrambly | JWF | no | TODO | scramble distortion, 4 params, trivial |
 | scry | JWF/Apo | yes | DONE (51) | reciprocal r^2 variant |
-| scry2 | JWF | yes | TODO | scry variant 2, 3 params, heavy |
+| scry2 | JWF | yes | SUPERSET of scry (51) — adds sides/star/circle params for polygon shapes. Upgrade existing. |
 | scry_3D | JWF | yes | TODO | scry 3D (but also useful 2D), cheap |
 | seashell3D | JWF | yes | SKIP - 3D | 3D seashell |
 | sec | JWF | yes | DONE (111) | complex sec |
-| sec2_bs | JWF | yes | TODO | sec with extra params, expensive |
+| sec2_bs | JWF | yes | SUPERSET of sec (111) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
 | secant2 | JWF | yes | DONE (81) | improved secant |
 | sech | JWF | yes | DONE (117) | complex sech |
-| sech2_bs | JWF | yes | TODO | sech with extra params, expensive |
+| sech2_bs | JWF | yes | SUPERSET of sech (117) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
 | sechq | JWF | yes | SKIP - 3D | quaternion sech |
 | secq | JWF | yes | SKIP - 3D | quaternion sec |
 | separation | JWF/Apo | yes | DONE (103) | separated axis fold |
@@ -980,10 +990,10 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | siercarpet_js | JWF | yes | TODO | Sierpinski carpet IFS, expensive |
 | sigmoid | JWF | yes | TODO | sigmoid function, 2 params, medium |
 | sin | JWF | yes | DONE (108) | complex sin |
-| sin2_bs | JWF | yes | TODO | sin with extra params, expensive |
-| sineblur | JWF | yes | TODO | sine-weighted blur |
+| sin2_bs | JWF | yes | SUPERSET of sin (108) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
+| sineblur | JWF | yes | SKIP - BASE_SHAPE | sine-weighted blur |
 | sinh | JWF | yes | DONE (114) | complex sinh |
-| sinh2_bs | JWF | yes | TODO | sinh with extra params, expensive |
+| sinh2_bs | JWF | yes | SUPERSET of sinh (114) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
 | sinhq | JWF | yes | SKIP - 3D | quaternion sinh |
 | sinq | JWF | yes | SKIP - 3D | quaternion sin |
 | sinusgrid | JWF | yes | SKIP - 3D | 3D sinus grid |
@@ -1002,7 +1012,7 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | sphtiling3v2 | JWF | no | TODO | spherical tiling, 9 params, cheap |
 | spiral | JWF | yes | DONE (9) | (cos(theta)+sin(r))/r |
 | spiralwing | JWF | yes | DONE (61) | spiral wing pattern |
-| spirograph | JWF | yes | TODO | spirograph, 9 params, medium |
+| spirograph | JWF | yes | SKIP - BASE_SHAPE | spirograph, 9 params, medium |
 | spirograph3D | JWF | yes | SKIP - 3D | 3D spirograph |
 | spligon | JWF | yes | TODO | split polygon, 6 params, cheap |
 | split | JWF | yes | DONE (102) | sign-based split |
@@ -1016,7 +1026,7 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | squircular | JWF | yes | TODO | squircle mapping, medium |
 | squirrel | JWF | yes | TODO | squirrel distortion, 2 params, heavy |
 | squish | JWF | yes | TODO | squish distortion, cheap |
-| starblur | JWF | yes | TODO | star-shaped blur |
+| starblur | JWF | yes | SKIP - BASE_SHAPE | star-shaped blur |
 | starfractal | JWF | yes | SKIP - BASE_SHAPE | star fractal IFS |
 | stripes | JWF | yes | DONE (67) | stripe warp pattern |
 | stripfit | JWF | yes | TODO | strip fit tiling, cheap |
@@ -1042,12 +1052,12 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | Name | Source | GPU | Status | Notes |
 |------|--------|-----|--------|-------|
 | tan | JWF | yes | DONE (110) | complex tan |
-| tan2_bs | JWF | yes | TODO | tan with extra params, expensive |
+| tan2_bs | JWF | yes | SUPERSET of tan (110) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
 | tancos | JWF | yes | TODO | tan*cos combination, cheap |
 | tangent | JWF | yes | DONE (34) | tan(x)/cos(y) |
 | tangent3D | JWF | yes | SKIP - 3D | 3D tangent |
 | tanh | JWF | yes | DONE (116) | complex tanh |
-| tanh2_bs | JWF | yes | TODO | tanh with extra params, expensive |
+| tanh2_bs | JWF | yes | SUPERSET of tanh (116) — adds x1,x2,y1,y2 frequency params. Upgrade existing trig function. |
 | tanhq | JWF | yes | SKIP - 3D | quaternion tanh |
 | tanq | JWF | yes | SKIP - 3D | quaternion tan |
 | taprats | JWF | yes | SKIP - BASE_SHAPE | Islamic tiling, complex |
@@ -1065,7 +1075,7 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | tqmirror | JWF | yes | TODO | TQ mirror, 22 params, cheap |
 | trade | JWF | yes | TODO | trade circle swap, 4 params, heavy |
 | tree_js | JWF | no | SKIP - BASE_SHAPE | tree IFS, stateful |
-| triantruchet | JWF | no | TODO | triangular truchet, 4 params, cheap |
+| triantruchet | JWF | no | SKIP - BASE_SHAPE | triangular truchet, 4 params, cheap |
 | triangle | JWF | yes | SKIP - 3D | 3D triangle |
 | triprism3D | JWF | yes | SKIP - 3D | 3D triangular prism |
 | truchet | JWF | yes | SKIP - BASE_SHAPE | truchet tiling, complex |
@@ -1074,7 +1084,7 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | truchet_fill | JWF | yes | TODO | truchet fill pattern, expensive |
 | truchet_hex_crop | JWF | yes | TODO | hex truchet crop, expensive |
 | truchet_hex_fill | JWF | yes | TODO | hex truchet fill, expensive |
-| truchetflow | JWF | no | TODO | truchet flow lines, medium |
+| truchetflow | JWF | no | SKIP - BASE_SHAPE | truchet flow lines, medium |
 | tunnel | JWF | yes | SKIP - 3D/BASE_SHAPE | tunnel shape |
 | twintrian | JWF | yes | DONE (93) | twin triangular scatter |
 | twoface | JWF | yes | TODO | two-face distortion, trivial |
@@ -1094,7 +1104,7 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | Name | Source | GPU | Status | Notes |
 |------|--------|-----|--------|-------|
 | w | JWF | no | TODO | W tiling, 13 params, expensive |
-| waffle | JWF | yes | TODO | waffle grid pattern |
+| waffle | JWF | yes | SKIP - BASE_SHAPE | waffle grid pattern |
 | wallpaper_js | JWF | no | TODO | wallpaper tiling, cheap |
 | wangtiles | JWF | yes | SKIP - BASE_SHAPE | Wang tiling, complex |
 | waveblur_wf | JWF | yes | SKIP - 3D | 3D wave blur |
@@ -1136,7 +1146,7 @@ Most are SKIP for flame-sheep since we handle pre/post via the affine pipeline.
 | zcone | JWF/Apo | yes | SKIP - 3D | z-cone |
 | zscale | JWF/Apo | yes | SKIP - 3D | z-scale |
 | ztranslate | JWF/Apo | yes | SKIP - 3D | z-translate |
-| ztwister | JWF | yes | TODO | z-twister (2D usable), medium |
+| ztwister | JWF | yes | SKIP - 3D | z-twister (2D usable), medium |
 
 ---
 
@@ -1210,17 +1220,17 @@ These are loaded from separate `.pas` files (built-in) or `.dll` plugins.
 | varMobius.pas | mobius | DONE (47) |
 | varNGon.pas | ngon | DONE (49) |
 | varPolar2.pas | polar2 | DONE (104) |
-| varPostBwraps.pas | post_bwraps | TODO |
+| varPostBwraps.pas | post_bwraps | SKIP — pre/post handled natively by pipeline |
 | varPostCrop.pas | post_crop | SKIP - CROP |
-| varPostCurl.pas | post_curl | TODO |
+| varPostCurl.pas | post_curl | SKIP — pre/post handled natively by pipeline |
 | varPostCurl3D.pas | post_curl3D | SKIP - 3D |
 | varPostFalloff2.pas | post_falloff2 | SKIP - 3D |
-| varPreBwraps.pas | pre_bwraps | TODO |
+| varPreBwraps.pas | pre_bwraps | SKIP — pre/post handled natively by pipeline |
 | varPreCrop.pas | pre_crop | SKIP - CROP |
-| varPreDisc.pas | pre_disc | TODO |
+| varPreDisc.pas | pre_disc | SKIP — pre/post handled natively by pipeline |
 | varPreFalloff2.pas | pre_falloff2 | SKIP - 3D |
 | varPreSinusoidal.pas | pre_sinusoidal | SKIP - UTILITY |
-| varPreSpherical.pas | pre_spherical | TODO |
+| varPreSpherical.pas | pre_spherical | SKIP — pre/post handled natively by pipeline |
 | varRadialBlur.pas | radial_blur | DONE (77) |
 | varRectangles.pas | rectangles | DONE (38) |
 | varRings2.pas | rings2 | DONE (26) |
@@ -1255,21 +1265,21 @@ These are loaded from separate `.pas` files (built-in) or `.dll` plugins.
 | murl2 | murl2 | TODO |
 | petal | petal | TODO |
 | popcorn2 | popcorn2 | DONE (106) |
-| post_bwraps | post_bwraps2 | TODO |
+| post_bwraps | post_bwraps2 | SKIP — pre/post handled natively by pipeline |
 | post_circlecrop | post_circlecrop | SKIP - CROP |
 | post_curl3D | post_curl3D | SKIP - 3D |
 | post_falloff3 | post_falloff3 | SKIP - 3D |
-| post_julian2 | post_julian2 | TODO |
-| post_log | post_log | TODO |
-| post_mirror | post_mirror | TODO |
-| post_murl | post_murl | TODO |
-| post_spherical | post_spherical | TODO |
-| post_stun | post_stun | TODO |
-| pre_bwraps | pre_bwraps2 | TODO |
+| post_julian2 | post_julian2 | SKIP — pre/post handled natively by pipeline |
+| post_log | post_log | SKIP — pre/post handled natively by pipeline |
+| post_mirror | post_mirror | SKIP — pre/post handled natively by pipeline |
+| post_murl | post_murl | SKIP — pre/post handled natively by pipeline |
+| post_spherical | post_spherical | SKIP — pre/post handled natively by pipeline |
+| post_stun | post_stun | SKIP — pre/post handled natively by pipeline |
+| pre_bwraps | pre_bwraps2 | SKIP — pre/post handled natively by pipeline |
 | pre_circlecrop | pre_circlecrop | SKIP - CROP |
-| pre_curl | pre_curl | TODO |
+| pre_curl | pre_curl | SKIP — pre/post handled natively by pipeline |
 | pre_falloff3 | pre_falloff3 | SKIP - 3D |
-| pre_log | pre_log | TODO |
+| pre_log | pre_log | SKIP — pre/post handled natively by pipeline |
 | pre_xfalloff2 | pre_xfalloff2 | SKIP - 3D |
 | sph3D | sph3D | SKIP - 3D |
 | stwins | stwins | TODO |
@@ -1305,7 +1315,7 @@ low complexity, presence in both JWildfire and Apophysis (wide usage).
 | flipy | trivial | 0 | y-axis flip |
 | hypershift | trivial | 2 | hyperbolic shift |
 | pyramid | trivial | 0 | pyramid reflection fold |
-| roundspher | trivial | 0 | rounded spherical |
+| ~~roundspher~~ | ~~trivial~~ | ~~0~~ | ~~SKIP - 3D (uses z-coordinate)~~ |
 | xheart | trivial | 2 | heart variant |
 | anamorphcyl | trivial | 0 | anamorphic cylinder |
 | acosech | trivial | 0 | inv hyperbolic cosecant |
@@ -1322,12 +1332,12 @@ low complexity, presence in both JWildfire and Apophysis (wide usage).
 | juliac | medium | 3 | Julia-C |
 | murl | medium | 2 | murl distortion |
 | npolar | heavy | 2 | n-polar symmetry |
-| oscilloscope2 | medium | 6 | enhanced oscilloscope |
+| oscilloscope2 | medium | 6 | SUPERSET of oscilloscope (89) — adds perturbation + frequencyy. Upgrade existing. (minkowskope stays separate — different basis function, not continuously parameterizable.) |
 | circlesplit | medium | 2 | circle split |
 | asteria | medium | 1 | star fold |
 | sigmoid | medium | 2 | sigmoid function |
 | epispiral_wf | medium | 1 | epispiral variant |
-| heart_wf | medium | 4 | heart with params |
+| heart_wf | medium | 4 | SUPERSET of heart (7) — adds scale_x, shift_t, scale_r_left/right. Upgrade existing. |
 | unpolar | medium | 0 | inverse polar |
 | squarize | medium | 0 | circle-to-square mapping |
 | squircular | medium | 0 | squircle mapping |
@@ -1348,8 +1358,8 @@ low complexity, presence in both JWildfire and Apophysis (wide usage).
 
 | Name | Cost | Params | Notes |
 |------|------|--------|-------|
-| sym_bg1..bg7 | trivial | 2 | 7 band group symmetries |
-| sym_ng1..ng17 | trivial-medium | 2-5 | 17 net group symmetries |
-| glynnSim1..3 | medium | 4-6 | Glynn simulations |
+| sym_bg1..bg7 | trivial | 2 | SUPERSET of frieze (45) — same 7 groups with parameterized stepx/stepy spacing instead of fixed S=0.25. Upgrade frieze to accept step params. |
+| sym_ng1..ng17 | trivial-medium | 2-5 | SUPERSET of wallpaper (44) — same 17 groups with parameterized step/spacing instead of fixed S=0.25. Upgrade wallpaper to accept spacing params. |
+| glynnSim1..3 | medium | 7 | Glynn attractor via circle inversion. NOT related to glynnia (126) despite name. Combine all three into one variation: radius, radius1, phi1, thickness, thickness2, contrast, pow. radius1=0 disables secondary circle (GlynnSim2 behavior), thickness2=thickness collapses to GlynnSim1 behavior. |
 | apollony | medium | 0 | Apollonian gasket |
 | yin_yang | medium | 5 | yin-yang fold |

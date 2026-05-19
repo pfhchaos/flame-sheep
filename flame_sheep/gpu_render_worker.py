@@ -236,15 +236,14 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                      RENDER_VERSION,
                      gid),
                 )
-                # Per-channel normalization stats for the trainer. Compute
-                # by re-running normalize_channels on this render's
-                # histograms; trivial CPU cost relative to the render.
-                from .scoring_channels import normalize_channels
+                # Per-channel normalization stats for the trainer. Sentinel
+                # pixels (H=1.0 on never-hit, A=1.0 on first_hit==255) are
+                # excluded — see NORMALIZATION_VERSION='v2' comment in
+                # storage.py.
+                from .scoring_channels import channel_stats_hit_only
                 try:
-                    channels = normalize_channels(hit_counts, color_accs,
-                                                  swept_hits, first_hit)
-                    chan_means = channels.mean(axis=(1, 2)).astype(np.float64)
-                    chan_stds = channels.std(axis=(1, 2)).astype(np.float64)
+                    chan_means, chan_stds = channel_stats_hit_only(
+                        hit_counts, color_accs, swept_hits, first_hit)
                 except Exception as _e:
                     log.warning(f'channel stats failed for gid {gid}: {_e}')
                     chan_means = (None, None, None, None)
