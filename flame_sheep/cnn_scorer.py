@@ -511,15 +511,16 @@ def score_genome(static_png: bytes, swept_png: bytes,
 def load_model(model_path: str | Path | None = None) -> AestheticNetVk | AestheticNet:
     """Load a trained model for batch inference.
 
-    Auto-detects format: .npy loads AestheticNetVk (Vulkan weights),
-    .pt loads AestheticNet (PyTorch weights).
+    Auto-detects format: .npy / .npz load AestheticNetVk (Vulkan-trained
+    weights, both formats handled by load_cnn_weights_file). .pt loads
+    AestheticNet (PyTorch weights).
     """
     if not _HAS_TORCH:
         raise ImportError('PyTorch required for CNN scoring')
 
     path = Path(model_path) if model_path else _default_weights_path()
 
-    if path.suffix == '.npy':
+    if path.suffix in ('.npy', '.npz'):
         model = AestheticNetVk()
         load_vk_weights(model, path)
     else:
