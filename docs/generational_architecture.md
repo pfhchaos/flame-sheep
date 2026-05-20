@@ -115,13 +115,31 @@ Each generation's thumbs synthesize into pairs internally — no cross-generatio
 - **Model continuity comes from weight warm-start, not label persistence.** Gen N+1's model inherits weights from gen N's model. "Color harmony matters" learned at gen N persists in weight space even after gen N's thumbs are no longer training data.
 - **Random-init poison is reduced.** Within-generation thumbs synthesis pairs come from one breeding cycle's distribution. Random conv filters don't get the systematic anti-correlation we saw when thumbs spanned multiple corpus snapshots (the today's failure mode where pre-pruner liked genomes had structurally different properties from post-pruner disliked genomes).
 
-## Implementation notes (deferred)
+## Pair weighting (effective sample size)
 
-- Migration adds the `generation` column to both ratings tables, backfills existing data to gen 1.
-- New rating handlers (`_handle_like`, `_handle_dislike`, compare-mode `_record`) read current_generation from metadata at rating time.
-- Trainer reads current_generation at training start, uses it in the synthesis query.
-- Generation boundary logic (trigger formula, atomic counter increment, breeding pipeline) wires into the evolution scheduler.
-- UI affordance: maybe a soft "new generation" indicator in the wallpaper, so the user knows the population has evolved. Optional.
+Synthesized thumbs pairs from `K liked × M disliked = K*M` rows only
+carry `K + M` independent judgments. Each synthesized pair is worth
+`(K+M)/(K*M)` effective independent samples; a real pairwise compare
+is worth 1. The ratio:
+
+```
+weight_real / weight_synth = K * M / (K + M)
+```
+
+For 60 liked × 146 disliked: 8760/206 = 42.5x. A real pairwise pair
+is 42.5x more informative than a synthesized one at that K, M.
+
+Without weighting, synthesized pairs dominate the loss by row count
+even though they carry less independent signal. With weighting (loss
+multiplied per pair, gradient scaled correspondingly), each pair's
+contribution matches its effective information content.
+
+Asymptotic note: as K and M both grow, `K*M/(K+M) → min(K, M)`.
+At thousands of thumbs in each class, synthesized pairs become
+nearly worthless per-pair vs real pairwise — but you also have
+massive thumb counts so the absolute information is still there.
+
+## Implementation notes
 
 ## Open questions
 
@@ -131,7 +149,35 @@ Each generation's thumbs synthesize into pairs internally — no cross-generatio
 
 ## Status
 
-- v3 pairwise-only model deployed as the implicit gen 1.
-- Active-set filter for thumbs validity shipped (alter ego, 2026-05-18).
-- Generation column + intra-gen synthesis not yet implemented.
-- Generation trigger formula not yet implemented.
+Shipped (2026-05-19):
+- ✅ v3 pairwise-only model deployed as the implicit gen 1
+- ✅ Active-set filter for thumbs validity (commit before today)
+- ✅ Schema migration: `generation` column on `ratings` + `pairwise_ratings`,
+  `current_generation` in metadata (defaults to 1; existing data
+  backfilled to gen 0)
+- ✅ Rating-insertion paths stamp `current_generation` at insert
+  (`Library.rate`, `catalog.import_catalog`, compare-mode `_record`)
+- ✅ Intra-generation thumbs synthesis in `load_training_pairs`
+- ✅ Pair weighting in train_epoch (`K*M/(K+M)` for real pairwise,
+  1.0 for synthesized; weighted loss + scaled gradient)
+- ✅ Retrain heuristic — `Library.retrain_recommendation()`:
+  fixed-2000 threshold below 10K total, 1.5x of prev-gen above.
+  CLI: `tools/check_retrain.py`. Runs periodically (every 5 min)
+  inside pruner_worker and logs WARNING when threshold crossed.
+
+Deferred:
+- Breeding+pruning pipeline that runs at generation boundaries
+  (the actual GA evolution loop that produces gen N+1 candidates
+  using the gen N model). `advance_generation()` is implemented
+  but never called yet — needs the breed+train runbook.
+- Decay weighting for older pairwise pairs (optional optimization)
+- Sub-generation "mini-generations" — retrain-without-breed cycles
+- Genome-level generation tagging (vote labels are what's actually
+  load-bearing; genome.generation would only be a convenience for
+  filtering compare-mode candidates)
+- "Evolve ignores downvoted genomes" — design discussion: gen-0
+  downvotes may not reflect current taste, exclusion shrinks
+  parent pool. Likely better as down-weighted selection
+  probability than hard filter; or filter only on
+  current-generation downvotes; or leave preference filtering to
+  the CNN scorer and only filter on `archived = 1`.

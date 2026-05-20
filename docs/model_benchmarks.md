@@ -76,3 +76,81 @@ Numbers from v10 era are not directly comparable — different data semantics.
 - **Inference timing**: 1000 runs on random 256×256×4 tensor, CPU time from time.process_time()
 - **Score distribution**: std dev and range across ~3500 scored genomes
 - **Training**: Vulkan compute shaders on Arc A770, SGD, margin ranking loss
+
+# Beat Detection RNN
+
+Distilled from BeatNet (~400K params LSTM+particle filter) into a tiny streaming CRNN.
+
+## Architecture
+
+- Input: 216 features per frame (108-bin CQT spectrum + 108-bin first derivative)
+- Linear projection (216 → 32)
+- GRU(32 → 48 hidden, 1 layer)
+- Linear (48 → 3) → softmax (non-beat / beat / downbeat)
+- ~25K params, target inference cost ~10μs per frame on CPU
+
+## Training data
+
+- 7519 .npz files from `generate_beat_labels.py` (BeatNet as teacher)
+- 138GB on disk, ~170GB uncompressed (must stream — won't fit in RAM)
+- LazyFileCache with 64-file LRU window (~640MB working set)
+
+## Training pipeline (2026-05-19)
+
+Sequence-mode dispatches: forward + backward each run as ONE Vulkan
+dispatch per layer per batch, not T dispatches per layer.
+
+- `linear_in.forward(input_seq, B*T)` — flat-batch one dispatch
+- `gru.forward_sequence(...)` — single dispatch via `gru_seq_forward.comp`
+  with internal T-step loop and shared-memory hidden-state handoff
+- `linear_out.forward(gru_seq_out, B*T)` — flat-batch one dispatch
+- `cross_entropy_dispatch(..., batch=B*T, t_inv=1.0)` — single dispatch
+  computes softmax + CE loss + grad with per-(t, b) accumulation
+- `linear_out.backward(grad_acc, B*T)` — one dispatch
+- `gru.backward_sequence(linear_out._grad_input, B, T)` — single
+  dispatch via `gru_seq_backward.comp` with internal BPTT loop and
+  true per-timestep upstream gradient handling
+- `linear_in.backward(gru._grad_input, B*T)` — one dispatch
+
+Per-batch total: ~9 dispatches (vs ~4T = ~1000 in the previous
+per-timestep design at T=256).
+
+## Throughput (Arc A770, smoke at B=8 T=64 hidden=48)
+
+- Previous per-timestep design: ~236ms/batch, backward dominated
+  at 87% (T per-step BPTT dispatches)
+- Current seq-mode: ~56ms/batch, backward 47%, forward 15%, SGD 28%
+- ~4.2x speedup on small smoke; bigger at production batch sizes
+  because per-batch overhead amortizes harder
+
+## Optimizations applied this session (2026-05-19)
+
+1. **Lazy file loading via LRU cache** — 7519 .npz files at 64-file
+   LRU window = ~640MB working set instead of 170GB if eagerly
+   loaded. Required because the eager loader was OOM-crashing the
+   system.
+2. **GPU cross-entropy** — softmax + CE loss + gradient on the GPU,
+   no per-timestep logits download. Per-batch downloads: T → 1.
+   Also fixed a label-layout bug — labels were uploaded as (B, T, 3)
+   but indexed as (T, B, 3); now transposed at upload.
+3. **Sequence-mode forward** — single GRU dispatch over T timesteps
+   with shared-memory hidden state. Linear layers run on B*T flat
+   batch. 4 forward dispatches per batch instead of 3*T.
+4. **Sequence-mode backward** — single BPTT dispatch via
+   `gru_seq_backward.comp` with true per-timestep upstream
+   contribution from `linear_out._grad_input_buf` (shape (T, B, H)).
+   Replaces T per-step dispatches AND fixes the
+   last-step-only-upstream BPTT approximation that previously limited
+   gradient flow. Smoke val_acc improved 0.844 → 0.916 from this
+   correctness fix.
+5. **CPU-side pipelining** — `BatchPrepPipeline` materializes +
+   transposes batch N+1 on a background thread while GPU processes
+   N. LazyFileCache made thread-safe with a lock.
+6. **Profile flag** — `--profile` prints per-phase wall-time
+   breakdown every 10 batches: wait_prep | reset | upload | forward
+   | loss | backward | sgd.
+7. **Resumable training** — `.npz` checkpoint with `weights`,
+   `next_epoch`, `best_val_loss`. Mid-epoch checkpoint saves at
+   `--val-interval` wall-time intervals (default 7200s = 2h), with
+   val sampling (`--val-sample-size`, default 200 random batches)
+   to keep mid-epoch validation cheap.
