@@ -40,8 +40,35 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
 
     log.info('pruner worker started')
 
+    # Periodic retrain-recommendation check. Runs on a slow cadence
+    # (every 5 min) inside the pruner's loop — same DB connection, no
+    # extra thread, no GPU involvement. Just queries judgment counts
+    # against current_generation and logs the recommendation. The
+    # actual train+breed cycle is still manual; this is just the
+    # nudge that says "you have enough new data, consider retraining."
+    import time as _time
+    from .storage import Library
+    last_retrain_check = 0.0
+    RETRAIN_CHECK_INTERVAL = 300.0  # seconds
+    _lib_for_retrain = None  # lazy
+
     try:
         while not stop_event.is_set():
+            # Periodic retrain heuristic — independent of the pruner's
+            # genome-iteration cadence, throttled by wall time so it
+            # doesn't spam the log.
+            now = _time.monotonic()
+            if now - last_retrain_check >= RETRAIN_CHECK_INTERVAL:
+                last_retrain_check = now
+                try:
+                    if _lib_for_retrain is None:
+                        _lib_for_retrain = Library()
+                    rec = _lib_for_retrain.retrain_recommendation()
+                    level = log.warning if rec['should_retrain'] else log.info
+                    level('[retrain] %s', rec['message'])
+                except Exception:
+                    log.exception('[retrain] recommendation check failed')
+
             if os.getloadavg()[0] > BackgroundPruner.LOAD_THRESHOLD:
                 stop_event.wait(BackgroundPruner.LOAD_CHECK_INTERVAL)
                 continue
@@ -103,6 +130,11 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
 
     finally:
         conn.close()
+        if _lib_for_retrain is not None:
+            try:
+                _lib_for_retrain.close()
+            except Exception:
+                pass
 
 
 class BackgroundPruner:
