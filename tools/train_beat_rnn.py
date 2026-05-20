@@ -21,15 +21,43 @@ from flame_sheep.vk_compute import VkCompute
 from flame_sheep.wallpaper_ml import build_beat_crnn, VkGRU
 
 
+def _scan_one(path: Path) -> tuple[Path, int] | None:
+    """Read spectrum length from a label .npz without decompressing the
+    array. The .npy header inside the zip carries shape in its first
+    ~128 bytes; DEFLATE stops there. ~50× faster than np.load()['spectrum'].
+    Returns None for files that aren't label files (no 'spectrum.npy')
+    or that fail to parse.
+    """
+    import zipfile
+    from numpy.lib import format as npy_fmt
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = zf.namelist()
+            if 'spectrum.npy' not in names:
+                return None
+            with zf.open('spectrum.npy') as f:
+                major, minor = npy_fmt.read_magic(f)
+                if (major, minor) == (1, 0):
+                    shape, _, _ = npy_fmt.read_array_header_1_0(f)
+                elif (major, minor) == (2, 0):
+                    shape, _, _ = npy_fmt.read_array_header_2_0(f)
+                else:
+                    return None
+                return (path, int(shape[0]))
+    except (zipfile.BadZipFile, OSError, ValueError, KeyError):
+        return None
+
+
 def load_dataset(data_dir: Path, max_files: int | None = None):
     """Scan .npz label files and return list of (path, n_frames) tuples.
 
     Lazy: array data is NOT loaded here. The 7.5K-file beat corpus expands
     to ~170 GB if all arrays are materialized — would OOM any reasonable
-    machine. Instead we record file paths + frame counts (cheap, ~one
-    np.load per file just to read array shapes), and load actual arrays
+    machine. Instead we record file paths + frame counts (cheap, just
+    reads each .npz's spectrum.npy header), and load actual arrays
     on demand during batching via LazyFileCache.
     """
+    import multiprocessing as mp
     files = sorted(data_dir.glob('*.npz'))
     if max_files:
         files = files[:max_files]
@@ -41,23 +69,18 @@ def load_dataset(data_dir: Path, max_files: int | None = None):
     dataset = []
     total_frames = 0
     skipped = 0
-    for i, f in enumerate(files):
-        try:
-            with np.load(f) as d:
-                if 'spectrum' not in d.files:
-                    # Not a label file — e.g., the training checkpoint
-                    # (`beat_rnn_v1.npz`) is in the same directory as
-                    # the labels. Quietly skip.
-                    skipped += 1
-                    continue
-                n_frames = len(d['spectrum'])
-        except (KeyError, OSError, ValueError):
-            skipped += 1
-            continue
-        dataset.append((f, n_frames))
-        total_frames += n_frames
-        if (i + 1) % report_every == 0 or i + 1 == n_total:
-            print(f"  scanned {i + 1}/{n_total} ({total_frames} frames so far)")
+    # imap (ordered) so the returned dataset is reproducible across runs.
+    with mp.Pool() as pool:
+        for i, result in enumerate(
+                pool.imap(_scan_one, files, chunksize=32)):
+            if result is None:
+                skipped += 1
+            else:
+                dataset.append(result)
+                total_frames += result[1]
+            if (i + 1) % report_every == 0 or i + 1 == n_total:
+                print(f"  scanned {i + 1}/{n_total} "
+                      f"({total_frames} frames so far)")
     if skipped:
         print(f"  (skipped {skipped} non-label .npz files)")
 
