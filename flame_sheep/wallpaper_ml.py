@@ -739,6 +739,44 @@ class VkGRU(VkLayer):
         self._seq_pos = T
         return output_seq_buf
 
+    def backward_sequence(self, upstream_seq_buf: 'VkBuffer',
+                          batch_size: int, T: int) -> 'VkBuffer':
+        """Single-dispatch BPTT over T timesteps via gru_seq_backward.comp.
+
+        upstream_seq_buf: (T, B, hidden) gradient on GRU output for every
+            timestep (from the layer above — typically linear_out's
+            _grad_input_buf after its B*T flat-batch backward).
+        batch_size: B (number of sequences)
+        T: matches the forward_sequence T
+
+        Replaces T calls of per-timestep gru_backward + the per-step
+        upload of upstream dh. All BPTT iterations run inside one
+        workgroup with the recurrent dh in shared memory. True
+        per-timestep upstream — every timestep's gradient gets added
+        to the running recurrent grad, not just the last (which was
+        the BPTT approximation that limited the previous backward path).
+
+        Returns self._grad_input_buf — (T, B, input_size) per-timestep
+        gradient on input. Weight gradients accumulate atomically into
+        grad_W / grad_U / grad_bias just like the per-step shader.
+        """
+        if not self._seq_mode or self._saved_inputs is None or not self._saved_inputs:
+            raise RuntimeError('backward_sequence requires forward_sequence first')
+
+        pipeline = self.gpu.create_pipeline(
+            str(RNN_SHADER_DIR / 'gru_seq_backward.comp'),
+            buffers=[self._saved_inputs[0], upstream_seq_buf,
+                     self._grad_input_buf, self.cache_buf,
+                     self.W_buf, self.U_buf, self.bias_buf,
+                     self.grad_W_buf, self.grad_U_buf, self.grad_bias_buf],
+            push_constant_size=16,
+        )
+        push = struct.pack('4i', batch_size, self.input_size,
+                           self.hidden_size, T)
+        self.gpu.dispatch(pipeline, batch_size, push_constants=push)
+        pipeline.destroy()
+        return self._grad_input_buf
+
     def forward(self, input_buf, batch_size, shape):
         """Single-frame GRU forward. Updates hidden state in-place."""
         H = self.hidden_size

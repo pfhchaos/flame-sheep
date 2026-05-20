@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -304,7 +305,7 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
                 val_batches=None, val_data=None, val_interval: float = 0.0,
                 val_sample_size: int = 200,
                 best_val_state=None, save_path: Path | None = None,
-                epoch_num: int = 0):
+                epoch_num: int = 0, profile: bool = False):
     """Train one epoch. Reuses pre-allocated GPU buffers.
 
     `batches` is a list of batch specs (file_idx, start tuples).
@@ -341,7 +342,33 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
     prep = BatchPrepPipeline(batches, dataset, chunk_len, cache, max_queue=2)
     n_batches = len(batches)
 
-    for batch_idx, (inputs_TBF, labels_TBF) in enumerate(prep):
+    # Profiling timers — accumulate per-phase wall time, print every 10 batches.
+    # Each phase boundary uses time.monotonic() which is cheap (~30ns/call).
+    # Most VkCompute calls block until the GPU finishes (submit + wait), so
+    # the timer for each section actually reflects GPU work for that phase.
+    if profile:
+        phase_total = {
+            'wait_prep': 0.0,  # block waiting for background prep thread
+            'reset':     0.0,  # zero_grad, reset_hidden, zero accumulators
+            'upload':    0.0,  # input_seq + label_seq → GPU
+            'forward':   0.0,  # linear_in + gru_seq + linear_out
+            'loss':      0.0,  # cross_entropy dispatch + loss download
+            'backward':  0.0,  # linear_out.backward + slice slip + gru.backward + linear_in.backward
+            'sgd':       0.0,  # weight update
+        }
+        last_log_time = time.monotonic()
+
+    prep_iter = iter(prep)
+    for batch_idx in range(n_batches):
+        if profile:
+            t0 = time.monotonic()
+        try:
+            inputs_TBF, labels_TBF = next(prep_iter)
+        except StopIteration:
+            break
+        if profile:
+            phase_total['wait_prep'] += time.monotonic() - t0; t0 = time.monotonic()
+
         B_actual = inputs_TBF.shape[1]
         T = inputs_TBF.shape[0]
         BT = B_actual * T
@@ -351,21 +378,23 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
         gru.reset_hidden()
         gpu.zero_buffer(loss_acc_buf)
         gpu.zero_buffer(grad_acc_buf)
+        if profile:
+            phase_total['reset'] += time.monotonic() - t0; t0 = time.monotonic()
 
         # Single per-batch upload of inputs and labels
         gpu.upload(input_seq_buf, inputs_TBF.ravel())
         gpu.upload(label_seq_buf, labels_TBF.ravel())
+        if profile:
+            phase_total['upload'] += time.monotonic() - t0; t0 = time.monotonic()
 
         # --- Forward: 4 dispatches total ---
-        # linear_in: treat the whole sequence as one flat batch of size B*T
-        # input layout (T, B, in_features) is identical to (B*T, in_features)
-        # for linear's flat-batch indexing.
         linear_in.forward(input_seq_buf, BT, (linear_in.in_features,))
-        # GRU: one dispatch processes all T timesteps internally
         gru.forward_sequence(linear_in.output_buf, gru_seq_out_buf,
                              B_actual, T)
-        # linear_out: again flat-batch over B*T
         linear_out.forward(gru_seq_out_buf, BT, (gru.hidden_size,))
+        if profile:
+            phase_total['forward'] += time.monotonic() - t0; t0 = time.monotonic()
+
         # cross_entropy: per-(t,b) loss + grad in one dispatch
         cross_entropy_dispatch(
             gpu, linear_out.output_buf, label_seq_buf,
@@ -373,38 +402,43 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
             batch_size=BT, n_classes=N_CLASSES,
             target_offset_floats=0, t_inv=1.0,
         )
-
-        # Loss readout — one download for B*T floats
         loss_per = gpu.download(loss_acc_buf, np.float32, BT)
         chunk_loss = float(loss_per.mean())
         losses.append(chunk_loss)
+        if profile:
+            phase_total['loss'] += time.monotonic() - t0; t0 = time.monotonic()
 
         # --- Backward ---
-        # linear_out backward over B*T flat batch → grad on its input
-        # (T*B, hidden_size) in linear_out._grad_input_buf
         linear_out.backward(grad_acc_buf, BT)
 
-        # GRU backward: existing single-step BPTT approximation — seeds
-        # dh from the LAST timestep's upstream grad only. Per-timestep
-        # upstream addition through the BPTT loop is a separate change
-        # (would let linear_in learn from all timesteps, not just t=T-1).
-        # For now, slice the last-timestep grad from linear_out's output
-        # via download+upload (tiny — B*H floats).
-        last_idx = (T - 1) * B_actual * gru.hidden_size
-        last_grad = gpu.download(linear_out._grad_input_buf, np.float32,
-                                  T * B_actual * gru.hidden_size)
-        gpu.upload(gru_upstream_buf, last_grad[last_idx:last_idx + B_actual * gru.hidden_size])
-        gru.backward(gru_upstream_buf, B_actual)
+        # GRU backward: single dispatch via gru_seq_backward.comp.
+        # linear_out._grad_input_buf has shape (T, B, hidden) — every
+        # timestep's upstream gradient — and the seq backward shader
+        # adds each timestep's contribution to the running recurrent
+        # grad. Real per-timestep upstream now, not the last-step-only
+        # approximation that was the limit of the per-step backward.
+        gru.backward_sequence(linear_out._grad_input_buf, B_actual, T)
 
-        # linear_in backward over B*T flat batch — weight grads
-        # accumulate from EVERY timestep's input (the real correctness
-        # win of seq mode for the input projection).
         linear_in.backward(gru._grad_input_buf, BT)
+        if profile:
+            phase_total['backward'] += time.monotonic() - t0; t0 = time.monotonic()
 
         model.sgd_step(lr)
+        if profile:
+            phase_total['sgd'] += time.monotonic() - t0
 
         if (batch_idx + 1) % 10 == 0:
-            print(f"    batch {batch_idx+1}/{n_batches} loss={chunk_loss:.4f}")
+            if profile:
+                window_total = sum(phase_total.values())
+                window_wall = time.monotonic() - last_log_time
+                breakdown = '  '.join(f'{k}={v*1000/10:.0f}ms({v/window_total*100:.0f}%)'
+                                       for k, v in phase_total.items())
+                print(f"    batch {batch_idx+1}/{n_batches} loss={chunk_loss:.4f}  "
+                      f"[wall {window_wall*1000/10:.0f}ms/batch  {breakdown}]")
+                phase_total = {k: 0.0 for k in phase_total}
+                last_log_time = time.monotonic()
+            else:
+                print(f"    batch {batch_idx+1}/{n_batches} loss={chunk_loss:.4f}")
 
         # Mid-epoch validation: runs whenever val_interval seconds have
         # elapsed since the last validation. Wall-time-based instead of
@@ -519,6 +553,11 @@ def main():
     parser.add_argument('--no-resume', action='store_true',
                         help='Ignore an existing checkpoint at --output and '
                              'start training from scratch (Kaiming init)')
+    parser.add_argument('--profile', action='store_true',
+                        help='Print per-phase timing breakdown every 10 batches: '
+                             'wait_prep | reset | upload | forward | loss | '
+                             'backward | sgd. Shows where wall-clock time is '
+                             'actually going so you can target the biggest knob.')
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -623,7 +662,8 @@ def main():
                                  val_interval=args.val_interval,
                                  val_sample_size=args.val_sample_size,
                                  best_val_state=best_val_state,
-                                 save_path=args.output, epoch_num=epoch)
+                                 save_path=args.output, epoch_num=epoch,
+                                 profile=args.profile)
         val_loss, val_acc = validate(model, gpu, val_batches,
                                      args.chunk_len, in_buf,
                                      val_data, file_cache)
