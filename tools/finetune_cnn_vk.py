@@ -169,21 +169,35 @@ def load_training_pairs(db_path: str, mode: str = 'mixed') -> tuple[list[tuple[i
     # 2. Thumbs up/down → synthetic pairs
     #
     # A thumb is an absolute corpus-relative judgment: "this is liked
-    # compared to whatever else was in front of me when I rated it." If
-    # the genome was later archived (pruned for any reason), the implicit
-    # comparison context is gone and the label is no longer meaningful
-    # against the current corpus. Filter to active genomes only.
+    # compared to whatever else was in front of me when I rated it." Two
+    # filters narrow the pool to thumbs that are valid training signal
+    # against the CURRENT model+population:
     #
-    # Pairwise pairs (below) don't need this filter — they carry their
-    # own comparison context (the other side of the pair), so they remain
-    # valid training data even if either genome was later archived.
+    # (a) The target genome is still in the active set (g.archived = 0).
+    #     Even within a generation, the genome must exist to render
+    #     against.
+    # (b) The rating was made in the current generation. Cross-generation
+    #     thumbs are training poison — the underlying corpus shifted out
+    #     from under them. See docs/generational_architecture.md.
+    #
+    # Pairwise pairs (below) don't need either filter at the same level:
+    # they're self-contained 2-genome comparisons whose meaning doesn't
+    # depend on the surrounding population, so they accumulate across
+    # generations. (Stale-genome filter is still applied so we can
+    # actually render them.)
+    current_generation = conn.execute(
+        "SELECT value FROM metadata WHERE key='current_generation'"
+    ).fetchone()
+    current_generation = int(current_generation[0]) if current_generation else 0
+
     ratings = conn.execute('''
         SELECT r.target_id, SUM(r.rating) as net
         FROM ratings r
         JOIN genomes g ON g.id = r.target_id
         WHERE r.target_type='genome' AND g.archived = 0
+              AND r.generation = ?
         GROUP BY r.target_id
-    ''').fetchall()
+    ''', (current_generation,)).fetchall()
 
     liked_ids = [r[0] for r in ratings if r[1] > 0]
     disliked_ids = [r[0] for r in ratings if r[1] < 0]

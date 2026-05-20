@@ -180,11 +180,16 @@ class CompareMode:
         pair_key = (min(winner_id, loser_id), max(winner_id, loser_id))
         self._compared.add(pair_key)
 
-        # Store in pairwise_ratings table
+        # Stamp the current generation. Pairwise comparisons are self-
+        # contained and don't NEED the tag for training (they're durable
+        # across generations), but the generation is useful for analysis
+        # and weighting decisions later. See
+        # docs/generational_architecture.md.
+        gen = self.lib.get_current_generation()
         self.lib.conn.execute(
-            '''INSERT INTO pairwise_ratings (winner_id, loser_id, source)
-               VALUES (?, ?, 'compare')''',
-            (winner_id, loser_id),
+            '''INSERT INTO pairwise_ratings (winner_id, loser_id, source, generation)
+               VALUES (?, ?, 'compare', ?)''',
+            (winner_id, loser_id, gen),
         )
         self.lib.conn.commit()
 

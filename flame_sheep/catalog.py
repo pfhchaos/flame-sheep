@@ -359,6 +359,10 @@ def import_catalog(catalog_dir: str | Path) -> None:
     catalog = Path(catalog_dir)
     lib = Library()
 
+    # Stamp catalog imports with the current generation so they're tagged
+    # against the model+population state at import time. See
+    # docs/generational_architecture.md.
+    gen = lib.get_current_generation()
     for folder, rating in [('good', 1), ('meh', 0), ('bad', -1)]:
         folder_path = catalog / folder
         if not folder_path.exists():
@@ -372,8 +376,9 @@ def import_catalog(catalog_dir: str | Path) -> None:
                 try:
                     gid = int(parts[1])
                     lib.conn.execute(
-                        'INSERT INTO ratings (target_type, target_id, rating, source) VALUES (?, ?, ?, ?)',
-                        ('genome', gid, rating, 'catalog'),
+                        'INSERT INTO ratings (target_type, target_id, rating, source, generation) '
+                        'VALUES (?, ?, ?, ?, ?)',
+                        ('genome', gid, rating, 'catalog', gen),
                     )
                     log.info(f'Voted {rating:+d} on genome #{gid}')
                 except (ValueError, Exception) as e:

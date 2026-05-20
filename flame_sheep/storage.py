@@ -212,6 +212,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     _migrate_blob_separation(conn)
     _migrate_channel_stats(conn)
     _migrate_channel_stats_v2(conn)
+    _migrate_generational(conn)
 
 
 def _migrate_variation_reindex(conn: sqlite3.Connection) -> None:
@@ -525,6 +526,58 @@ def _migrate_channel_stats_v2(conn: sqlite3.Connection) -> None:
     conn.execute(
         "INSERT INTO metadata (key, value) VALUES ('channel_stats_v2', 'done')")
     conn.commit()
+
+
+def _migrate_generational(conn: sqlite3.Connection) -> None:
+    """Add generation column to ratings + pairwise_ratings tables.
+
+    Generational architecture (see docs/generational_architecture.md):
+    each rating is tagged with the model+population generation it was
+    made against. Thumbs are corpus-relative judgments — only valid as
+    training signal within their own generation (synthesized into
+    intra-gen pairwise pairs). Pairwise compare-mode pairs are self-
+    contained and durable across generations, but stamping them with
+    the rating-time generation is cheap and useful for diagnostics.
+
+    Existing data backfills to generation 0 (= "pre-generational",
+    rated against the now-archived corpus that prompted today's CNN
+    rework). current_generation in metadata starts at 1, defining the
+    v3 pairwise-only model's deployment as the boundary. New ratings
+    from this point on get stamped with current_generation at insert.
+
+    One-shot, guarded by metadata key 'generational_v1'.
+    """
+    row = conn.execute(
+        "SELECT value FROM metadata WHERE key='generational_v1'").fetchone()
+    if row is not None:
+        return
+
+    # Add generation column to both rating tables. Default 0 backfills
+    # existing rows automatically — they predate the generational system.
+    for table in ('ratings', 'pairwise_ratings'):
+        cols = {r[1] for r in conn.execute(
+            f'PRAGMA table_info({table})').fetchall()}
+        if 'generation' not in cols:
+            conn.execute(
+                f'ALTER TABLE {table} ADD COLUMN generation INTEGER NOT NULL DEFAULT 0')
+
+    # Seed current_generation = 1. New ratings collected from this point
+    # forward get stamped with this value (or whatever it's been advanced
+    # to by subsequent train+breed cycles).
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata (key, value) VALUES "
+        "('current_generation', '1')")
+
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('generational_v1', 'done')")
+    conn.commit()
+
+    import sys
+    n_ratings = conn.execute('SELECT COUNT(*) FROM ratings').fetchone()[0]
+    n_pw = conn.execute('SELECT COUNT(*) FROM pairwise_ratings').fetchone()[0]
+    print(f'[storage] Generational migration: backfilled {n_ratings} ratings + '
+          f'{n_pw} pairwise to generation=0, set current_generation=1 '
+          f'(generational_v1)', file=sys.stderr)
 
 
 # ------------------------------------------------------------------
@@ -1089,6 +1142,40 @@ class Library:
         )
         self.conn.commit()
 
+    # --- Generational system ---
+
+    def get_current_generation(self) -> int:
+        """Read the current generation counter from metadata.
+
+        Used by rating-insertion code paths to stamp new ratings with
+        the current model+population generation, and by training code
+        to filter thumbs to intra-generation synthesis. Returns 0 if
+        the metadata key is missing (databases that predate the
+        generational migration).
+        """
+        row = self.conn.execute(
+            "SELECT value FROM metadata WHERE key='current_generation'"
+        ).fetchone()
+        if row is None:
+            return 0
+        try:
+            return int(row[0])
+        except (ValueError, TypeError):
+            log.error('malformed current_generation metadata: %r', row[0])
+            return 0
+
+    def advance_generation(self) -> int:
+        """Increment current_generation. Call after training a new model
+        + breeding a new population. Returns the new generation number."""
+        new_gen = self.get_current_generation() + 1
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES "
+            "('current_generation', ?)",
+            (str(new_gen),),
+        )
+        self.conn.commit()
+        return new_gen
+
     def load_genome(self, genome_id: int) -> Genome:
         """Load a genome by ID.
 
@@ -1532,17 +1619,23 @@ class Library:
                 'DELETE FROM ratings WHERE target_type = ? AND target_id = ?',
                 (target_type, target_id),
             )
+        # Stamp the current generation at insert time. Thumbs are corpus-
+        # relative and only meaningful as training signal within their
+        # own generation (see docs/generational_architecture.md).
+        gen = self.get_current_generation()
         self.conn.execute(
-            'INSERT INTO ratings (target_type, target_id, rating, source) VALUES (?, ?, ?, ?)',
-            (target_type, target_id, rating, 'direct'),
+            'INSERT INTO ratings (target_type, target_id, rating, source, generation) '
+            'VALUES (?, ?, ?, ?, ?)',
+            (target_type, target_id, rating, 'direct', gen),
         )
         # Propagate loop votes to constituent genomes
         if target_type == 'loop':
             genome_ids = self.loop_genome_ids(target_id)
             for gid in genome_ids:
                 self.conn.execute(
-                    'INSERT INTO ratings (target_type, target_id, rating, source) VALUES (?, ?, ?, ?)',
-                    ('genome', gid, rating, 'loop'),
+                    'INSERT INTO ratings (target_type, target_id, rating, source, generation) '
+                    'VALUES (?, ?, ?, ?, ?)',
+                    ('genome', gid, rating, 'loop', gen),
                 )
         self.conn.commit()
 
