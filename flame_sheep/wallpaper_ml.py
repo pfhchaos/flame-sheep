@@ -685,11 +685,59 @@ class VkGRU(VkLayer):
         self.cache_buf = gpu.create_buffer(max_seq_len * batch_size * 4 * H * 4)
         self._seq_pos = 0  # current position in cache
 
+        # Pre-allocate grad_input_buf at the worst-case size — needed for
+        # seq-mode BPTT where each iteration writes its own timestep's
+        # input gradient to a (T, B, I) buffer. Single-step backward only
+        # uses the first (B, I) of it.
+        self._grad_input_buf = gpu.create_buffer(max_seq_len * batch_size * I * 4)
+        self._dh_buf = gpu.create_buffer(batch_size * H * 4)
+
+        # Flag set by forward_sequence so backward knows to advance offsets
+        # rather than indexing into a list of per-step input buffers.
+        self._seq_mode = False
+
     def reset_hidden(self) -> None:
         """Zero the hidden state (call on new song, etc.)."""
         self.gpu.zero_buffer(self.hidden_buf)
         self._seq_pos = 0
         self._saved_inputs: list[VkBuffer] = []
+        self._seq_mode = False
+
+    def forward_sequence(self, input_seq_buf, output_seq_buf,
+                         batch_size: int, T: int) -> VkBuffer:
+        """Run forward for T timesteps in a single dispatch via gru_seq_forward.
+
+        input_seq_buf:  (T, B, input_size) — caller pre-uploaded
+        output_seq_buf: (T, B, hidden_size) — written, caller-allocated
+        batch_size: number of independent sequences (rows of B)
+        T: number of timesteps to process this call
+
+        Replaces T calls of single-step forward() with one dispatch.
+        Cache layout is identical to single-step so the existing
+        gru_backward shader works on it directly (with seq-mode offsets).
+
+        Hidden state in self.hidden_buf is used as initial state and
+        updated to the final state of the sequence — supports chained
+        sub-batches (call with t_start=0, t_count=T1, then t_start=T1,
+        t_count=T2, ...).
+        """
+        pipeline = self.gpu.create_pipeline(
+            str(RNN_SHADER_DIR / 'gru_seq_forward.comp'),
+            buffers=[input_seq_buf, self.hidden_buf, self.W_buf, self.U_buf,
+                     self.bias_buf, output_seq_buf, self.cache_buf],
+            push_constant_size=20,
+        )
+        push = struct.pack('5i', batch_size, self.input_size,
+                           self.hidden_size, 0, T)
+        self.gpu.dispatch(pipeline, batch_size, push_constants=push)
+        pipeline.destroy()
+
+        # Tell backward to use seq-mode offsetting: one big input buffer,
+        # one big grad_input buffer, T BPTT iterations with advancing offsets.
+        self._saved_inputs = [input_seq_buf]
+        self._seq_mode = True
+        self._seq_pos = T
+        return output_seq_buf
 
     def forward(self, input_buf, batch_size, shape):
         """Single-frame GRU forward. Updates hidden state in-place."""
@@ -753,12 +801,31 @@ class VkGRU(VkLayer):
             self._grad_input_buf = self.gpu.create_buffer(B * I * 4)
 
         # BPTT: iterate backwards through cached timesteps
+        #
+        # In single-step mode (one input_buf per timestep, output to one
+        # (B, I) grad buffer): input_offset/grad_x_offset stay at 0 every
+        # iter, _saved_inputs[t] points to a different small buffer each t.
+        #
+        # In seq mode (single (T, B, I) input buffer, single (T, B, I)
+        # grad buffer): _seq_mode is set, _saved_inputs[t] is the same big
+        # buffer every t, and offsets advance by B*I per timestep.
+        seq_mode = getattr(self, '_seq_mode', False)
+
         for t in range(T - 1, -1, -1):
             cache_offset = t * B * 4 * H
 
-            # We need the input for this timestep — stored in _saved_inputs[t]
-            # For now, use the saved input buffer (works for single-timestep backward)
-            input_buf = self._saved_inputs[t] if hasattr(self, '_saved_inputs') else self._saved_input
+            if seq_mode:
+                # Same buffer every iteration, offset advances
+                input_buf = self._saved_inputs[0]
+                input_offset = t * B * I
+                grad_x_offset = t * B * I
+            else:
+                # Distinct per-timestep buffer; no offset
+                input_buf = (self._saved_inputs[t]
+                             if hasattr(self, '_saved_inputs') and self._saved_inputs
+                             else self._saved_input)
+                input_offset = 0
+                grad_x_offset = 0
 
             pipeline = self.gpu.create_pipeline(
                 str(RNN_SHADER_DIR / 'gru_backward.comp'),
@@ -766,9 +833,10 @@ class VkGRU(VkLayer):
                          self.cache_buf, self.W_buf, self.U_buf,
                          self.bias_buf, self.grad_W_buf,
                          self.grad_U_buf, self.grad_bias_buf],
-                push_constant_size=16,
+                push_constant_size=24,
             )
-            push = struct.pack('4i', B, I, H, cache_offset)
+            push = struct.pack('6i', B, I, H, cache_offset,
+                               input_offset, grad_x_offset)
             self.gpu.dispatch(pipeline, B, push_constants=push)
             pipeline.destroy()
 
@@ -805,7 +873,8 @@ class VkGRU(VkLayer):
 
 def build_beat_crnn(gpu: VkCompute, input_size: int = 216,
                     hidden_size: int = 48, n_classes: int = 3,
-                    batch_size: int = 8, max_seq_len: int = 128) -> VkModel:
+                    batch_size: int = 8, max_seq_len: int = 128,
+                    seq_mode: bool = False) -> VkModel:
     """Build the beat detection CRNN.
 
     Architecture: Linear(input→32, ReLU) → GRU(32→hidden) → Linear(hidden→3)
@@ -814,15 +883,21 @@ def build_beat_crnn(gpu: VkCompute, input_size: int = 216,
         input_size: features per frame (e.g., 108 CQT + 108 diff = 216)
         hidden_size: GRU hidden units
         n_classes: output classes (non-beat, beat, downbeat)
-        batch_size: fixed batch size
+        batch_size: number of independent sequences
         max_seq_len: max BPTT sequence length
+        seq_mode: if True, size the linear layers' output buffers for
+            (B * max_seq_len) flat batch — needed when running training
+            in sequence-mode (one dispatch per layer for the full T-step
+            chunk via gru_seq_forward). GRU sizing is unchanged either
+            way; it owns the sequence dimension internally.
     """
     proj_size = 32  # input projection dimension
+    linear_batch = batch_size * max_seq_len if seq_mode else batch_size
 
     layers: list[VkLayer] = [
-        VkLinear(gpu, input_size, proj_size, batch_size, relu=True),
+        VkLinear(gpu, input_size, proj_size, linear_batch, relu=True),
         VkGRU(gpu, proj_size, hidden_size, batch_size, max_seq_len),
-        VkLinear(gpu, hidden_size, n_classes, batch_size, relu=False),
+        VkLinear(gpu, hidden_size, n_classes, linear_batch, relu=False),
     ]
 
     return VkModel(gpu, layers)

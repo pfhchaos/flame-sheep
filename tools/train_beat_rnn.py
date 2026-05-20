@@ -229,6 +229,7 @@ def load_checkpoint(path: Path):
 def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
                 in_buf, grad_buf, dataset, cache: LazyFileCache,
                 label_seq_buf, loss_acc_buf, grad_acc_buf,
+                input_seq_buf, gru_seq_out_buf, gru_upstream_buf,
                 val_batches=None, val_data=None, val_interval: float = 0.0,
                 val_sample_size: int = 200,
                 best_val_state=None, save_path: Path | None = None,
@@ -256,57 +257,83 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
     from flame_sheep.wallpaper_ml import cross_entropy_dispatch
     N_CLASSES = 3
 
+    # Unpack model layers — train loop drives them directly in seq mode
+    # because VkModel.forward chains all layers with a single batch_size,
+    # but seq mode has linears at B*T flat batch while GRU operates on B
+    # sequences of T steps. Direct layer calls let us pass the right
+    # batch_size to each.
+    linear_in, gru, linear_out = model.layers
+
     for batch_idx, batch_spec in enumerate(batches):
         inputs, labels = materialize_batch(batch_spec, dataset, chunk_len, cache)
-        # inputs: [B, T, 216], labels: [B, T, 3]
+        # materialize_batch returns (B, T, F) layout. Transpose to (T, B, F)
+        # so that GRU-side offsets (t*B+b)*F and linear flat-batch indexing
+        # (which treats (t*B+b) as a single batch index) agree on layout.
+        # Critical: the prior commit uploaded (B, T, 3) labels but
+        # cross_entropy_dispatch was indexing as if (T, B, 3) — the loss
+        # was being computed against scrambled labels. (T, B, F) makes
+        # the layout consistent across all four GPU dispatches per batch.
+        inputs_TBF = np.ascontiguousarray(inputs.transpose(1, 0, 2))
+        labels_TBF = np.ascontiguousarray(labels.transpose(1, 0, 2))
         B_actual = inputs.shape[0]
         T = inputs.shape[1]
-        t_inv = 1.0 / float(T)
+        BT = B_actual * T
 
+        # Zero per-layer gradient accumulators and the loss/grad acc.
         model.zero_grad()
-
-        # Reset GRU hidden state for each chunk
-        for layer in model.layers:
-            if isinstance(layer, VkGRU):
-                layer.reset_hidden()
-
-        # GPU-side loss path: upload all labels for this batch in one shot,
-        # zero the loss/grad accumulators, then per-timestep dispatch the
-        # cross_entropy shader instead of downloading logits + CPU CE +
-        # uploading grad. Eliminates 2 × T Python→Vulkan round-trips per
-        # batch (downloads of logits + accumulated grad upload at end —
-        # T downloads → 1 download).
-        gpu.upload(label_seq_buf, labels.ravel())
+        gru.reset_hidden()
         gpu.zero_buffer(loss_acc_buf)
         gpu.zero_buffer(grad_acc_buf)
 
-        for t in range(T):
-            frame = inputs[:, t, :]  # [B, 216]
-            gpu.upload(in_buf, frame.ravel())
+        # Single per-batch upload of inputs and labels
+        gpu.upload(input_seq_buf, inputs_TBF.ravel())
+        gpu.upload(label_seq_buf, labels_TBF.ravel())
 
-            out_buf = model.forward(in_buf, B_actual, (216,))
+        # --- Forward: 4 dispatches total ---
+        # linear_in: treat the whole sequence as one flat batch of size B*T
+        # input layout (T, B, in_features) is identical to (B*T, in_features)
+        # for linear's flat-batch indexing.
+        linear_in.forward(input_seq_buf, BT, (linear_in.in_features,))
+        # GRU: one dispatch processes all T timesteps internally
+        gru.forward_sequence(linear_in.output_buf, gru_seq_out_buf,
+                             B_actual, T)
+        # linear_out: again flat-batch over B*T
+        linear_out.forward(gru_seq_out_buf, BT, (gru.hidden_size,))
+        # cross_entropy: per-(t,b) loss + grad in one dispatch
+        cross_entropy_dispatch(
+            gpu, linear_out.output_buf, label_seq_buf,
+            grad_acc_buf, loss_acc_buf,
+            batch_size=BT, n_classes=N_CLASSES,
+            target_offset_floats=0, t_inv=1.0,
+        )
 
-            # Cross-entropy on GPU. target_offset is in float elements,
-            # not bytes — labels is (B, T, 3) in row-major so the offset
-            # to timestep t's slice is t * B * 3. Each dispatch accumulates
-            # 1/T of the gradient and loss into the accumulators.
-            cross_entropy_dispatch(
-                gpu, out_buf, label_seq_buf, grad_acc_buf, loss_acc_buf,
-                batch_size=B_actual, n_classes=N_CLASSES,
-                target_offset_floats=t * B_actual * N_CLASSES,
-                t_inv=t_inv,
-            )
-
-        # Download loss accumulator (B floats) and compute scalar loss.
-        # This is one download per BATCH instead of one per timestep —
-        # the actual training-time savings.
-        loss_per_batch = gpu.download(loss_acc_buf, np.float32, B_actual)
-        chunk_loss = float(loss_per_batch.mean())
+        # Loss readout — one download for B*T floats
+        loss_per = gpu.download(loss_acc_buf, np.float32, BT)
+        chunk_loss = float(loss_per.mean())
         losses.append(chunk_loss)
 
-        # grad_acc_buf already holds mean-over-timesteps mean-over-batch
-        # gradient — feed directly to backward, no CPU mean needed.
-        model.backward(grad_acc_buf, B_actual)
+        # --- Backward ---
+        # linear_out backward over B*T flat batch → grad on its input
+        # (T*B, hidden_size) in linear_out._grad_input_buf
+        linear_out.backward(grad_acc_buf, BT)
+
+        # GRU backward: existing single-step BPTT approximation — seeds
+        # dh from the LAST timestep's upstream grad only. Per-timestep
+        # upstream addition through the BPTT loop is a separate change
+        # (would let linear_in learn from all timesteps, not just t=T-1).
+        # For now, slice the last-timestep grad from linear_out's output
+        # via download+upload (tiny — B*H floats).
+        last_idx = (T - 1) * B_actual * gru.hidden_size
+        last_grad = gpu.download(linear_out._grad_input_buf, np.float32,
+                                  T * B_actual * gru.hidden_size)
+        gpu.upload(gru_upstream_buf, last_grad[last_idx:last_idx + B_actual * gru.hidden_size])
+        gru.backward(gru_upstream_buf, B_actual)
+
+        # linear_in backward over B*T flat batch — weight grads
+        # accumulate from EVERY timestep's input (the real correctness
+        # win of seq mode for the input projection).
+        linear_in.backward(gru._grad_input_buf, BT)
+
         model.sgd_step(lr)
 
         if (batch_idx + 1) % 10 == 0:
@@ -444,11 +471,14 @@ def main():
     val_data = [dataset[i] for i in val_idx]
     print(f"Train: {len(train_data)} files, Val: {len(val_data)} files")
 
-    # Build model
+    # Build model in seq mode — linear layers' output buffers sized for
+    # (B * T) flat batch so we can run one dispatch per linear per batch
+    # instead of T dispatches each. GRU keeps batch=B and handles the
+    # sequence dimension internally via gru_seq_forward.
     gpu = VkCompute()
     model = build_beat_crnn(gpu, input_size=216, hidden_size=args.hidden,
                             n_classes=3, batch_size=args.batch_size,
-                            max_seq_len=args.chunk_len)
+                            max_seq_len=args.chunk_len, seq_mode=True)
 
     # Resume from checkpoint if it exists (unless --no-resume).
     start_epoch = 0
@@ -488,11 +518,19 @@ def main():
     #   - label_seq_buf: full (B, T, 3) labels uploaded once per batch
     #   - loss_acc_buf:  (B,) per-batch loss accumulator (1/T weighted)
     #   - grad_acc_buf:  (B, 3) per-batch gradient accumulator (1/T weighted)
-    in_buf = gpu.create_buffer(args.batch_size * 216 * 4)
-    grad_buf = gpu.create_buffer(args.batch_size * 3 * 4)
-    label_seq_buf = gpu.create_buffer(args.batch_size * args.chunk_len * 3 * 4)
-    loss_acc_buf = gpu.create_buffer(args.batch_size * 4)
-    grad_acc_buf = gpu.create_buffer(args.batch_size * 3 * 4)
+    # Buffers for the seq-mode pipeline. T = args.chunk_len, B = args.batch_size.
+    # Layout convention: (T, B, F) — timestep outer, batch inner. Matches
+    # gru_seq_forward's (t*B + b) indexing and lets linear layers treat
+    # the whole sequence as a flat (B*T) batch.
+    BT = args.batch_size * args.chunk_len
+    in_buf = gpu.create_buffer(args.batch_size * 216 * 4)  # legacy, unused in seq path
+    grad_buf = gpu.create_buffer(args.batch_size * 3 * 4)  # legacy, unused in seq path
+    input_seq_buf = gpu.create_buffer(BT * 216 * 4)             # (T, B, 216)
+    label_seq_buf = gpu.create_buffer(BT * 3 * 4)               # (T, B, 3)
+    gru_seq_out_buf = gpu.create_buffer(BT * args.hidden * 4)   # (T, B, hidden)
+    loss_acc_buf = gpu.create_buffer(BT * 4)                    # (B*T,) loss per (t, b)
+    grad_acc_buf = gpu.create_buffer(BT * 3 * 4)                # (T, B, 3) grad on logits
+    gru_upstream_buf = gpu.create_buffer(args.batch_size * args.hidden * 4)  # (B, H) — last-step slice
 
     # Lazy file cache shared across train + validate. Holds the N most
     # recently used files; cap at ~64 files (~640 MB) which is enough
@@ -513,6 +551,7 @@ def main():
                                  args.chunk_len, in_buf, grad_buf,
                                  train_data, file_cache,
                                  label_seq_buf, loss_acc_buf, grad_acc_buf,
+                                 input_seq_buf, gru_seq_out_buf, gru_upstream_buf,
                                  val_batches=val_batches, val_data=val_data,
                                  val_interval=args.val_interval,
                                  val_sample_size=args.val_sample_size,

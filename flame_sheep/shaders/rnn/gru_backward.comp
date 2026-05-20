@@ -33,7 +33,9 @@ layout(push_constant) uniform PushConstants {
     int batch_size;
     int input_size;
     int hidden_size;
-    int cache_offset;
+    int cache_offset;     // float-element offset into cache for this timestep
+    int input_offset;     // float-element offset into x_data (seq-mode: t*B*I, single-step: 0)
+    int grad_x_offset;    // float-element offset into dx (seq-mode: t*B*I, single-step: 0)
 };
 
 shared float s_dz_pre[64];
@@ -51,7 +53,8 @@ void main() {
     int H = hidden_size;
     int I = input_size;
     int h_base = b * H;
-    int x_base = b * I;
+    int x_base = input_offset + b * I;
+    int dx_base = grad_x_offset + b * I;
     int w_gate_stride = I * H;
     int u_gate_stride = H * H;
 
@@ -231,6 +234,6 @@ void main() {
             dx_val += s_dr_pre[k] * W[1 * w_gate_stride + j * H + k];
             dx_val += s_dn_pre[k] * W[2 * w_gate_stride + j * H + k];
         }
-        dx[x_base + j] = dx_val;
+        dx[dx_base + j] = dx_val;
     }
 }
