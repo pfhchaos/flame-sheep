@@ -89,6 +89,13 @@ class LazyFileCache:
         self._lock = threading.Lock()
 
     def get(self, path):
+        """Returns a dict of all arrays in the .npz file.
+
+        Standard keys: 'spectrum', 'diff', 'labels'.
+        Optional: 'beat_score' (continuous beat-or-downbeat probability,
+        added by tools/add_beat_score_to_labels.py for the continuous
+        reformulation of training).
+        """
         key = str(path)
         with self._lock:
             if key in self._cache:
@@ -100,7 +107,7 @@ class LazyFileCache:
         # cache misses. Re-check inside the lock after to avoid two
         # threads loading the same file twice.
         d = np.load(path)
-        arrays = (np.array(d['spectrum']), np.array(d['diff']), np.array(d['labels']))
+        arrays = {k: np.array(d[k]) for k in d.files}
         with self._lock:
             if key in self._cache:
                 # Another thread beat us to it; reuse theirs.
@@ -205,7 +212,8 @@ def materialize_batch(batch_spec, dataset, chunk_len: int, cache: LazyFileCache)
     batch_labels = []
     for file_idx, start in batch_spec:
         path, _ = dataset[file_idx]
-        spec, diff, labels = cache.get(path)
+        arrs = cache.get(path)
+        spec, diff, labels = arrs['spectrum'], arrs['diff'], arrs['labels']
         end = start + chunk_len
         inp = np.concatenate([spec[start:end], diff[start:end]], axis=1)
         batch_inputs.append(inp)

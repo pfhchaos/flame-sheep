@@ -508,6 +508,33 @@ def build_cnn_scorer(gpu: VkCompute, layers_config: list[tuple],
 RNN_SHADER_DIR = Path(__file__).parent / 'shaders' / 'rnn'
 
 
+def bce_loss_dispatch(gpu: VkCompute, logits_buf: VkBuffer,
+                      target_buf: VkBuffer, grad_acc_buf: VkBuffer,
+                      loss_acc_buf: VkBuffer, batch_size: int,
+                      target_offset_floats: int, t_inv: float) -> None:
+    """Dispatch the bce_loss shader for one timestep.
+
+    Single-channel regression: each batch element has one logit and one
+    soft target in [0, 1]. Accumulates per-element loss (size B) and
+    gradient (size B) into the pre-allocated accumulators, weighted by
+    t_inv so after T dispatches the accumulators hold mean-over-
+    timesteps values. Caller zeroes both at the start of the batch.
+
+    Used by the continuous-activation reformulation of the beat-RNN
+    (single output channel = beat probability) — sidesteps the
+    multi-class imbalance that broke the 3-class softmax training
+    even with sqrt-inv-freq weights + focal loss.
+    """
+    pipeline = gpu.create_pipeline(
+        str(RNN_SHADER_DIR / 'bce_loss.comp'),
+        buffers=[logits_buf, target_buf, grad_acc_buf, loss_acc_buf],
+        push_constant_size=12,
+    )
+    push = struct.pack('2if', batch_size, target_offset_floats, t_inv)
+    n_workgroups = (batch_size + 31) // 32
+    gpu.dispatch(pipeline, n_workgroups, push_constants=push)
+
+
 def cross_entropy_dispatch(gpu: VkCompute, logits_buf: VkBuffer,
                             target_buf: VkBuffer, grad_acc_buf: VkBuffer,
                             loss_acc_buf: VkBuffer,
