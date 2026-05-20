@@ -1169,7 +1169,7 @@ def evolve_loops(
     n_generations: int = 5,
     n_offspring: int = 10,
     n_survivors: int = 5,
-    fresh_blood_ratio: float = 0.3,
+    fresh_blood_ratio: float = 0.5,
     max_overlap: float = 0.5,
     pool_size: int = 30,
     loop_length: int = 6,
@@ -1186,9 +1186,19 @@ def evolve_loops(
 
     Parameters
     ----------
+    n_offspring : int
+        Base offspring count. Scaled inversely with current genome
+        coverage per generation: effective n_offspring = n_offspring +
+        n_offspring/max(coverage, 0.01). At 25% coverage you get 5x the
+        base rate (50 if base is 10), tapering to 2x at full coverage —
+        push hard when uncovered genomes are abundant, settle to a
+        maintenance rate once we've saturated.
     fresh_blood_ratio : float
         Fraction of offspring slots reserved for randomly composed loops
         (not bred from existing parents). Prevents population collapse.
+        Default 0.5 — fresh-blood loops are the primary source of new
+        genome recruitment, while bred loops mostly recombine existing
+        parents. Coverage is built by fresh blood, maintained by both.
     max_overlap : float
         Maximum genome overlap allowed between a new loop and any existing
         loop. Offspring exceeding this are discarded.
@@ -1200,11 +1210,31 @@ def evolve_loops(
     Returns IDs of the final top loops.
     """
     rng = np.random.default_rng()
-
-    n_fresh = max(1, int(n_offspring * fresh_blood_ratio))
-    n_bred = n_offspring - n_fresh
+    base_n_offspring = n_offspring
 
     for gen in range(n_generations):
+        # Recompute per-generation: coverage changes as loops are added
+        # during the run, so n_offspring tapers naturally as we approach
+        # full coverage. Coverage = distinct genomes appearing in any
+        # surviving loop, over active (un-archived) genomes total.
+        n_active = lib.conn.execute(
+            "SELECT COUNT(*) FROM genomes WHERE COALESCE(archived, 0) = 0"
+        ).fetchone()[0]
+        n_covered = lib.conn.execute(
+            """SELECT COUNT(DISTINCT li.genome_id) FROM loop_items li
+                 JOIN genomes g ON g.id = li.genome_id
+                WHERE COALESCE(g.archived, 0) = 0"""
+        ).fetchone()[0]
+        coverage = (n_covered / n_active) if n_active else 0.0
+        # 1% floor caps the divide-by-zero / cold-start blowup at 100x the base.
+        n_offspring = base_n_offspring + int(base_n_offspring
+                                              / max(coverage, 0.01))
+        n_fresh = max(1, int(n_offspring * fresh_blood_ratio))
+        n_bred = n_offspring - n_fresh
+        log.info('[evolve_loops gen %d] coverage=%.1f%% (%d/%d) → '
+                 'n_offspring=%d (fresh=%d, bred=%d)',
+                 gen, coverage * 100, n_covered, n_active,
+                 n_offspring, n_fresh, n_bred)
         top = lib.top_loops(n=n_survivors * 2)
         if len(top) < 2:
             log.warning('Not enough loops to evolve (gen %d)', gen)

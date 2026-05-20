@@ -40,13 +40,26 @@ def load_dataset(data_dir: Path, max_files: int | None = None):
 
     dataset = []
     total_frames = 0
+    skipped = 0
     for i, f in enumerate(files):
-        with np.load(f) as d:
-            n_frames = len(d['spectrum'])
+        try:
+            with np.load(f) as d:
+                if 'spectrum' not in d.files:
+                    # Not a label file — e.g., the training checkpoint
+                    # (`beat_rnn_v1.npz`) is in the same directory as
+                    # the labels. Quietly skip.
+                    skipped += 1
+                    continue
+                n_frames = len(d['spectrum'])
+        except (KeyError, OSError, ValueError):
+            skipped += 1
+            continue
         dataset.append((f, n_frames))
         total_frames += n_frames
         if (i + 1) % report_every == 0 or i + 1 == n_total:
             print(f"  scanned {i + 1}/{n_total} ({total_frames} frames so far)")
+    if skipped:
+        print(f"  (skipped {skipped} non-label .npz files)")
 
     print(f"Scanned {len(dataset)} files, {total_frames} total frames "
           f"({total_frames / 93.75 / 60:.1f} minutes)")
