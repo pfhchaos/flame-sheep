@@ -62,29 +62,42 @@ class LazyFileCache:
     file × 64 cached, that's a ~640 MB working set instead of all-files-
     in-RAM (~170 GB for the full corpus).
 
-    Cache shared across train and validate so files don't repeatedly
-    reload between phases.
+    Thread-safe — accessed concurrently by the main training thread
+    (via validate()) and the background batch-prep thread that runs
+    materialize_batch() ahead of the GPU.
     """
 
     def __init__(self, max_files: int = 64):
+        import threading
         self.max_files = max_files
         self._cache: dict = {}
         self._order: list = []
+        self._lock = threading.Lock()
 
     def get(self, path):
         key = str(path)
-        if key in self._cache:
-            self._order.remove(key)
-            self._order.append(key)
-            return self._cache[key]
+        with self._lock:
+            if key in self._cache:
+                self._order.remove(key)
+                self._order.append(key)
+                return self._cache[key]
+        # Decompress outside the lock — the np.load call is the slow
+        # part, and holding the lock through it would serialize all
+        # cache misses. Re-check inside the lock after to avoid two
+        # threads loading the same file twice.
         d = np.load(path)
-        # Copy to plain ndarrays so the underlying npz file handle can close.
         arrays = (np.array(d['spectrum']), np.array(d['diff']), np.array(d['labels']))
-        self._cache[key] = arrays
-        self._order.append(key)
-        while len(self._cache) > self.max_files:
-            oldest = self._order.pop(0)
-            del self._cache[oldest]
+        with self._lock:
+            if key in self._cache:
+                # Another thread beat us to it; reuse theirs.
+                self._order.remove(key)
+                self._order.append(key)
+                return self._cache[key]
+            self._cache[key] = arrays
+            self._order.append(key)
+            while len(self._cache) > self.max_files:
+                oldest = self._order.pop(0)
+                del self._cache[oldest]
         return arrays
 
 
@@ -108,6 +121,64 @@ def make_chunks(dataset, chunk_len: int, batch_size: int, rng):
     for i in range(0, len(chunks) - batch_size + 1, batch_size):
         batches.append(chunks[i:i + batch_size])
     return batches
+
+
+class BatchPrepPipeline:
+    """Background thread that materializes + transposes batches ahead of GPU.
+
+    materialize_batch (load files via cache, slice chunks, concat
+    spec+diff) plus the (B, T, F) → (T, B, F) transpose is pure CPU work
+    that doesn't block on GPU compute. Running it on a background thread
+    lets the prep for batch N+1 overlap with the GPU work for batch N,
+    cutting the per-batch wall time by whatever the prep cost was.
+
+    Bounded queue (size 2 by default) so prep stays at most one batch
+    ahead — keeps memory pressure bounded and ensures the consumer
+    doesn't outrun the producer. Lock-free: just a queue.Queue under
+    the hood.
+
+    None sentinel signals end-of-iterator.
+    """
+
+    def __init__(self, batches, dataset, chunk_len: int,
+                 cache: LazyFileCache, max_queue: int = 2):
+        import queue, threading
+        self.batches = batches
+        self.dataset = dataset
+        self.chunk_len = chunk_len
+        self.cache = cache
+        self.queue: queue.Queue = queue.Queue(maxsize=max_queue)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        for batch_spec in self.batches:
+            if self._stop.is_set():
+                break
+            inputs, labels = materialize_batch(
+                batch_spec, self.dataset, self.chunk_len, self.cache)
+            inputs_TBF = np.ascontiguousarray(inputs.transpose(1, 0, 2))
+            labels_TBF = np.ascontiguousarray(labels.transpose(1, 0, 2))
+            self.queue.put((inputs_TBF, labels_TBF))
+        self.queue.put(None)  # end sentinel
+
+    def __iter__(self):
+        while True:
+            item = self.queue.get()
+            if item is None:
+                return
+            yield item
+
+    def stop(self):
+        """Signal the background thread to stop early."""
+        self._stop.set()
+        # Drain queue so producer can put the None sentinel and exit.
+        try:
+            while True:
+                self.queue.get_nowait()
+        except Exception:
+            pass
 
 
 def materialize_batch(batch_spec, dataset, chunk_len: int, cache: LazyFileCache):
@@ -264,19 +335,15 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
     # batch_size to each.
     linear_in, gru, linear_out = model.layers
 
-    for batch_idx, batch_spec in enumerate(batches):
-        inputs, labels = materialize_batch(batch_spec, dataset, chunk_len, cache)
-        # materialize_batch returns (B, T, F) layout. Transpose to (T, B, F)
-        # so that GRU-side offsets (t*B+b)*F and linear flat-batch indexing
-        # (which treats (t*B+b) as a single batch index) agree on layout.
-        # Critical: the prior commit uploaded (B, T, 3) labels but
-        # cross_entropy_dispatch was indexing as if (T, B, 3) — the loss
-        # was being computed against scrambled labels. (T, B, F) makes
-        # the layout consistent across all four GPU dispatches per batch.
-        inputs_TBF = np.ascontiguousarray(inputs.transpose(1, 0, 2))
-        labels_TBF = np.ascontiguousarray(labels.transpose(1, 0, 2))
-        B_actual = inputs.shape[0]
-        T = inputs.shape[1]
+    # Spin up a background thread that materializes + transposes batches
+    # ahead of the GPU. With queue size 2, prep can stay one batch ahead
+    # so the GPU never waits for CPU file-loading + numpy work.
+    prep = BatchPrepPipeline(batches, dataset, chunk_len, cache, max_queue=2)
+    n_batches = len(batches)
+
+    for batch_idx, (inputs_TBF, labels_TBF) in enumerate(prep):
+        B_actual = inputs_TBF.shape[1]
+        T = inputs_TBF.shape[0]
         BT = B_actual * T
 
         # Zero per-layer gradient accumulators and the loss/grad acc.
@@ -337,7 +404,7 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
         model.sgd_step(lr)
 
         if (batch_idx + 1) % 10 == 0:
-            print(f"    batch {batch_idx+1}/{len(batches)} loss={chunk_loss:.4f}")
+            print(f"    batch {batch_idx+1}/{n_batches} loss={chunk_loss:.4f}")
 
         # Mid-epoch validation: runs whenever val_interval seconds have
         # elapsed since the last validation. Wall-time-based instead of
@@ -350,7 +417,7 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
             val_loss, val_acc = validate(model, gpu, val_batches,
                                          chunk_len, in_buf, val_data, cache,
                                          max_batches=val_sample_size)
-            print(f"    [mid-epoch +{elapsed_min:.1f}min] batch {batch_idx+1}/{len(batches)}  "
+            print(f"    [mid-epoch +{elapsed_min:.1f}min] batch {batch_idx+1}/{n_batches}  "
                   f"val_loss={val_loss:.4f}  val_acc={val_acc:.3f}  "
                   f"(sampled {val_sample_size}/{len(val_batches)} val batches)")
             if val_loss < best_val_state[0]:
