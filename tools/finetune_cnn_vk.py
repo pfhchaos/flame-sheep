@@ -223,23 +223,43 @@ def load_training_pairs(db_path: str, mode: str = 'mixed') -> tuple[list[tuple[i
             l = rng.choice(disliked_ids)
             thumbs_pairs.append((w, l))
 
+    # Per-pair weights. Synthesized thumbs pairs from K liked × M disliked
+    # carry only K+M independent judgments total — each pair is worth
+    # (K+M)/(K*M) effective samples. A real pairwise compare is 1 effective
+    # sample. Ratio of per-pair informational value:
+    #     w_real / w_synth = K*M / (K+M)
+    # We normalize synth=1.0 and scale real up. With K=60 M=146 that's
+    # 60*146/206 = 42.5x. Without this weighting, the K*M synthesized pairs
+    # would dominate the loss by row count despite carrying less signal.
+    # See alter-ego analysis + Bradley-Terry / effective-sample-size theory.
+    K = len(liked_ids)
+    M = len(disliked_ids)
+    if K > 0 and M > 0:
+        real_weight = K * M / (K + M)
+    else:
+        real_weight = 1.0
+
+    pairwise_triples = [(w, l, real_weight) for (w, l) in pairwise_pairs]
+    thumbs_triples = [(w, l, 1.0) for (w, l) in thumbs_pairs]
+
     if mode == 'thumbs':
-        all_pairs = thumbs_pairs
+        all_pairs = thumbs_triples
     elif mode == 'pairwise':
-        all_pairs = pairwise_pairs
+        all_pairs = pairwise_triples
     else:  # mixed
-        all_pairs = pairwise_pairs + thumbs_pairs
+        all_pairs = pairwise_triples + thumbs_triples
     rng.shuffle(all_pairs)
 
     conn.close()
 
     stats = {
         'pairwise': len(pairwise_pairs),
-        'thumbs_liked': len(liked_ids),
-        'thumbs_disliked': len(disliked_ids),
+        'thumbs_liked': K,
+        'thumbs_disliked': M,
         'thumbs_pairs': len(thumbs_pairs),
         'total': len(all_pairs),
         'mode': mode,
+        'real_pair_weight': real_weight,
     }
     return all_pairs, stats
 
@@ -438,8 +458,14 @@ def main():
                 continue
 
             B = len(batch)
-            winner_ids = [w for w, _ in batch]
-            loser_ids = [l for _, l in batch]
+            # Pairs are now (winner_id, loser_id, weight) triples — weight
+            # is 1.0 for synthesized thumbs pairs, K*M/(K+M) for real
+            # pairwise compares. Without it, synthesized pairs dominate
+            # the loss by row count despite carrying less independent
+            # information.
+            winner_ids = [t[0] for t in batch]
+            loser_ids = [t[1] for t in batch]
+            pair_weights = np.array([t[2] for t in batch], dtype=np.float32)
             w_imgs = store.get_batch(winner_ids)
             l_imgs = store.get_batch(loser_ids)
 
@@ -461,18 +487,29 @@ def main():
             l_out = model.forward(input_buf, BS, (4, IMG_SZ, IMG_SZ))
             l_scores = gpu.download(l_out, np.float32, BS)[:B]
 
-            # Margin ranking loss
+            # Weighted margin ranking loss. Each pair contributes its loss
+            # scaled by its weight, and the gradient is similarly scaled.
+            # Loss is reported as the weighted mean (sum of weighted losses
+            # divided by sum of weights) so it stays scale-comparable
+            # across batches with different pair-type mixes.
             margin = 1.0
             diff = w_scores - l_scores
-            losses = np.maximum(0, margin - diff)
-            loss = losses.mean()
+            raw_losses = np.maximum(0, margin - diff)
+            losses = raw_losses * pair_weights
+            weight_sum = float(pair_weights.sum())
+            loss = float(losses.sum() / max(weight_sum, 1e-9))
             if np.isnan(loss):
                 continue
-            active = (losses > 0).astype(np.float32)
+            # active * weight: pairs with no loss contribute zero gradient;
+            # pairs with loss contribute their weighted gradient. Divide
+            # by weight_sum (not B) so the gradient magnitude is the
+            # weighted-mean gradient.
+            active_w = ((raw_losses > 0).astype(np.float32) * pair_weights
+                        / max(weight_sum, 1e-9))
 
             # Backward loser (state from loser forward)
             d_l = np.zeros(BS, dtype=np.float32)
-            d_l[:B] = active / B
+            d_l[:B] = active_w
             gpu.upload(d_scores_buf, d_l)
             model.backward(d_scores_buf, BS)
 
@@ -480,7 +517,7 @@ def main():
             gpu.upload(input_buf, w_imgs)
             model.forward(input_buf, BS, (4, IMG_SZ, IMG_SZ))
             d_w = np.zeros(BS, dtype=np.float32)
-            d_w[:B] = -active / B
+            d_w[:B] = -active_w
             gpu.upload(d_scores_buf, d_w)
             model.backward(d_scores_buf, BS)
 
@@ -494,7 +531,12 @@ def main():
         correct = 0
         n_val = 0
         val_cache = {}
-        val_indices = sorted(set(w for w, _ in val_pairs) | set(l for _, l in val_pairs))
+        # val_pairs are (winner, loser, weight) triples — unpack the
+        # first two for accuracy. Weights aren't used in val_acc
+        # reporting; we treat each pair equally there since the question
+        # is "fraction of pairs ranked correctly" not "weighted loss."
+        val_indices = sorted(set(t[0] for t in val_pairs)
+                             | set(t[1] for t in val_pairs))
         for vi in range(0, len(val_indices), BS):
             batch_idx = val_indices[vi:vi + BS]
             batch_imgs = store.get_batch(batch_idx)
@@ -507,7 +549,7 @@ def main():
             scores = gpu.download(out, np.float32, BS)
             for j, idx in enumerate(batch_idx):
                 val_cache[idx] = scores[j]
-        for w_id, l_id in val_pairs:
+        for w_id, l_id, _ in val_pairs:
             if w_id in val_cache and l_id in val_cache:
                 if val_cache[w_id] > val_cache[l_id]:
                     correct += 1

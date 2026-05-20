@@ -1176,6 +1176,90 @@ class Library:
         self.conn.commit()
         return new_gen
 
+    def retrain_recommendation(self,
+                               fixed_threshold: int = 2000,
+                               relative_threshold: float = 1.5,
+                               cutover_total: int = 10_000) -> dict:
+        """Heuristic for whether enough new judgments warrant a new model gen.
+
+        Each thumb (rating row) and each compare-mode pair counts as one
+        judgment, since they carry equivalent independent information
+        per click (a thumb is one absolute judgment about a single
+        genome; a compare is one relative judgment between two). The
+        K*M synthesized pair count from thumbs is NOT what's measured
+        here — that's a redundancy-inflated number; we care about
+        independent observations.
+
+        Two phases:
+        - Early: fixed_threshold (default 2000) new judgments. Below
+          ~10K total observations the absolute count matters more than
+          the ratio, because each judgment has high marginal value.
+        - Late: relative_threshold * judgments_prev_gen. Once data is
+          plentiful, retraining frequency scales with the accumulated
+          base to amortize compute cost against marginal model gain.
+
+        cutover_total: switch from fixed to relative once total all-gen
+        judgments cross this many.
+
+        Returns a dict suitable for logging — current_gen, this_gen_count,
+        threshold, should_retrain, and a human-readable message.
+        """
+        gen = self.get_current_generation()
+        thumbs_this = self.conn.execute(
+            "SELECT COUNT(*) FROM ratings WHERE generation=? AND target_type='genome'",
+            (gen,)
+        ).fetchone()[0]
+        pairwise_this = self.conn.execute(
+            "SELECT COUNT(*) FROM pairwise_ratings WHERE generation=?",
+            (gen,)
+        ).fetchone()[0]
+        judgments_this = thumbs_this + pairwise_this
+
+        # Previous generation's total judgments for the relative threshold.
+        prev_thumbs = self.conn.execute(
+            "SELECT COUNT(*) FROM ratings WHERE generation=? AND target_type='genome'",
+            (gen - 1,)
+        ).fetchone()[0] if gen > 0 else 0
+        prev_pairwise = self.conn.execute(
+            "SELECT COUNT(*) FROM pairwise_ratings WHERE generation=?",
+            (gen - 1,)
+        ).fetchone()[0] if gen > 0 else 0
+        judgments_prev = prev_thumbs + prev_pairwise
+
+        # All-generations total drives the phase choice.
+        total = self.conn.execute(
+            "SELECT COUNT(*) FROM ratings WHERE target_type='genome'"
+        ).fetchone()[0] + self.conn.execute(
+            "SELECT COUNT(*) FROM pairwise_ratings"
+        ).fetchone()[0]
+
+        if total < cutover_total:
+            threshold = fixed_threshold
+            mode = 'fixed'
+        else:
+            threshold = max(fixed_threshold,
+                            int(relative_threshold * max(judgments_prev, 1)))
+            mode = 'relative'
+
+        should = judgments_this >= threshold
+
+        msg = (f'gen {gen}: {judgments_this} new judgments '
+               f'({thumbs_this} thumbs + {pairwise_this} pairwise), '
+               f'threshold={threshold} ({mode}, total={total}), '
+               f'{"RETRAIN RECOMMENDED" if should else "more data needed"}')
+        return {
+            'current_gen': gen,
+            'judgments_this_gen': judgments_this,
+            'thumbs_this_gen': thumbs_this,
+            'pairwise_this_gen': pairwise_this,
+            'judgments_prev_gen': judgments_prev,
+            'all_gen_total': total,
+            'threshold': threshold,
+            'threshold_mode': mode,
+            'should_retrain': should,
+            'message': msg,
+        }
+
     def load_genome(self, genome_id: int) -> Genome:
         """Load a genome by ID.
 
