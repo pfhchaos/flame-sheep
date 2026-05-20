@@ -207,7 +207,9 @@ def main():
     avg_loss = total_loss / max(len(val_batches) * T, 1)
     accuracy = float(np.trace(confusion) / max(confusion.sum(), 1))
 
-    class_names = ('non-beat', 'beat', 'downbeat')
+    # BeatNet output channel order: (downbeat, beat, non-beat). Class 2
+    # is the majority (~77-91% support per file) which has to be non-beat.
+    class_names = ('downbeat', 'beat', 'non-beat')
     per_class = {}
     for c, name in enumerate(class_names):
         tp = int(confusion[c, c])

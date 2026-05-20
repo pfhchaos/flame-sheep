@@ -86,7 +86,7 @@ Distilled from BeatNet (~400K params LSTM+particle filter) into a tiny streaming
 - Input: 216 features per frame (108-bin CQT spectrum + 108-bin first derivative)
 - Linear projection (216 → 32)
 - GRU(32 → 48 hidden, 1 layer)
-- Linear (48 → 3) → softmax (non-beat / beat / downbeat)
+- Linear (48 → 3) → softmax (downbeat / beat / non-beat — channel order matches BeatNet output; class 2 is the majority non-beat class)
 - ~25K params, target inference cost ~10μs per frame on CPU
 
 ## Training data

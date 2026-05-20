@@ -315,6 +315,7 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
                 in_buf, grad_buf, dataset, cache: LazyFileCache,
                 label_seq_buf, loss_acc_buf, grad_acc_buf,
                 input_seq_buf, gru_seq_out_buf, gru_upstream_buf,
+                class_weights_buf, focal_gamma: float = 0.0,
                 val_batches=None, val_data=None, val_interval: float = 0.0,
                 val_sample_size: int = 200,
                 best_val_state=None, save_path: Path | None = None,
@@ -408,12 +409,16 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
         if profile:
             phase_total['forward'] += time.monotonic() - t0; t0 = time.monotonic()
 
-        # cross_entropy: per-(t,b) loss + grad in one dispatch
+        # cross_entropy: per-(t,b) loss + grad in one dispatch, with
+        # per-class weighting and focal loss to fight majority-class
+        # collapse on imbalanced beat-detection labels.
         cross_entropy_dispatch(
             gpu, linear_out.output_buf, label_seq_buf,
             grad_acc_buf, loss_acc_buf,
+            class_weights_buf,
             batch_size=BT, n_classes=N_CLASSES,
             target_offset_floats=0, t_inv=1.0,
+            focal_gamma=focal_gamma,
         )
         loss_per = gpu.download(loss_acc_buf, np.float32, BT)
         chunk_loss = float(loss_per.mean())
@@ -539,7 +544,11 @@ def validate(model, gpu, batches, chunk_len: int, in_buf,
     accuracy = float(np.trace(confusion) / max(total, 1))
 
     # Per-class precision, recall, F1.
-    class_names = ('non-beat', 'beat', 'downbeat')
+    # BeatNet output order is (downbeat, beat, non-beat) — verified
+    # empirically: class 2 is the dominant 77-91% support class in
+    # every file, which has to be non-beat in any music dataset.
+    # The generate_beat_labels.py docstring was reversed.
+    class_names = ('downbeat', 'beat', 'non-beat')
     per_class = {}
     for c, name in enumerate(class_names):
         tp = int(confusion[c, c])
@@ -630,6 +639,20 @@ def main():
                              'wait_prep | reset | upload | forward | loss | '
                              'backward | sgd. Shows where wall-clock time is '
                              'actually going so you can target the biggest knob.')
+    parser.add_argument('--class-weights', type=str, default='auto',
+                        help='Per-class loss weights. "auto" (default) computes '
+                             'sqrt-inverse-frequency from a 50-file sample of '
+                             'the training data (normalized so majority class '
+                             '= 1.0). Or pass three comma-separated floats '
+                             '"6.8,3.9,1.0". Combats majority-class collapse '
+                             'on heavily-imbalanced beat-detection labels.')
+    parser.add_argument('--focal-gamma', type=float, default=2.0,
+                        help='Focal-loss exponent. 0 disables (standard '
+                             'weighted CE). 2.0 (Lin 2017 default) modulates '
+                             'each example by (1-p_true)^gamma, so confident-'
+                             'correct predictions barely contribute. Pairs '
+                             'with class weights to address both '
+                             'under-representation and over-confidence at once.')
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -709,11 +732,54 @@ def main():
     loss_acc_buf = gpu.create_buffer(BT * 4)                    # (B*T,) loss per (t, b)
     grad_acc_buf = gpu.create_buffer(BT * 3 * 4)                # (T, B, 3) grad on logits
     gru_upstream_buf = gpu.create_buffer(args.batch_size * args.hidden * 4)  # (B, H) — last-step slice
+    class_weights_buf = gpu.create_buffer(3 * 4)                # (3,) per-class loss weights
 
     # Lazy file cache shared across train + validate. Holds the N most
     # recently used files; cap at ~64 files (~640 MB) which is enough
     # working set for typical chunk shuffles without thrashing.
     file_cache = LazyFileCache(max_files=getattr(args, 'file_cache_size', 64))
+
+    # Compute per-class loss weights. With class imbalance like beat
+    # detection (~91% non-beat, ~7% beat, ~2% downbeat), uniform weights
+    # let the model collapse to "always predict majority class" and
+    # never learn the minority signal. sqrt(inv_freq) is the standard
+    # softened alternative to pure inverse-frequency (40x, 14x) — it
+    # corrects the imbalance without the gradient instability of
+    # extreme per-element weights.
+    if args.class_weights == 'auto':
+        # Sample frame-class distribution from the training data.
+        # 50 random files is plenty — beat distribution is roughly
+        # stable across the corpus.
+        sample_size = min(50, len(train_data))
+        sample_files = rng.choice(len(train_data), sample_size, replace=False)
+        class_counts = np.zeros(3, dtype=np.int64)
+        for idx in sample_files:
+            path, _ = train_data[idx]
+            with np.load(path) as d:
+                lbls = d['labels']  # (T, 3) soft
+                argmax = lbls.argmax(axis=1)
+                for c in range(3):
+                    class_counts[c] += int((argmax == c).sum())
+        freq = class_counts / max(class_counts.sum(), 1)
+        weights = 1.0 / np.sqrt(np.maximum(freq, 1e-6))
+        # Normalize so the most frequent class has weight = 1.
+        weights = (weights / weights.min()).astype(np.float32)
+        log_msg = (f'auto class weights from {sample_size}-file sample: '
+                   f'counts={class_counts.tolist()} freq={freq.round(4).tolist()} '
+                   f'weights={weights.round(3).tolist()}')
+    else:
+        weights = np.array(
+            [float(x) for x in args.class_weights.split(',')],
+            dtype=np.float32)
+        if len(weights) != 3:
+            print(f'--class-weights must be 3 comma-separated floats '
+                  f'or "auto", got {args.class_weights}', file=sys.stderr)
+            sys.exit(1)
+        log_msg = f'manual class weights: {weights.tolist()}'
+    print(log_msg)
+    if args.focal_gamma > 0:
+        print(f'focal loss enabled: gamma={args.focal_gamma}')
+    gpu.upload(class_weights_buf, weights)
 
     # Training loop. best_val_state is a one-element list so train_epoch
     # can mutate it across mid-epoch checkpoint saves and the main loop
@@ -730,6 +796,7 @@ def main():
                                  train_data, file_cache,
                                  label_seq_buf, loss_acc_buf, grad_acc_buf,
                                  input_seq_buf, gru_seq_out_buf, gru_upstream_buf,
+                                 class_weights_buf, args.focal_gamma,
                                  val_batches=val_batches, val_data=val_data,
                                  val_interval=args.val_interval,
                                  val_sample_size=args.val_sample_size,

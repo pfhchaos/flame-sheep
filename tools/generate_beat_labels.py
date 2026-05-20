@@ -6,7 +6,8 @@ Requires Python 3.10 (madmom compatibility). Run with:
 
 For each audio file:
   1. Compute CQT spectrum at our native hop rate (48kHz, 512 hop)
-  2. Run BeatNet to get per-frame [non-beat, beat, downbeat] soft labels
+  2. Run BeatNet to get per-frame [downbeat, beat, non-beat] soft labels
+     (channel 0 = downbeat, 2 = non-beat; class 2 is the majority class)
   3. Resample BeatNet labels to align with our frame rate
   4. Save as .npz: spectrum + diff + labels + metadata
 """
