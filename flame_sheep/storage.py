@@ -1696,6 +1696,14 @@ class Library:
 
         Loop votes are clamped to -1/0/+1 (replaces previous vote).
         Voting on a loop also propagates the vote to all its genomes.
+
+        Direct genome thumbs-up additionally triggers immediate breeding
+        of ~7 jittered children (see breed_thumbsup_children). Provides
+        fast feedback that the CNN scorer can't supply until retraining —
+        instead of waiting for gen N+1 to learn the new preference, we
+        extend the active population with near-neighbors of the liked
+        genome right now. Loop-propagated votes don't trigger breeding
+        (a 6-genome loop upvote would spawn 42 children — overkill).
         """
         if target_type == 'loop':
             # Clamp: replace any existing vote on this loop
@@ -1722,6 +1730,52 @@ class Library:
                     ('genome', gid, rating, 'loop', gen),
                 )
         self.conn.commit()
+
+        # Thumbs-up breeder — direct genome upvotes only.
+        if target_type == 'genome' and rating > 0:
+            try:
+                children = self.breed_thumbsup_children(target_id)
+                log.info('[thumbsup-breed] genome #%d -> %d children %s',
+                         target_id, len(children), children)
+            except Exception:
+                log.exception('[thumbsup-breed] failed for genome #%d', target_id)
+
+    def breed_thumbsup_children(self, parent_genome_id: int,
+                                n_children: int = 7,
+                                jitter_scale: float = 0.1) -> list[int]:
+        """Breed N jittered children of a thumbs-upped genome.
+
+        Each child is a small perturbation of the parent (Genome.jitter
+        with the given scale). Children are inserted into the genomes
+        table with no render — the gpu_render_worker will pick them up
+        and render them in the background. Once rendered, they become
+        eligible candidates for compare-mode pairing and CNN scoring.
+
+        Children where survey_and_correct() rejects the framing (e.g.,
+        attractor escaped viewport from too-aggressive jitter) are
+        silently skipped; the n_children request is a target, not a
+        guarantee.
+
+        Returns the list of new genome IDs.
+
+        Self-limiting: near-duplicate offspring will be deduped at the
+        next generation boundary (or whenever similarity-pruning runs).
+        """
+        parent = self.load_genome(parent_genome_id)
+        rng = np.random.default_rng()
+        new_ids: list[int] = []
+        for _ in range(n_children):
+            child = parent.jitter(rng, scale=jitter_scale)
+            try:
+                if not child.survey_and_correct():
+                    continue  # framing/stability rejection
+            except Exception:
+                log.debug('[thumbsup-breed] survey failed, skipping a child',
+                          exc_info=True)
+                continue
+            gid = self.save_genome(child)
+            new_ids.append(gid)
+        return new_ids
 
     def net_rating(self, target_type: str, target_id: int) -> int:
         """Sum of ratings for a target."""
