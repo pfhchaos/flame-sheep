@@ -1694,16 +1694,20 @@ class Library:
     def rate(self, target_type: str, target_id: int, rating: int) -> None:
         """Record a like (+1) or dislike (-1).
 
-        Loop votes are clamped to -1/0/+1 (replaces previous vote).
-        Voting on a loop also propagates the vote to all its genomes.
+        Loop votes are clamped to -1/0/+1 (replaces previous vote on
+        the loop). Loop votes do NOT propagate to constituent genomes:
+        a loop rating expresses opinion about the loop's gestalt
+        (motion, flow, transition coherence) which is genuinely
+        different from per-genome aesthetic judgment. Propagating
+        loop ratings to genome ratings would mislabel transitional
+        or flat individual genomes as "liked" just because they
+        appeared in a liked loop, and vice versa — exactly the
+        structural label noise that poisoned gen-0 thumbs training
+        and made the CNN scorer's random-init landing point heavily
+        anti-correlated with quality.
 
         Direct genome thumbs-up additionally triggers immediate breeding
-        of ~7 jittered children (see breed_thumbsup_children). Provides
-        fast feedback that the CNN scorer can't supply until retraining —
-        instead of waiting for gen N+1 to learn the new preference, we
-        extend the active population with near-neighbors of the liked
-        genome right now. Loop-propagated votes don't trigger breeding
-        (a 6-genome loop upvote would spawn 42 children — overkill).
+        of ~7 jittered children (see breed_thumbsup_children).
         """
         if target_type == 'loop':
             # Clamp: replace any existing vote on this loop
@@ -1720,15 +1724,6 @@ class Library:
             'VALUES (?, ?, ?, ?, ?)',
             (target_type, target_id, rating, 'direct', gen),
         )
-        # Propagate loop votes to constituent genomes
-        if target_type == 'loop':
-            genome_ids = self.loop_genome_ids(target_id)
-            for gid in genome_ids:
-                self.conn.execute(
-                    'INSERT INTO ratings (target_type, target_id, rating, source, generation) '
-                    'VALUES (?, ?, ?, ?, ?)',
-                    ('genome', gid, rating, 'loop', gen),
-                )
         self.conn.commit()
 
         # Thumbs-up breeder — direct genome upvotes only.
