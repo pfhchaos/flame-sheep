@@ -448,12 +448,15 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
             elapsed_min = (time.monotonic() - last_val_time) / 60.0
             # Sample a small subset of val for speed; end-of-epoch will run
             # the full val set for a high-confidence accuracy reading.
-            val_loss, val_acc = validate(model, gpu, val_batches,
-                                         chunk_len, in_buf, val_data, cache,
-                                         max_batches=val_sample_size)
+            val_loss, val_acc, val_metrics = validate(
+                model, gpu, val_batches, chunk_len, in_buf,
+                val_data, cache, max_batches=val_sample_size)
             print(f"    [mid-epoch +{elapsed_min:.1f}min] batch {batch_idx+1}/{n_batches}  "
                   f"val_loss={val_loss:.4f}  val_acc={val_acc:.3f}  "
                   f"(sampled {val_sample_size}/{len(val_batches)} val batches)")
+            # Per-class metrics so we can catch class-imbalance illusions
+            # (e.g., 90% acc that's just "always predict non-beat").
+            print(format_val_metrics(val_metrics))
             if val_loss < best_val_state[0]:
                 best_val_state[0] = val_loss
                 # next_epoch=epoch_num: still mid-epoch_num, retry it on resume.
@@ -477,13 +480,20 @@ def validate(model, gpu, batches, chunk_len: int, in_buf,
     val accuracy reading, not a high-confidence number. End-of-epoch
     validation passes max_batches=None to run the full set for an
     honest checkpoint metric.
+
+    Returns (avg_loss, accuracy, metrics_dict). metrics_dict has per-class
+    precision/recall/F1 and the 3x3 confusion matrix — beat detection is
+    heavily class-imbalanced (~90% non-beat frames), so plain accuracy
+    is misleading. A model that always predicts non-beat scores ~0.90
+    accuracy but has zero recall on the actually-useful classes.
     """
     if max_batches is not None and max_batches < len(batches):
         import random
         batches = random.sample(batches, max_batches)
     losses = []
-    correct_beats = 0
-    total_beats = 0
+    # 3x3 confusion matrix: rows = true class, cols = predicted class.
+    # confusion[t][p] = count of frames where true=t and pred=p.
+    confusion = np.zeros((3, 3), dtype=np.int64)
 
     for batch_spec in batches:
         inputs, labels = materialize_batch(batch_spec, dataset, chunk_len, cache)
@@ -507,12 +517,61 @@ def validate(model, gpu, batches, chunk_len: int, in_buf,
 
             pred_class = logits.argmax(axis=1)
             true_class = target.argmax(axis=1)
-            correct_beats += (pred_class == true_class).sum()
-            total_beats += B
+            # Vectorized confusion-matrix update.
+            for tc, pc in zip(true_class, pred_class):
+                confusion[tc, pc] += 1
 
-    avg_loss = np.mean(losses) if losses else 0.0
-    accuracy = correct_beats / max(total_beats, 1)
-    return avg_loss, accuracy
+    avg_loss = float(np.mean(losses)) if losses else 0.0
+    total = int(confusion.sum())
+    accuracy = float(np.trace(confusion) / max(total, 1))
+
+    # Per-class precision, recall, F1.
+    class_names = ('non-beat', 'beat', 'downbeat')
+    per_class = {}
+    for c, name in enumerate(class_names):
+        tp = int(confusion[c, c])
+        fp = int(confusion[:, c].sum() - tp)
+        fn = int(confusion[c, :].sum() - tp)
+        support = int(confusion[c, :].sum())
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+        per_class[name] = {
+            'precision': precision, 'recall': recall, 'f1': f1,
+            'support': support, 'tp': tp, 'fp': fp, 'fn': fn,
+        }
+    # Baseline: what would "always predict the majority class" score?
+    class_supports = [int(confusion[c, :].sum()) for c in range(3)]
+    majority_class = int(np.argmax(class_supports))
+    majority_baseline = class_supports[majority_class] / max(total, 1)
+    metrics = {
+        'confusion': confusion.tolist(),
+        'per_class': per_class,
+        'class_names': class_names,
+        'majority_baseline': majority_baseline,
+        'majority_class': class_names[majority_class],
+    }
+    return avg_loss, accuracy, metrics
+
+
+def format_val_metrics(metrics: dict) -> str:
+    """One-line + per-class precision/recall summary suitable for logging."""
+    cm = metrics['confusion']
+    names = metrics['class_names']
+    lines = []
+    lines.append(f"  baseline (always {metrics['majority_class']}): "
+                 f"{metrics['majority_baseline']:.3f}")
+    lines.append(f"  {'class':<10} {'precision':>10} {'recall':>10} {'f1':>10} {'support':>10}")
+    for name in names:
+        p = metrics['per_class'][name]
+        lines.append(f"  {name:<10} {p['precision']:>10.3f} {p['recall']:>10.3f} "
+                     f"{p['f1']:>10.3f} {p['support']:>10}")
+    lines.append(f"  confusion (rows=true, cols=pred):")
+    lines.append(f"             {' '.join(f'{n:>10}' for n in names)}")
+    for i, name in enumerate(names):
+        row = ' '.join(f'{cm[i][j]:>10}' for j in range(3))
+        lines.append(f"  {name:<10} {row}")
+    return '\n'.join(lines)
 
 
 def main():
@@ -664,12 +723,16 @@ def main():
                                  best_val_state=best_val_state,
                                  save_path=args.output, epoch_num=epoch,
                                  profile=args.profile)
-        val_loss, val_acc = validate(model, gpu, val_batches,
-                                     args.chunk_len, in_buf,
-                                     val_data, file_cache)
+        val_loss, val_acc, val_metrics = validate(
+            model, gpu, val_batches, args.chunk_len, in_buf,
+            val_data, file_cache)
 
         print(f"  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  "
               f"val_acc={val_acc:.3f}")
+        # End-of-epoch full-val pass — print per-class breakdown for an
+        # honest read of how the model is actually performing relative
+        # to the majority-class baseline.
+        print(format_val_metrics(val_metrics))
 
         # End-of-epoch save: store next_epoch=epoch+1 since this one is done.
         if val_loss < best_val_state[0]:
