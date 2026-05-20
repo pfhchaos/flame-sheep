@@ -21,7 +21,24 @@ from flame_sheep.vk_compute import VkCompute
 from flame_sheep.wallpaper_ml import build_beat_crnn, VkGRU
 
 
-def _scan_one(path: Path) -> tuple[Path, int] | None:
+def _read_npy_header_shape(path: Path) -> tuple[int, ...] | None:
+    """Read the shape of a packed .npy file from its header only."""
+    from numpy.lib import format as npy_fmt
+    try:
+        with open(path, 'rb') as f:
+            major, minor = npy_fmt.read_magic(f)
+            if (major, minor) == (1, 0):
+                shape, _, _ = npy_fmt.read_array_header_1_0(f)
+            elif (major, minor) == (2, 0):
+                shape, _, _ = npy_fmt.read_array_header_2_0(f)
+            else:
+                return None
+            return shape
+    except (OSError, ValueError):
+        return None
+
+
+def _scan_one_npz(path: Path) -> tuple[Path, int] | None:
     """Read spectrum length from a label .npz without decompressing the
     array. The .npy header inside the zip carries shape in its first
     ~128 bytes; DEFLATE stops there. ~50× faster than np.load()['spectrum'].
@@ -48,22 +65,44 @@ def _scan_one(path: Path) -> tuple[Path, int] | None:
         return None
 
 
-def load_dataset(data_dir: Path, max_files: int | None = None):
-    """Scan .npz label files and return list of (path, n_frames) tuples.
+def _scan_one_npy(path: Path) -> tuple[Path, int] | None:
+    """Read frame count from a packed (T, 217) .npy file's header."""
+    shape = _read_npy_header_shape(path)
+    if shape is None or len(shape) < 1:
+        return None
+    return (path, int(shape[0]))
 
-    Lazy: array data is NOT loaded here. The 7.5K-file beat corpus expands
-    to ~170 GB if all arrays are materialized — would OOM any reasonable
-    machine. Instead we record file paths + frame counts (cheap, just
-    reads each .npz's spectrum.npy header), and load actual arrays
-    on demand during batching via LazyFileCache.
+
+# Back-compat alias — early callers grep this name; keep it working.
+_scan_one = _scan_one_npz
+
+
+def load_dataset(data_dir: Path, max_files: int | None = None):
+    """Scan label files and return list of (path, n_frames) tuples.
+
+    Detects format automatically:
+    - If data_dir contains *.npy files, treat them as packed mmap files
+      (shape (T, 217), cols [spec(108), diff(108), beat_score(1)]).
+    - Else fall back to legacy *.npz scanning.
+
+    Lazy: array data is NOT loaded here.
     """
     import multiprocessing as mp
-    files = sorted(data_dir.glob('*.npz'))
+    npy_files = sorted(data_dir.glob('*.npy'))
+    if npy_files:
+        files = npy_files
+        scanner = _scan_one_npy
+        ext = 'npy'
+    else:
+        files = sorted(data_dir.glob('*.npz'))
+        scanner = _scan_one_npz
+        ext = 'npz'
+
     if max_files:
         files = files[:max_files]
 
     n_total = len(files)
-    print(f"Scanning {n_total} .npz files from {data_dir}...")
+    print(f"Scanning {n_total} .{ext} files from {data_dir}...")
     report_every = max(1, n_total // 20)
 
     dataset = []
@@ -72,7 +111,7 @@ def load_dataset(data_dir: Path, max_files: int | None = None):
     # imap (ordered) so the returned dataset is reproducible across runs.
     with mp.Pool() as pool:
         for i, result in enumerate(
-                pool.imap(_scan_one, files, chunksize=32)):
+                pool.imap(scanner, files, chunksize=32)):
             if result is None:
                 skipped += 1
             else:
@@ -82,7 +121,7 @@ def load_dataset(data_dir: Path, max_files: int | None = None):
                 print(f"  scanned {i + 1}/{n_total} "
                       f"({total_frames} frames so far)")
     if skipped:
-        print(f"  (skipped {skipped} non-label .npz files)")
+        print(f"  (skipped {skipped} non-label .{ext} files)")
 
     print(f"Scanned {len(dataset)} files, {total_frames} total frames "
           f"({total_frames / 93.75 / 60:.1f} minutes)")
@@ -90,18 +129,18 @@ def load_dataset(data_dir: Path, max_files: int | None = None):
 
 
 class LazyFileCache:
-    """LRU cache of decompressed .npz arrays, keyed by file path.
+    """LRU cache of file handles keyed by path. Handles two formats:
 
-    .npz is compressed zip, so np.load(mmap_mode='r') silently no-ops —
-    the data has to be decompressed into a real ndarray on access. This
-    cache holds the most-recently-used N files' (spec, diff, labels)
-    tuples, evicting oldest entries when the cache fills. At ~10 MB per
-    file × 64 cached, that's a ~640 MB working set instead of all-files-
-    in-RAM (~170 GB for the full corpus).
+    - Packed mmap .npy (shape (T, 217), cols [spec(108), diff(108),
+      beat_score(1)]): cached entry is a single np.memmap. Slicing
+      returns a view (~free), the OS page cache holds hot pages. Each
+      handle is one file descriptor — bound the LRU at max_files to
+      respect ulimit -n.
+    - Legacy .npz: cached entry is a dict of decompressed arrays
+      ({'spectrum', 'diff', 'labels', 'beat_score', ...}). Decompressing
+      is expensive so the cache earns its keep here.
 
-    Thread-safe — accessed concurrently by the main training thread
-    (via validate()) and the background batch-prep thread that runs
-    materialize_batch() ahead of the GPU.
+    Thread-safe.
     """
 
     def __init__(self, max_files: int = 64):
@@ -112,37 +151,35 @@ class LazyFileCache:
         self._lock = threading.Lock()
 
     def get(self, path):
-        """Returns a dict of all arrays in the .npz file.
-
-        Standard keys: 'spectrum', 'diff', 'labels'.
-        Optional: 'beat_score' (continuous beat-or-downbeat probability,
-        added by tools/add_beat_score_to_labels.py for the continuous
-        reformulation of training).
-        """
+        """Returns either a {key: ndarray} dict (legacy .npz) or a
+        single np.memmap (packed .npy). The materialize step branches
+        on which it got."""
         key = str(path)
         with self._lock:
             if key in self._cache:
                 self._order.remove(key)
                 self._order.append(key)
                 return self._cache[key]
-        # Decompress outside the lock — the np.load call is the slow
-        # part, and holding the lock through it would serialize all
-        # cache misses. Re-check inside the lock after to avoid two
-        # threads loading the same file twice.
-        d = np.load(path)
-        arrays = {k: np.array(d[k]) for k in d.files}
+        # Outside the lock — the load (decompress for .npz, mmap+header
+        # for .npy) is the slow part. Re-check inside the lock after
+        # to avoid two threads loading the same file twice.
+        if path.suffix == '.npy':
+            entry = np.load(path, mmap_mode='r')
+        else:
+            d = np.load(path)
+            entry = {k: np.array(d[k]) for k in d.files}
         with self._lock:
             if key in self._cache:
                 # Another thread beat us to it; reuse theirs.
                 self._order.remove(key)
                 self._order.append(key)
                 return self._cache[key]
-            self._cache[key] = arrays
+            self._cache[key] = entry
             self._order.append(key)
             while len(self._cache) > self.max_files:
                 oldest = self._order.pop(0)
                 del self._cache[oldest]
-        return arrays
+        return entry
 
 
 def make_chunks(dataset, chunk_len: int, batch_size: int, rng):

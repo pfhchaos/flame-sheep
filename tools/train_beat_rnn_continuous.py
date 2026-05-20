@@ -51,22 +51,36 @@ def materialize_batch_continuous(batch_spec, dataset, chunk_len: int,
 
     inputs: (B, T, 216) — spectrum + diff (unchanged from 3-class)
     targets: (B, T) — beat_score in [0, 1]
+
+    Dispatches on cache entry type:
+    - np.memmap (packed mmap .npy format): slice cols [:216] for input,
+      col 216 for target — zero copy until the final np.array() stacks
+      them into the batch tensors.
+    - dict (legacy .npz format): concat spectrum + diff per chunk.
     """
     batch_inputs = []
     batch_targets = []
     for file_idx, start in batch_spec:
         path, _ = dataset[file_idx]
-        arrs = cache.get(path)
-        if 'beat_score' not in arrs:
-            raise RuntimeError(
-                f'{path.name} has no beat_score key — run '
-                f'tools/add_beat_score_to_labels.py first to add it.')
-        spec, diff = arrs['spectrum'], arrs['diff']
-        beat_score = arrs['beat_score']
+        entry = cache.get(path)
         end = start + chunk_len
-        inp = np.concatenate([spec[start:end], diff[start:end]], axis=1)
-        batch_inputs.append(inp)
-        batch_targets.append(beat_score[start:end])
+        if isinstance(entry, np.memmap) or (
+                isinstance(entry, np.ndarray) and entry.ndim == 2
+                and entry.shape[1] == 217):
+            # Packed mmap format: (T, 217). View slicing is free.
+            batch_inputs.append(entry[start:end, :216])
+            batch_targets.append(entry[start:end, 216])
+        else:
+            # Legacy .npz format.
+            if 'beat_score' not in entry:
+                raise RuntimeError(
+                    f'{path.name} has no beat_score key — run '
+                    f'tools/add_beat_score_to_labels.py first.')
+            spec, diff = entry['spectrum'], entry['diff']
+            beat_score = entry['beat_score']
+            inp = np.concatenate([spec[start:end], diff[start:end]], axis=1)
+            batch_inputs.append(inp)
+            batch_targets.append(beat_score[start:end])
     return (
         np.array(batch_inputs, dtype=np.float32),
         np.array(batch_targets, dtype=np.float32),
