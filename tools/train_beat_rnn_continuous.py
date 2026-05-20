@@ -81,14 +81,21 @@ class ContinuousPrepPipeline:
     """
 
     def __init__(self, batches, dataset, chunk_len: int,
-                 cache: LazyFileCache, max_queue: int = 2):
+                 cache: LazyFileCache, max_queue: int = 2,
+                 n_workers: int = 8):
         import queue, threading
+        from concurrent.futures import ThreadPoolExecutor
         self.batches = batches
         self.dataset = dataset
         self.chunk_len = chunk_len
         self.cache = cache
         self.queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._stop = threading.Event()
+        # n_workers threads decompress .npz files in parallel during
+        # prefetch. zipfile's zlib calls release the GIL, so this scales
+        # nearly linearly until I/O saturation. Cache size must be at
+        # least batch_size to avoid intra-batch eviction.
+        self._executor = ThreadPoolExecutor(max_workers=n_workers)
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -96,6 +103,12 @@ class ContinuousPrepPipeline:
         for batch_spec in self.batches:
             if self._stop.is_set():
                 break
+            # Prefetch unique files in parallel before slicing.
+            # cache.get() is thread-safe; concurrent calls to the same
+            # path coalesce (second waiter reuses the first's result).
+            unique_paths = list({self.dataset[file_idx][0]
+                                 for file_idx, _ in batch_spec})
+            list(self._executor.map(self.cache.get, unique_paths))
             inputs, targets = materialize_batch_continuous(
                 batch_spec, self.dataset, self.chunk_len, self.cache)
             inputs_TBF = np.ascontiguousarray(inputs.transpose(1, 0, 2))
@@ -117,6 +130,7 @@ class ContinuousPrepPipeline:
                 self.queue.get_nowait()
         except Exception:
             pass
+        self._executor.shutdown(wait=False)
 
 
 def peak_pick(scores: np.ndarray, threshold: float = 0.3,
@@ -278,7 +292,8 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
                            val_sample_size: int = 50,
                            best_val_state=None,
                            save_path: Path | None = None,
-                           epoch_num: int = 0):
+                           epoch_num: int = 0,
+                           prep_workers: int = 8):
     """Train one epoch in continuous mode (single output channel, BCE)."""
     losses = []
     mid_epoch_val_active = (val_batches and val_data is not None
@@ -289,7 +304,7 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
     linear_in, gru, linear_out = model.layers
 
     prep = ContinuousPrepPipeline(batches, dataset, chunk_len, cache,
-                                   max_queue=2)
+                                   max_queue=2, n_workers=prep_workers)
     n_batches = len(batches)
 
     prep_iter = iter(prep)
@@ -381,7 +396,19 @@ def main():
                         help='Threshold for peak-picking the predicted '
                              'continuous score during validation (default 0.3)')
     parser.add_argument('--no-resume', action='store_true')
+    parser.add_argument('--file-cache-size', type=int, default=512,
+                        help='Max .npz files held decompressed in RAM. '
+                             'Each file is ~10 MB. Must be >= batch_size to '
+                             'avoid intra-batch eviction (default 512).')
+    parser.add_argument('--prep-workers', type=int, default=8,
+                        help='Threads decompressing .npz files in parallel '
+                             'inside the prep pipeline (default 8).')
     args = parser.parse_args()
+    if args.file_cache_size < args.batch_size:
+        print(f'WARN: --file-cache-size ({args.file_cache_size}) < '
+              f'--batch-size ({args.batch_size}); bumping cache to batch size.',
+              file=sys.stderr)
+        args.file_cache_size = args.batch_size
 
     rng = np.random.default_rng(args.seed)
     dataset = load_dataset(args.data_dir, args.max_files)
@@ -442,7 +469,7 @@ def main():
     loss_acc_buf = gpu.create_buffer(BT * 4)
     grad_acc_buf = gpu.create_buffer(BT * 4)           # (T, B) grad on logit
 
-    file_cache = LazyFileCache(max_files=64)
+    file_cache = LazyFileCache(max_files=args.file_cache_size)
 
     best_val_state = [best_val_loss]
     for epoch in range(start_epoch, args.epochs):
@@ -463,6 +490,7 @@ def main():
             val_sample_size=args.val_sample_size,
             best_val_state=best_val_state,
             save_path=args.output, epoch_num=epoch,
+            prep_workers=args.prep_workers,
         )
         val_loss, val_f1, val_metrics = validate_continuous(
             model, gpu, val_batches, args.chunk_len, in_buf,
