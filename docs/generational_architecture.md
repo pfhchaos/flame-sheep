@@ -56,16 +56,30 @@ All new ratings auto-stamp with the current counter value. The trainer reads the
 
 A genome that survives multiple generations can be rated multiple times — once per generation, recording different judgments at different points in the population's evolution. Same genome can be liked-in-gen-5 and disliked-in-gen-7; both ratings are individually valid statements about different contexts.
 
+## Breeding sources
+
+The active population is shaped by multiple breeders that contribute alongside the gen-boundary bulk event:
+
+- **Intermittent evolves** (every 5 votes): CNN-score-guided breeding, broad exploration. Keeps the compare-mode candidate pool fresh during a generation.
+- **Graph-completeness breeding**: when an isolated genome appears in the transition graph (region of variation space with no neighbors), breeds candidates to fill the gap. Can produce intentionally low-CNN-score genomes — they exist to maintain structural coverage, not taste alignment.
+- **Thumbs-up immediate breeding** (shipped, 7 children per upvote): when the user direct-thumbs-up a genome (`Library.rate('genome', id, +1)`), `Library.breed_thumbsup_children` immediately jitters 7 copies of the parent and saves them to the library. They land without renders; `gpu_render_worker` picks them up in the background. Provides fast feedback that the CNN scorer can't otherwise supply until retraining. Self-limiting because near-duplicate offspring will be deduped at the next gen boundary. Loop-propagated genome votes (`source='loop'`) don't trigger breeding — a 6-genome loop upvote would spawn 42 children, which is too many for a single user action.
+- **Gen-boundary bulk**: at generation transitions, breed a large batch using the freshly-trained model's scores as parent fitness. Batch size scales with how much the new model disagrees with the old — more disagreement implies more unknown territory to explore.
+
+Tagging each new genome with its origin (intermittent / graph / upvote-child / bulk) is useful for analysis but not required for training correctness.
+
 ## Generation boundary trigger
 
-Generations end when there's enough new training data to justify retraining. Candidate formula:
+Total-judgement-count threshold: retrain when accumulated judgements since the last retrain hit a threshold derived from the previous generation's count. Judgements include thumbs-up + thumbs-down + compare-mode pairs.
 
-```
-trigger_score = (thumbs_up_this_gen × thumbs_down_this_gen) / N
-              + (pairwise_count_now - pairwise_count_at_last_generation_start)
-```
+Current implementation (`Library.retrain_recommendation()`):
+- Below 10K total judgements: fixed threshold of 2000 new judgements per generation (linear ramp)
+- Above 10K total: 1.5x of the previous generation's increment (geometric spacing)
 
-The thumbs term requires balanced ratings (need both classes for synthesis to produce pairs). The pairwise term captures new comparison information directly. Threshold tuned empirically — start with "enough to noticeably move val accuracy."
+The early-linear phase is appropriate when each judgement carries high relative weight against the dataset size. Geometric spacing kicks in once the dataset is mature enough that absolute count matters more than ratio.
+
+Long-tail consideration: at very large judgement counts the 1.5x interval grows uncomfortably long. Acceptable in principle (mature taste should need less retraining) but worth capping at some maximum once we have evidence about what's enough.
+
+The earlier `(K*M)/N + new_pairwise` formulation was proposed as a candidate but not adopted. Class balance shows up in the *value* of the resulting training data (via Pair weighting, below) rather than in the trigger decision.
 
 ## Schema changes
 
@@ -139,13 +153,58 @@ At thousands of thumbs in each class, synthesized pairs become
 nearly worthless per-pair vs real pairwise — but you also have
 massive thumb counts so the absolute information is still there.
 
-## Implementation notes
+## Generation boundary pipeline
+
+When the trigger fires, the orchestrator runs in this order:
+
+1. **Train** new model on accumulated data
+2. **Rescore** active population with the new model
+3. **Breed** the bulk batch using new scores as parent fitness
+4. **Score** the new bred genomes
+5. **Dedup** of near-duplicate genomes via variation-aware distance (the transition graph metric, which is itself perceptual — it scores how visible the morph between two genomes looks). For each near-pair below the "minimum visible jump" threshold, keep the higher-scored genome. Threshold unresolved (see below).
+6. **Rank-prune** to match breed count (order of magnitude). Combined prune-priority is low CNN score + high similarity to existing high-score genome + few votes/descendants + age.
+7. **Increment** generation counter
+
+"Rescore before breed" is load-bearing: breeding before rescoring would use stale (gen-N) fitness signals to produce gen-N+1 children, defeating the regeneration. Prune comes last so it sees the combined pool of survivors + new bred.
+
+### Pruning is archival
+
+Pruned genomes are marked `archived = 1` but the underlying data is preserved on disk. Pruning is low-stakes — populations can be reshaped without destroying information.
+
+### Constraint exemptions
+
+- **Current-gen upvotes are protected from pruning.** Rationale: dedup-by-score fails when the score is stale relative to a fresh vote. The just-upvoted genome's CNN score reflects the *pre-vote* model, so losing dedup against a higher-scored sibling means using outdated judgment to overrule current judgment. After the next retrain incorporates the upvote, the protection drops naturally.
+- **Graph-critical genomes are skipped** unless a replacement has been bred and accepted into the same graph position. Implements "replace then prune" — the graph slot persists, its occupant improves over time. Lets pruning shape taste while the transition graph stays intact.
+
+Skipping doesn't backtrack; the pruner walks further down the priority ranking. Actual prune count may undershoot the target by 5-20% — same order of magnitude holds.
+
+### Population sizing
+
+Target active pool: 2-3K genomes. While below target, slightly favor under-pruning (prune ≈ 0.7-0.8x breed) so population drifts toward target. At target, prune ≈ breed (steady state). If overshooting, prune > breed for a generation or two.
+
+### Bulk breed sizing
+
+Scale with how much the new model disagrees with the old. Approximate form: `breed_count = base + alpha * mean(abs(new_score - old_score))` over the rescored active population. More disagreement = explore more.
+
+## Bootstrap
+
+Two cases:
+
+**Existing user** (the project author's case): ~2K existing genomes with all gen-0 ratings backfilled. The deployed gen-1 model scores them. Starting voting on the gen-1 model immediately is sufficient — intermittent + graph + thumbs-up breeders populate gen-1-era genomes over time. No front-loaded evolve sweep needed.
+
+**New user** (cold start): ship a hand-curated ~100-genome starter set optimized for **diversity over quality**. Past a quality floor (no broken renders, no flying dots/pulsars, no degenerate cases), prioritize "fills a different niche" over "this is my favorite." Curator-taste injection is the failure mode to avoid; diversity-first selection neutralizes it. The shipped starter also seeds the transition graph reasonably well, so graph-completeness breeding has decent reference points from step 1. First votes generate gen-1 thumbs against the shipped population; standard pipeline takes over from there.
+
+## Hotkey ergonomics
+
+Aside, but worth recording: thumbs-up is now a heavier act than before (drives both training and breeding). The interface should match — heavy acts should require deliberate input. Current scheme uses a leader-key pattern (Win+Y prefix, sub-key for action: `+` upvote, `c` enter-compare), with single-key voting only inside compare mode where each click carries less per-act weight. The asymmetry mirrors the asymmetric value of the signals.
 
 ## Open questions
 
 - **Sub-generation feedback loops.** Could rate → train → re-score same population → rate more, without a full breeding cycle. Gives faster model iteration but blurs the generation boundary. Decide later whether the trigger threshold should produce a "mini-generation" (retrain only) or "full generation" (retrain + breed + prune).
 - **Decay weighting for old pairwise.** Pairs from 10 generations ago are still valid but might be less useful (population moved on, your taste may have refined). Could weight pairs by `1 / (1 + age_in_generations)` in the loss. Not strictly necessary — let the model figure it out.
-- **Generation 0 / bootstrap.** New users have zero generations of data. Default behavior: ship with the gen-1 model + a small starter population. The user's first ratings are stamped gen 1 (same generation as the shipped model's training corpus). When they accumulate enough new data to trigger retraining, gen 2 begins — the first model they train themselves.
+- **Downvote behavior in breeding.** Current lean: rely on CNN score + graph completeness, only hard-filter on `archived = 1`. Alternative options: down-weighted selection probability, or filter only on current-gen downvotes. Gen-0 downvotes may not reflect current taste, so hard exclusion is risky.
+- **Dedup threshold.** The variation-aware distance metric (transition graph) is already designed for perceptual change, so metric choice is settled. What's unresolved is the absolute threshold — below what distance is a transition perceptually a no-op? Needs empirical work: render near-pairs at various distances, find the boundary where the morph between them stops being visible. Threshold should be absolute (anchored to perception), not relative (percentile of population) — otherwise dedup aggressiveness drifts as the population's overall density changes.
+- **Trigger long-tail cap.** Once judgement count is very large, the 1.5x interval grows long. Cap at some maximum (e.g., always retrain within N additional judgements) once we have evidence about what's enough.
 
 ## Status
 
@@ -164,6 +223,10 @@ Shipped (2026-05-19):
   fixed-2000 threshold below 10K total, 1.5x of prev-gen above.
   CLI: `tools/check_retrain.py`. Runs periodically (every 5 min)
   inside pruner_worker and logs WARNING when threshold crossed.
+- ✅ Thumbs-up immediate breeder — `Library.breed_thumbsup_children`
+  jitters 7 children of a direct genome upvote; they render in the
+  background and become available to compare mode + the next train
+  cycle. Loop-propagated votes don't trigger breeding.
 
 Deferred:
 - Breeding+pruning pipeline that runs at generation boundaries
