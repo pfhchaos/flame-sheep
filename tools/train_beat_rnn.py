@@ -228,6 +228,7 @@ def load_checkpoint(path: Path):
 
 def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
                 in_buf, grad_buf, dataset, cache: LazyFileCache,
+                label_seq_buf, loss_acc_buf, grad_acc_buf,
                 val_batches=None, val_data=None, val_interval: float = 0.0,
                 val_sample_size: int = 200,
                 best_val_state=None, save_path: Path | None = None,
@@ -252,11 +253,15 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
                             and save_path is not None)
     last_val_time = time.monotonic()
 
+    from flame_sheep.wallpaper_ml import cross_entropy_dispatch
+    N_CLASSES = 3
+
     for batch_idx, batch_spec in enumerate(batches):
         inputs, labels = materialize_batch(batch_spec, dataset, chunk_len, cache)
         # inputs: [B, T, 216], labels: [B, T, 3]
         B_actual = inputs.shape[0]
         T = inputs.shape[1]
+        t_inv = 1.0 / float(T)
 
         model.zero_grad()
 
@@ -265,30 +270,43 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
             if isinstance(layer, VkGRU):
                 layer.reset_hidden()
 
-        chunk_loss = 0.0
-        all_grads = []
+        # GPU-side loss path: upload all labels for this batch in one shot,
+        # zero the loss/grad accumulators, then per-timestep dispatch the
+        # cross_entropy shader instead of downloading logits + CPU CE +
+        # uploading grad. Eliminates 2 × T Python→Vulkan round-trips per
+        # batch (downloads of logits + accumulated grad upload at end —
+        # T downloads → 1 download).
+        gpu.upload(label_seq_buf, labels.ravel())
+        gpu.zero_buffer(loss_acc_buf)
+        gpu.zero_buffer(grad_acc_buf)
 
         for t in range(T):
             frame = inputs[:, t, :]  # [B, 216]
             gpu.upload(in_buf, frame.ravel())
 
             out_buf = model.forward(in_buf, B_actual, (216,))
-            logits = gpu.download(out_buf, np.float32, B_actual * 3).reshape(B_actual, 3)
 
-            target = labels[:, t, :]
-            loss, grad = soft_cross_entropy(logits, target)
-            chunk_loss += loss
-            all_grads.append(grad)
+            # Cross-entropy on GPU. target_offset is in float elements,
+            # not bytes — labels is (B, T, 3) in row-major so the offset
+            # to timestep t's slice is t * B * 3. Each dispatch accumulates
+            # 1/T of the gradient and loss into the accumulators.
+            cross_entropy_dispatch(
+                gpu, out_buf, label_seq_buf, grad_acc_buf, loss_acc_buf,
+                batch_size=B_actual, n_classes=N_CLASSES,
+                target_offset_floats=t * B_actual * N_CLASSES,
+                t_inv=t_inv,
+            )
 
-        chunk_loss /= T
+        # Download loss accumulator (B floats) and compute scalar loss.
+        # This is one download per BATCH instead of one per timestep —
+        # the actual training-time savings.
+        loss_per_batch = gpu.download(loss_acc_buf, np.float32, B_actual)
+        chunk_loss = float(loss_per_batch.mean())
         losses.append(chunk_loss)
 
-        # Use mean gradient across all frames as approximation for BPTT.
-        # TODO: proper per-frame gradient accumulation through output linear.
-        mean_grad = np.mean(all_grads, axis=0).astype(np.float32)
-        gpu.upload(grad_buf, mean_grad.ravel())
-
-        model.backward(grad_buf, B_actual)
+        # grad_acc_buf already holds mean-over-timesteps mean-over-batch
+        # gradient — feed directly to backward, no CPU mean needed.
+        model.backward(grad_acc_buf, B_actual)
         model.sgd_step(lr)
 
         if (batch_idx + 1) % 10 == 0:
@@ -462,9 +480,19 @@ def main():
         print(f"Mid-epoch validation: every {args.val_interval / 60:.0f} minutes")
     print()
 
-    # Pre-allocate GPU buffers once (reused across all batches/epochs)
+    # Pre-allocate GPU buffers once (reused across all batches/epochs).
+    # in_buf still holds the current timestep's input frame (uploaded each
+    # timestep from CPU); grad_buf is legacy and unused by the new GPU-loss
+    # path (kept so the existing layer .backward() helpers stay compatible
+    # if grad_buf gets passed elsewhere). The new path uses:
+    #   - label_seq_buf: full (B, T, 3) labels uploaded once per batch
+    #   - loss_acc_buf:  (B,) per-batch loss accumulator (1/T weighted)
+    #   - grad_acc_buf:  (B, 3) per-batch gradient accumulator (1/T weighted)
     in_buf = gpu.create_buffer(args.batch_size * 216 * 4)
     grad_buf = gpu.create_buffer(args.batch_size * 3 * 4)
+    label_seq_buf = gpu.create_buffer(args.batch_size * args.chunk_len * 3 * 4)
+    loss_acc_buf = gpu.create_buffer(args.batch_size * 4)
+    grad_acc_buf = gpu.create_buffer(args.batch_size * 3 * 4)
 
     # Lazy file cache shared across train + validate. Holds the N most
     # recently used files; cap at ~64 files (~640 MB) which is enough
@@ -484,6 +512,7 @@ def main():
         train_loss = train_epoch(model, gpu, train_batches, args.lr,
                                  args.chunk_len, in_buf, grad_buf,
                                  train_data, file_cache,
+                                 label_seq_buf, loss_acc_buf, grad_acc_buf,
                                  val_batches=val_batches, val_data=val_data,
                                  val_interval=args.val_interval,
                                  val_sample_size=args.val_sample_size,

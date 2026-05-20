@@ -1,0 +1,79 @@
+#version 450
+
+// ============================================================
+// cross_entropy.comp — Soft cross-entropy loss + gradient on GPU
+// ============================================================
+// One invocation per batch element. Computes softmax over n_classes
+// logits, then accumulates per-batch loss and per-(batch, class)
+// gradient into pre-allocated accumulator buffers. Each invocation
+// is responsible for its own slot in both accumulators — no atomics
+// needed, no inter-invocation contention.
+//
+// Designed to be called once per timestep inside a BPTT loop.
+// Caller zeroes loss_acc + grad_acc at batch start; the t_inv push
+// constant (= 1/T) makes each call's contribution averaged across
+// timesteps, so after T dispatches grad_acc holds the mean gradient
+// suitable to feed directly into model.backward().
+//
+// Eliminates the per-timestep CPU round trip (download logits →
+// softmax + CE on CPU → upload gradient) for sequence models.
+// ============================================================
+
+layout(local_size_x = 32) in;
+
+layout(std430, binding = 0) readonly buffer LogitsBuf  { float logits[]; };
+layout(std430, binding = 1) readonly buffer TargetsBuf { float targets[]; };
+layout(std430, binding = 2)          buffer GradAccBuf { float grad_acc[]; };
+layout(std430, binding = 3)          buffer LossAccBuf { float loss_acc[]; };
+
+layout(push_constant) uniform PushConstants {
+    int batch_size;
+    int n_classes;     // Currently hard-coded to 3 below for unrolled softmax.
+    int target_offset; // Offset into TargetsBuf for the current timestep
+                       // (in float elements, not bytes). 0 means
+                       // TargetsBuf is a per-timestep slice; non-zero lets
+                       // the caller share one full (B, T, C) labels buffer.
+    float t_inv;       // 1.0 / T — averages gradient and loss over timesteps.
+};
+
+void main() {
+    int b = int(gl_GlobalInvocationID.x);
+    if (b >= batch_size) return;
+
+    int logit_base = b * n_classes;
+    int target_base = target_offset + b * n_classes;
+
+    // Numerically-stable softmax. n_classes is fixed at 3 here (beat
+    // detection: non-beat, beat, downbeat); generalizing means unrolling
+    // to a loop with a small fixed-size local array.
+    float l0 = logits[logit_base + 0];
+    float l1 = logits[logit_base + 1];
+    float l2 = logits[logit_base + 2];
+
+    float m = max(l0, max(l1, l2));
+    float e0 = exp(l0 - m);
+    float e1 = exp(l1 - m);
+    float e2 = exp(l2 - m);
+    float s = e0 + e1 + e2;
+    float p0 = e0 / s;
+    float p1 = e1 / s;
+    float p2 = e2 / s;
+
+    float t0 = targets[target_base + 0];
+    float t1 = targets[target_base + 1];
+    float t2 = targets[target_base + 2];
+
+    // Gradient: (probs - target) / B, accumulated across timesteps
+    // weighted by 1/T so the end state is mean over both axes.
+    float inv_b = 1.0 / float(batch_size);
+    float scale = inv_b * t_inv;
+    grad_acc[logit_base + 0] += (p0 - t0) * scale;
+    grad_acc[logit_base + 1] += (p1 - t1) * scale;
+    grad_acc[logit_base + 2] += (p2 - t2) * scale;
+
+    // Per-batch loss contribution. log(p + eps) avoids -inf when one
+    // class probability is exactly zero (rare but possible at init).
+    float eps = 1e-7;
+    float loss_b = -(t0 * log(p0 + eps) + t1 * log(p1 + eps) + t2 * log(p2 + eps));
+    loss_acc[b] += loss_b * t_inv;
+}

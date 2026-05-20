@@ -508,6 +508,37 @@ def build_cnn_scorer(gpu: VkCompute, layers_config: list[tuple],
 RNN_SHADER_DIR = Path(__file__).parent / 'shaders' / 'rnn'
 
 
+def cross_entropy_dispatch(gpu: VkCompute, logits_buf: VkBuffer,
+                            target_buf: VkBuffer, grad_acc_buf: VkBuffer,
+                            loss_acc_buf: VkBuffer, batch_size: int,
+                            n_classes: int, target_offset_floats: int,
+                            t_inv: float) -> None:
+    """Dispatch the cross_entropy shader for one timestep.
+
+    Accumulates loss into loss_acc_buf (size B floats) and gradient into
+    grad_acc_buf (size B*n_classes floats), both weighted by t_inv so
+    after T dispatches they hold mean-over-timesteps values. Caller is
+    responsible for zeroing both accumulators at the start of the batch.
+
+    target_offset_floats: offset into target_buf (in float elements) for
+    the current timestep — lets the caller share one (B, T, C) labels
+    buffer across all T dispatches instead of uploading per-timestep
+    slices.
+
+    Pipeline is cached by VkCompute.create_pipeline so repeat dispatches
+    against the same buffer set return the same VkPipeline (no churn).
+    """
+    pipeline = gpu.create_pipeline(
+        str(RNN_SHADER_DIR / 'cross_entropy.comp'),
+        buffers=[logits_buf, target_buf, grad_acc_buf, loss_acc_buf],
+        push_constant_size=16,
+    )
+    push = struct.pack('3if', batch_size, n_classes,
+                       target_offset_floats, t_inv)
+    n_workgroups = (batch_size + 31) // 32  # matches local_size_x = 32
+    gpu.dispatch(pipeline, n_workgroups, push_constants=push)
+
+
 class VkLinear(VkLayer):
     """Dense linear layer: y = x @ W + b, optional ReLU.
 
@@ -542,16 +573,23 @@ class VkLinear(VkLayer):
         # Saved for backward
         self._saved_input: VkBuffer | None = None
 
-    def forward(self, input_buf, batch_size, shape):
+    def forward(self, input_buf, batch_size, shape, input_offset_floats: int = 0):
+        """input_offset_floats: float-element offset into input_buf. Lets the
+        caller pre-upload a (B, T, in_features) sequence to a larger buffer
+        and slice per-timestep via this offset instead of re-uploading just
+        that slice each call. Default 0 keeps existing single-frame callers
+        unchanged."""
         self._saved_input = input_buf
+        self._saved_input_offset = input_offset_floats
 
         pipeline = self.gpu.create_pipeline(
             str(RNN_SHADER_DIR / 'linear_forward.comp'),
             buffers=[input_buf, self.weight_buf, self.bias_buf, self.output_buf],
-            push_constant_size=16,
+            push_constant_size=20,
         )
-        push = struct.pack('4i', batch_size, self.in_features,
-                           self.out_features, 1 if self.relu else 0)
+        push = struct.pack('5i', batch_size, self.in_features,
+                           self.out_features, 1 if self.relu else 0,
+                           input_offset_floats)
         total = batch_size * self.out_features
         self.gpu.dispatch(pipeline, (total + 63) // 64, push_constants=push)
         pipeline.destroy()
