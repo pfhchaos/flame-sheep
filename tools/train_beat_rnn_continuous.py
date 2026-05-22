@@ -45,18 +45,21 @@ from train_beat_rnn import (
 
 
 def materialize_batch_continuous(batch_spec, dataset, chunk_len: int,
-                                  cache: LazyFileCache):
-    """Like materialize_batch in train_beat_rnn, but returns 1-channel
-    beat_score targets instead of 3-channel soft labels.
+                                  cache: LazyFileCache,
+                                  target_col: int = 216):
+    """Build a continuous-target batch.
 
-    inputs: (B, T, 216) — spectrum + diff (unchanged from 3-class)
-    targets: (B, T) — beat_score in [0, 1]
+    inputs: (B, T, 216) — spectrum + diff
+    targets: (B, T) — single-channel target sliced from `target_col`
 
-    Dispatches on cache entry type:
-    - np.memmap (packed mmap .npy format): slice cols [:216] for input,
-      col 216 for target — zero copy until the final np.array() stacks
-      them into the batch tensors.
-    - dict (legacy .npz format): concat spectrum + diff per chunk.
+    Packed format conventions (see tools/pack_beat_labels.py):
+    - 217-col packed: col 216 = beat_score (legacy v1 single-channel)
+    - 218-col packed: col 216 = downbeat, col 217 = non-downbeat beat
+      (current; both target columns coexist so two models can train
+       from the same packed corpus, one per column).
+
+    `target_col` selects which column the BCE loss targets. Default 216
+    works for both v1 (beat_score) and v2 downbeat training.
     """
     batch_inputs = []
     batch_targets = []
@@ -66,12 +69,20 @@ def materialize_batch_continuous(batch_spec, dataset, chunk_len: int,
         end = start + chunk_len
         if isinstance(entry, np.memmap) or (
                 isinstance(entry, np.ndarray) and entry.ndim == 2
-                and entry.shape[1] == 217):
-            # Packed mmap format: (T, 217). View slicing is free.
+                and entry.shape[1] in (217, 218)):
+            # Packed mmap format. View slicing is free.
+            if target_col >= entry.shape[1]:
+                raise ValueError(
+                    f'{path.name}: target_col={target_col} out of range '
+                    f'for packed shape {entry.shape}')
             batch_inputs.append(entry[start:end, :216])
-            batch_targets.append(entry[start:end, 216])
+            batch_targets.append(entry[start:end, target_col])
         else:
-            # Legacy .npz format.
+            # Legacy .npz format — only supports beat_score (col 216 equivalent).
+            if target_col != 216:
+                raise RuntimeError(
+                    f'{path.name}: legacy .npz format only supports '
+                    f'target_col=216; got {target_col}. Repack to .npy.')
             if 'beat_score' not in entry:
                 raise RuntimeError(
                     f'{path.name} has no beat_score key — run '
@@ -96,13 +107,14 @@ class ContinuousPrepPipeline:
 
     def __init__(self, batches, dataset, chunk_len: int,
                  cache: LazyFileCache, max_queue: int = 2,
-                 n_workers: int = 8):
+                 n_workers: int = 8, target_col: int = 216):
         import queue, threading
         from concurrent.futures import ThreadPoolExecutor
         self.batches = batches
         self.dataset = dataset
         self.chunk_len = chunk_len
         self.cache = cache
+        self.target_col = target_col
         self.queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._stop = threading.Event()
         # n_workers threads decompress .npz files in parallel during
@@ -124,7 +136,8 @@ class ContinuousPrepPipeline:
                                  for file_idx, _ in batch_spec})
             list(self._executor.map(self.cache.get, unique_paths))
             inputs, targets = materialize_batch_continuous(
-                batch_spec, self.dataset, self.chunk_len, self.cache)
+                batch_spec, self.dataset, self.chunk_len, self.cache,
+                target_col=self.target_col)
             inputs_TBF = np.ascontiguousarray(inputs.transpose(1, 0, 2))
             targets_TB = np.ascontiguousarray(targets.transpose(1, 0))
             self.queue.put((inputs_TBF, targets_TB))
@@ -218,7 +231,8 @@ OUR_FPS = 93.75  # matches generate_beat_labels.py
 def validate_continuous(model, gpu, batches, chunk_len: int, in_buf,
                         dataset, cache: LazyFileCache,
                         max_batches: int | None = None,
-                        peak_threshold: float = 0.3):
+                        peak_threshold: float = 0.3,
+                        target_col: int = 216):
     """Run validation: peak-pick predicted scores, compute F1@70ms.
 
     Returns (avg_loss, f1, metrics_dict). metrics_dict has precision,
@@ -233,7 +247,7 @@ def validate_continuous(model, gpu, batches, chunk_len: int, in_buf,
 
     for batch_spec in batches:
         inputs, targets = materialize_batch_continuous(
-            batch_spec, dataset, chunk_len, cache)
+            batch_spec, dataset, chunk_len, cache, target_col=target_col)
         B = inputs.shape[0]
         T = inputs.shape[1]
 
@@ -307,7 +321,8 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
                            best_val_state=None,
                            save_path: Path | None = None,
                            epoch_num: int = 0,
-                           prep_workers: int = 8):
+                           prep_workers: int = 8,
+                           target_col: int = 216):
     """Train one epoch in continuous mode (single output channel, BCE)."""
     losses = []
     mid_epoch_val_active = (val_batches and val_data is not None
@@ -318,7 +333,8 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
     linear_in, gru, linear_out = model.layers
 
     prep = ContinuousPrepPipeline(batches, dataset, chunk_len, cache,
-                                   max_queue=2, n_workers=prep_workers)
+                                   max_queue=2, n_workers=prep_workers,
+                                   target_col=target_col)
     n_batches = len(batches)
 
     prep_iter = iter(prep)
@@ -374,7 +390,8 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
             elapsed_min = (time.monotonic() - last_val_time) / 60.0
             val_loss, val_f1, val_metrics = validate_continuous(
                 model, gpu, val_batches, chunk_len, in_buf,
-                val_data, cache, max_batches=val_sample_size)
+                val_data, cache, max_batches=val_sample_size,
+                target_col=target_col)
             print(f"    [mid-epoch +{elapsed_min:.1f}min] batch {batch_idx+1}/{n_batches}  "
                   f"val_loss={val_loss:.4f}  F1={val_f1:.3f}  "
                   f"(sampled {val_sample_size}/{len(val_batches)} val batches)")
@@ -414,6 +431,11 @@ def main():
                         help='Max .npz files held decompressed in RAM. '
                              'Each file is ~10 MB. Must be >= batch_size to '
                              'avoid intra-batch eviction (default 512).')
+    parser.add_argument('--target-col', type=int, default=216,
+                        help='Column of the packed .npy to use as the BCE '
+                             'target. 216 = downbeat (or v1 beat_score); '
+                             '217 = non-downbeat beat (default 216 — train '
+                             'two separate models, one per target column).')
     parser.add_argument('--prep-workers', type=int, default=8,
                         help='Threads decompressing .npz files in parallel '
                              'inside the prep pipeline (default 8).')
@@ -505,10 +527,12 @@ def main():
             best_val_state=best_val_state,
             save_path=args.output, epoch_num=epoch,
             prep_workers=args.prep_workers,
+            target_col=args.target_col,
         )
         val_loss, val_f1, val_metrics = validate_continuous(
             model, gpu, val_batches, args.chunk_len, in_buf,
             val_data, file_cache, peak_threshold=args.peak_threshold,
+            target_col=args.target_col,
         )
         print(f'  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  '
               f'F1={val_f1:.3f}')
