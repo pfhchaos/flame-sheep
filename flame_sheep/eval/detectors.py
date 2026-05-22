@@ -88,18 +88,9 @@ class CurrentSystemDetector(BeatDetector):
         )
 
     def _make_engine(self):
-        # Same fallback ladder as flame_sheep_audio.processor.AudioProcessor:
-        # prefer CQT (if librosa+numba available), else OctaveBank, else FFT.
-        try:
-            from flame_sheep_audio._cqt_engine import CqtEngine
-            return CqtEngine()
-        except ImportError:
-            try:
-                from flame_sheep_audio._octave_bank import OctaveBankEngine
-                return OctaveBankEngine()
-            except ImportError:
-                from flame_sheep_audio._spectrum import SpectrumEngine
-                return SpectrumEngine()
+        # Same single-engine choice as the live daemon: CQT.
+        from flame_sheep_audio._cqt_engine import CqtEngine
+        return CqtEngine()
 
     def detect(self, audio: np.ndarray, sr: int) -> np.ndarray:
         audio = _ensure_mono_float32(audio)

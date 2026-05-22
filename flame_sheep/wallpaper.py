@@ -29,7 +29,6 @@ log = logging.getLogger(__name__)
 def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                    blur_radius: float = 1.0,
                    log_features: bool = False, log_file: str | None = None,
-                   spectrum_engine: str = 'octave_bank',
                    test_pattern: bool = False) -> None:
     """
     Wallpaper mode — one continuous flame fractal image across all monitors.
@@ -159,8 +158,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         log.info(f'Composed {lib.loop_count()} loops')
 
     # --- Orchestrator: owns audio, control pipe, MPRIS, session ---
-    orch = Orchestrator(audio_device=audio_device, test_audio=test_audio,
-                        spectrum_engine=spectrum_engine)
+    orch = Orchestrator(audio_device=audio_device, test_audio=test_audio)
     core = FlameSheepCore(orchestrator=orch, lib=lib)
 
     # --- background workers ---

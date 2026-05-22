@@ -50,7 +50,6 @@ from .wallpaper import _run_wallpaper
 # not passing CLI args through to WindowConfig.__init__
 _AUDIO_DEVICE: str | int = DEFAULT_DEVICE
 _TEST_AUDIO:   bool = False
-_SPECTRUM_ENGINE: str = 'octave_bank'
 
 
 
@@ -63,8 +62,7 @@ class FlameSheepApp(mglw.WindowConfig):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._orch = Orchestrator(audio_device=_AUDIO_DEVICE, test_audio=_TEST_AUDIO,
-                                  spectrum_engine=_SPECTRUM_ENGINE)
+        self._orch = Orchestrator(audio_device=_AUDIO_DEVICE, test_audio=_TEST_AUDIO)
         self._core = FlameSheepCore(orchestrator=self._orch)
         self._orch.start()
         w, h = self.window_size
@@ -157,9 +155,6 @@ def main() -> None:
                         help='render existing unrated genomes for evaluation')
     parser.add_argument('--import-catalog', type=str, metavar='DIR', default=None,
                         help='import votes from sorted catalog (good/bad folders)')
-    parser.add_argument('--spectrum-engine', choices=['octave_bank', 'cqt'],
-                        default='cqt',
-                        help='spectrum analysis engine (default: cqt)')
     parser.add_argument('--log-level', action='append', default=[],
                         help='logging verbosity: global (INFO) or per-component '
                              '(flame_sheep_audio.tempo_acf=DEBUG). Repeatable.')
@@ -190,10 +185,9 @@ def main() -> None:
             global_level = spec.upper()
     setup_logging(level=global_level, component_levels=component_levels)
 
-    global _AUDIO_DEVICE, _TEST_AUDIO, _SPECTRUM_ENGINE
+    global _AUDIO_DEVICE, _TEST_AUDIO
     _AUDIO_DEVICE = args.audio_device
     _TEST_AUDIO   = args.test_audio
-    _SPECTRUM_ENGINE = args.spectrum_engine
 
     if args.list_audio:
         from flame_sheep_audio import list_monitor_devices
@@ -242,7 +236,6 @@ def main() -> None:
             audio_device = cfg.audio_device
         _run_wallpaper(audio_device, args.test_audio, blur_radius=args.blur_radius,
                        log_features=args.log_features, log_file=args.log_file,
-                       spectrum_engine=args.spectrum_engine,
                        test_pattern=args.test_pattern)
         return
 
