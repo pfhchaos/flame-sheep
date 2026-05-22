@@ -23,7 +23,7 @@ import numpy as np
 sys.path.insert(0, '.')
 
 from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE
-from flame_sheep_audio._spectrum import SpectrumEngine
+from flame_sheep_audio._cqt_engine import CqtEngine
 from flame_sheep_audio.beat_detector import FluxBeatDetector
 from flame_sheep_audio.energy import EnergyAnalyzer
 from flame_sheep_audio.stability import MagnitudeStability
@@ -81,7 +81,7 @@ def estimate_bpm_pipeline(mix_audio: np.ndarray, orig_sr: int) -> float:
         pass
 
     # ACF fallback
-    engine = SpectrumEngine()
+    engine = CqtEngine()
     stability = MagnitudeStability()
     detector = FluxBeatDetector(sharpness=True, stability=stability)
     density = OnsetDensityTracker()

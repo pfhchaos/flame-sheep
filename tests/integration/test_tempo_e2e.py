@@ -14,7 +14,7 @@ import pytest
 
 from flame_sheep_audio import AudioProcessor, SAMPLE_RATE, FFT_SIZE, HOP_SIZE
 from flame_sheep_audio.source import FeedSource
-from flame_sheep_audio._spectrum import SpectrumEngine
+from flame_sheep_audio._cqt_engine import CqtEngine
 from flame_sheep_audio.tempo_acf import AutocorrelationTempoTracker
 from flame_sheep.tempo import TempoTracker
 from synths import (
@@ -46,7 +46,7 @@ def _run_tempo_e2e(pattern: DrumPattern, min_duration: float = 20.0) -> float:
         repeats = int(np.ceil(min_duration * SAMPLE_RATE / len(pcm)))
         pcm = np.tile(pcm, repeats)
 
-    engine = SpectrumEngine()
+    engine = CqtEngine()
     stability = MagnitudeStability()
     detector = FluxBeatDetector(sharpness=True, stability=stability)
     density = OnsetDensityTracker()

@@ -8,7 +8,7 @@ AudioProcessor, just the component under test with direct input.
 import numpy as np
 import pytest
 
-from flame_sheep_audio._spectrum import SpectrumEngine, SpectrumFrame
+from flame_sheep_audio._spectrum import SpectrumFrame
 from flame_sheep_audio._constants import FFT_SIZE, HOP_SIZE, N_BINS, SAMPLE_RATE
 from flame_sheep_audio._types import BeatEvent, BandState, AudioState, _default_bands
 from flame_sheep_audio.beat_detector import FluxBeatDetector
@@ -56,62 +56,15 @@ def _audio(events=None, rms=0.0, harmonic_rms=0.0, breaking=False,
 
 
 # -------------------------------------------------------------------
-# SpectrumEngine
+# CqtEngine
 # -------------------------------------------------------------------
-
-class TestSpectrumEngine:
-
-    def test_output_shape(self):
-        engine = SpectrumEngine()
-        pcm = np.zeros(FFT_SIZE, dtype=np.float32)
-        frame = engine.compute(pcm)
-        assert frame.magnitude.shape == (N_BINS,)
-        assert frame.flux.shape == (N_BINS,)
-        assert frame.waveform.shape == (FFT_SIZE,)
-
-    def test_silence_produces_zero_magnitude(self):
-        engine = SpectrumEngine()
-        pcm = np.zeros(FFT_SIZE, dtype=np.float32)
-        frame = engine.compute(pcm)
-        assert frame.magnitude.max() < 1e-10
-
-    def test_first_frame_has_zero_flux(self):
-        engine = SpectrumEngine()
-        pcm = np.random.randn(FFT_SIZE).astype(np.float32) * 0.5
-        frame = engine.compute(pcm)
-        assert frame.flux.max() == 0.0  # no prev spectrum yet
-
-    def test_second_frame_has_nonzero_flux(self):
-        engine = SpectrumEngine()
-        engine.compute(np.zeros(FFT_SIZE, dtype=np.float32))
-        pcm = np.random.randn(FFT_SIZE).astype(np.float32) * 0.5
-        frame = engine.compute(pcm)
-        assert frame.flux.max() > 0.0
-
-    def test_identical_frames_have_zero_flux(self):
-        engine = SpectrumEngine()
-        pcm = np.random.randn(FFT_SIZE).astype(np.float32) * 0.5
-        engine.compute(pcm)
-        frame = engine.compute(pcm.copy())
-        assert frame.flux.max() < 1e-10
-
-    def test_sine_peak_at_correct_freq(self):
-        engine = SpectrumEngine()
-        t = np.arange(FFT_SIZE) / SAMPLE_RATE
-        pcm = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
-        frame = engine.compute(pcm)
-        freqs = np.fft.rfftfreq(FFT_SIZE, 1.0 / SAMPLE_RATE)
-        peak_bin = np.argmax(frame.magnitude)
-        peak_freq = freqs[peak_bin]
-        assert abs(peak_freq - 440) < 50, f"Peak at {peak_freq}Hz, expected ~440Hz"
-
-    def test_reset_clears_prev(self):
-        engine = SpectrumEngine()
-        pcm = np.random.randn(FFT_SIZE).astype(np.float32) * 0.5
-        engine.compute(pcm)
-        engine.reset()
-        frame = engine.compute(pcm)
-        assert frame.flux.max() == 0.0  # no prev after reset
+# Engine-specific behaviors (frequency response, hop accumulation,
+# flux-on-second-frame) are covered by flame_sheep_audio's own tests.
+# The component-isolation tests here previously tested an FFT
+# reference implementation that was removed when CQT became the
+# committed engine; new engine-specific isolation tests are not
+# duplicated here. CqtEngine is exercised indirectly by every test
+# below that constructs a SpectrumFrame.
 
 
 # -------------------------------------------------------------------
@@ -891,33 +844,10 @@ class TestModeDetector:
 # -------------------------------------------------------------------
 # SpectrumEngine push_hop
 # -------------------------------------------------------------------
-
-class TestPushHop:
-
-    def test_returns_spectrum_frame(self):
-        engine = SpectrumEngine()
-        hop = np.random.randn(HOP_SIZE).astype(np.float32) * 0.1
-        frame = engine.push_hop(hop)
-        assert isinstance(frame, SpectrumFrame)
-        assert frame.magnitude.shape == (N_BINS,)
-        assert frame.flux.shape == (N_BINS,)
-
-    def test_successive_hops_produce_flux(self):
-        engine = SpectrumEngine()
-        silence = np.zeros(HOP_SIZE, dtype=np.float32)
-        engine.push_hop(silence)
-        # Sudden energy should produce flux
-        burst = np.random.randn(HOP_SIZE).astype(np.float32) * 0.5
-        frame = engine.push_hop(burst)
-        assert frame.flux.sum() > 0
-
-    def test_sliding_window_accumulates(self):
-        engine = SpectrumEngine()
-        # Fill the window with 4 hops (4 * 512 = 2048 = FFT_SIZE)
-        for _ in range(4):
-            engine.push_hop(np.ones(HOP_SIZE, dtype=np.float32) * 0.1)
-        # The buffer should now be fully populated
-        assert np.all(engine._buffer != 0)
+# Engine-specific behaviors (push_hop semantics, sliding window, flux
+# computation) are covered by flame_sheep_audio's own engine test
+# suite. The integration tests here only exercise the engine
+# indirectly through downstream consumers like FluxBeatDetector.
 
 
 # -------------------------------------------------------------------
