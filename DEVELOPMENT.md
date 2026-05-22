@@ -4,37 +4,44 @@
 
 ### Audio subsystem
 
-The audio engine runs in a daemon thread. All components receive a
-`BandConfig` at construction time — the visualization declares what
-bands it needs, the engine doesn't know what they're for.
+The audio analysis pipeline runs in a daemon (separate process)
+publishing to shmem; visualizations consume via the daemon client.
+A single in-process path remains for tests / single-binary mode.
+All components receive a `BandConfig` at construction time — the
+visualization declares what bands it needs, the daemon doesn't
+know what they're for.
 
 ```
-PipeWire ─→ Signal Source ─→ SpectrumEngine
-                                  │
-                           magnitude + flux
-                                  │
-               ┌──────────────────┼──────────────────┐
-               ▼                  ▼                   ▼
-        MagnitudeStability   EnergyAnalyzer      A-weighted
-        (per-bin variance,   (per-band RMS,      flux sum
-         fast + slow EMA)    harmonic RMS)           │
-               │                  │                   ▼
-               │                  │          ACF Tempo Tracker
-               │                  │          (autocorrelation of
-               │                  │           onset strength,
-               │                  │           independent of beat
-               │                  │           detection)
-               │                  │                   │
-     stability │    harmonic      │            effective_bpm
-      scaling  │    RMS weighting │                   │
-               │                  │          tunes cooldowns
-               ▼                  │                   │
-        FluxBeatDetector ←────────┘───────────────────┘
-        (per-band onset detection,
-         stability-scaled thresholds,
-         tempo-adaptive cooldown)
+PipeWire ─→ Signal Source ─→ AudioLevelAgc ─→ CqtEngine
+                              (multi-min EMA   (108 bins,
+                               normalization,   9 octaves ×
+                               persisted slow   12 bins/oct)
+                               RMS baseline)        │
+                                                magnitude + flux + phase
+                                                    │
+               ┌──────────────────────┬─────────────┼──────────────┐
+               ▼                      ▼             ▼              ▼
+        MagnitudeStability       EnergyAnalyzer  CSD (HPSS)   A-weighted
+        (per-bin variance,       (per-band RMS,  Onset        flux sum
+         fast + slow EMA)        harmonic RMS)   Strength         │
+               │                      │             │              ▼
+               │                      │             │     BTrack Tempo Tracker
+               │                      │             │     (or ACF fallback —
+               │                      │             │      independent of beat
+               │                      │             │      detection)
+               │                      │             │              │
+     stability │    harmonic          │             │       effective_bpm
+      scaling  │    RMS weighting     │             │              │
+               │                      │             │      tunes cooldowns
+               ▼                      │             ▼              │
+        Beat detector (one of):  ◄────┴─────────────┴──────────────┘
+        • PercentileBeatDetector (current default — per-band relative)
+        • FluxBeatDetector       (legacy — stability-scaled thresholds)
+        • BeatRNNDetector        (trained continuous-activation model;
+                                  band-heuristic kind classification
+                                  at the RNN-detected frame)
                │
-          BeatEvents
+          BeatEvents (kind ∈ band names — low/mid/high by default)
                │
                ▼
         OnsetDensityTracker
@@ -59,15 +66,27 @@ PipeWire ─→ Signal Source ─→ SpectrumEngine
         │  spectrum, waveform              │
         │  events[]                        │
         └──────────────────────────────────┘
+                       │
+        ◇  (when running daemon mode):
+                       ▼
+        published to shmem  ──→  AudioDaemonClient  ──→  visualizations
+        (other consumers can read the same shmem)
 ```
 
-Two paths through the audio engine:
+Two paths through the audio pipeline:
 - **Detection bands**: onset detection + density tracking + spring adaptation
 - **Energy bands**: RMS + harmonic RMS tracking only
 
-Tempo estimation is decoupled from beat detection — the ACF tracker
-reads the continuous A-weighted flux sum, not discrete beat events.
-The only feedback is tempo → beat detector cooldown tuning (one-way).
+Tempo estimation is decoupled from beat detection — the tempo tracker
+reads the continuous A-weighted flux sum (or its own ODF), not discrete
+beat events. The only feedback is tempo → beat detector cooldown
+tuning (one-way).
+
+Source-level AGC normalizes away system volume and mastering
+differences before any analysis. Multi-minute EMA so within-song
+dynamics (verse/chorus, drops) pass through; only the song-master
+loudness baseline is compensated. State persists across restarts so
+new daemon launches don't begin from a cold-start baseline.
 
 ### Visual pipeline
 
@@ -109,24 +128,34 @@ Display (Wayland layer-shell)
 
 ### `flame_sheep_audio/` — Standalone Audio Analysis Package
 
+Lives in `flame_sheep_audio/src/flame_sheep_audio/`. Hard deps:
+numpy, scipy, sounddevice, prtcqt.
+
 | Module | Purpose |
 |--------|---------|
 | `_constants.py` | SAMPLE_RATE, FFT_SIZE, HOP_SIZE, FREQS |
 | `_types.py` | `BeatEvent`, `BandState`, `AudioState`, `AudioSnapshot` |
 | `_band_config.py` | `BandConfig`, `EnergyBandDef`, `DetectionBandDef`, `default_band_config()` |
-| `_spectrum.py` | `SpectrumEngine`: FFT, windowing, spectral flux, onset_strength, ZCR |
+| `_spectrum.py` | `SpectrumEngineBase` (ABC) + `SpectrumFrame` (output dataclass) |
+| `_cqt_engine.py` | `CqtEngine`: the one and only spectrum engine — wraps rt-cqt's SlidingCqt, 108 bins (9 oct × 12) |
+| `_agc.py` | `AudioLevelAgc`: source-level auto-gain. Multi-minute EMA, noise-floor zeroing, persisted slow_rms across restarts |
 | `_bands.py` | `SpringBand`, `AdaptiveBand`, `make_mask`, A-weighting |
-| `config.py` | Audio-only config (detection, stability, energy, density, tempo thresholds) |
-| `beat_detector.py` | `FluxBeatDetector`: onset detection with stability scaling |
+| `config.py` | Audio-only config (detection, stability, energy, density, tempo, agc, detector) |
+| `beat_detector.py` | `FluxBeatDetector` (legacy), `PercentileBeatDetector` (default) |
+| `beat_rnn.py` | `BeatRNNDetector`: trained continuous-activation model with band-heuristic kind classification |
 | `energy.py` | `EnergyAnalyzer`: per-band RMS/harmonic RMS, slow envelopes, section change |
 | `stability.py` | `MagnitudeStability`: per-bin EMA variance at two timescales |
 | `onset_density.py` | `OnsetDensityTracker`: per-band onset rate + per-band density delta |
-| `tempo_acf.py` | `AutocorrelationTempoTracker`: ACF-based tempo, confidence, BPM delta |
+| `tempo_acf.py` | `AutocorrelationTempoTracker`: ACF-based tempo (fallback) |
+| `tempo_btrack.py` | `BTrackTempoTracker`: BTrack real-time beat tracker (preferred when installed) |
 | `tempo_scaler.py` | `TempoScaler`: sigmoid BPM → constant value mapping |
 | `drop_detector.py` | `DropDetector`: break detection from centroid energy dropout |
 | `bass_drop_detector.py` | `BassDropDetector`: break detection from sub-bass dropout |
+| `hpss.py` | `LogMagnitudeTransform`, `PercussiveTransform`, `ComplexSpectralDiffTransform` |
+| `mode.py` | `Mode` enum, `ModeDetector`: idle/beat mode machine |
 | `source.py` | `PipeWireSource`, `FeedSource`: signal input abstraction |
-| `processor.py` | `AudioProcessor` (orchestrator), `SyntheticAudioProcessor` (test) |
+| `processor.py` | `AudioProcessor` (orchestrator), `SyntheticAudioProcessor` (test). Builds the configured detector (`cfg.detector.kind`), applies AGC at PCM read |
+| `daemon.py` | `AudioDaemon`: separate-process audio analyser, publishes AudioSnapshots to shmem |
 
 ### `flame_sheep/axes/` — Visual State Machines
 
