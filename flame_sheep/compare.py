@@ -186,7 +186,13 @@ class CompareMode:
         log.info(f'[compare] right #{self.pair.right_id} wins over #{old_left}')
 
     def on_skip(self) -> None:
-        """Skip this pair — replace both."""
+        """Skip this pair — replace both. Mark as seen for the session
+        so it doesn't immediately reappear; not persisted to DB since
+        a skip isn't a rating (next session can reconsider it)."""
+        if self.pair.left_id is not None and self.pair.right_id is not None:
+            pair_key = (min(self.pair.left_id, self.pair.right_id),
+                        max(self.pair.left_id, self.pair.right_id))
+            self._compared.add(pair_key)
         self.pick_pair()
 
     def _record(self, winner_id: int, loser_id: int) -> None:
