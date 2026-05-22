@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -1728,33 +1729,32 @@ class Library:
         self.conn.commit()
 
         # Thumbs-up breeder — direct genome upvotes only.
-        # Runs in a background thread so the render loop (which calls
-        # this via Orchestrator.tick → _handle_like → Library.rate)
-        # doesn't stall on the 7-child Genome.jitter + insert sequence.
-        # Empirically, doing this on the render thread tripped the
-        # watchdog after ~4s. The breeding thread opens its own SQLite
-        # connection (sqlite3.Connection is single-threaded by default)
-        # rather than sharing self.conn.
+        # Spawned as a separate subprocess (not a thread) because
+        # Genome.jitter + survey_and_correct is CPU-bound Python and
+        # shares the GIL with the render thread when run as a
+        # background thread. Empirically c695a12's threaded version
+        # still caused visible render-thread stalls even though rate()
+        # returned in microseconds. The subprocess pays ~50ms python
+        # startup once per upvote, then runs entirely outside the
+        # foreground process's GIL.
+        # See flame_sheep.thumbsup_breed.
         if target_type == 'genome' and rating > 0:
-            import threading
+            import subprocess
             parent_id = target_id
-            data_dir = self._data_dir
-
-            def _async_breed() -> None:
-                try:
-                    bg_lib = Library(data_dir)
-                    try:
-                        children = bg_lib.breed_thumbsup_children(parent_id)
-                        log.info('[thumbsup-breed] genome #%d -> %d children %s',
-                                 parent_id, len(children), children)
-                    finally:
-                        bg_lib.close()
-                except Exception:
-                    log.exception('[thumbsup-breed] failed for genome #%d',
-                                  parent_id)
-
-            threading.Thread(target=_async_breed, daemon=True,
-                              name=f'thumbsup-breed-{parent_id}').start()
+            try:
+                args = [
+                    sys.executable, '-m', 'flame_sheep.thumbsup_breed',
+                    '--parent-id', str(parent_id),
+                ]
+                if self._data_dir is not None:
+                    args += ['--data-dir', str(self._data_dir)]
+                # Detached so the parent doesn't wait on it. stdout/stderr
+                # inherited from parent so the child's [thumbsup-breed]
+                # log line appears in the wallpaper's terminal too.
+                subprocess.Popen(args, start_new_session=True)
+            except Exception:
+                log.exception('[thumbsup-breed] failed to spawn for genome #%d',
+                              parent_id)
 
     def breed_thumbsup_children(self, parent_genome_id: int,
                                 n_children: int = 7,
