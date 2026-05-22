@@ -44,11 +44,25 @@ class CompareMode:
         self.lib = lib
         self._score_fn = score_fn  # callable: Genome -> float (CNN score)
         self.pair = PairState()
-        self._compared: set[tuple[int, int]] = set()
+        # Seed from historical pairwise_ratings so pairs rated in
+        # previous sessions don't reappear. Without this seeding,
+        # _compared resets each session and the user sees the same
+        # pair every time they restart compare mode.
+        self._compared: set[tuple[int, int]] = self._load_compared_pairs()
+        log.info(f'[compare] loaded {len(self._compared)} prior pairs')
         self._score_cache: dict[int, float] = {}
         self._candidates: list[tuple[int, float]] = []  # (genome_id, score)
         self._candidate_idx = 0
         self.rng = np.random.default_rng()
+
+    def _load_compared_pairs(self) -> set[tuple[int, int]]:
+        """Pull every (winner, loser) pair from pairwise_ratings as a
+        canonical (min, max) tuple set. Persisted across sessions so
+        re-running compare doesn't replay pairs the user already judged."""
+        rows = self.lib.conn.execute(
+            'SELECT winner_id, loser_id FROM pairwise_ratings'
+        ).fetchall()
+        return {(min(w, l), max(w, l)) for w, l in rows}
 
     def set_score_fn(self, fn) -> None:
         """Set the scoring function (genome_id -> float)."""
