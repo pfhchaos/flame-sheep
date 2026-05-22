@@ -98,3 +98,43 @@ spirit — getting work off the render thread when the work doesn't
 belong there. Both pieces are part of the same broader architectural
 direction: "render thread does rendering; everything else lives
 elsewhere."
+
+## Threads vs processes — what Python actually requires
+
+A correction to the framing above: option B (dispatcher thread)
+does **not** fix CPU-bound Python handlers. Empirically discovered
+2026-05-21 with the thumbs-up breeder:
+
+- c695a12 moved `breed_thumbsup_children` to a daemon thread.
+  `rate()` returned in microseconds. **Render stalls persisted.**
+- The reason: `Genome.jitter` + `survey_and_correct` are CPU-bound
+  Python that hold the GIL between numpy calls. A "background"
+  thread still serializes against the render thread on the GIL.
+- 491644d moved breeding to a *subprocess*. Render stalls vanished.
+
+The rule, sharpened: **for Python, process isolation is the real
+discipline boundary, not thread separation.** Threads protect
+against accidentally writing handler code on the render thread,
+but they don't protect the render thread from a CPU-bound handler.
+
+Implications for the dispatcher thread (option B):
+- Still useful for *I/O-bound* handlers (waiting on disk, network,
+  D-Bus, the audio daemon). Those release GIL, threads work fine.
+- For CPU-bound work, the dispatcher thread is a routing layer
+  that ought to dispatch to subprocesses, not run the handler
+  in-thread. "Dispatcher" + "worker subprocesses" together are
+  the actual answer.
+
+Practically, this maps to the audio daemon pattern already in use:
+the analysis pipeline lives in its own process; the wallpaper
+consumes its output via shmem. The same pattern should apply to
+library mutations that involve nontrivial Python work — breeding,
+evolution, scoring sweeps. Each gets a subprocess (one-shot
+spawned via `subprocess.Popen` for episodic work, or a persistent
+worker for high-frequency).
+
+Per the configurability-discipline memory, the takeaway is
+structural: don't trust a Python "background thread" claim for
+CPU-bound work. Look at the inner loop. If it doesn't have
+guaranteed GIL release (pure I/O, pure numpy in C), assume thread
+boundaries leak.
