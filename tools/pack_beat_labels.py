@@ -4,15 +4,24 @@
 Each source .npz contains separately-stored arrays:
     spectrum (T, 108) float32  — mel features
     diff     (T, 108) float32  — onset diffs
-    beat_score (T,)  float32   — continuous beat probability
-    labels   (T, 3)  float32   — 3-class soft labels (unused, dropped)
+    labels   (T, 3)  float32   — 3-class soft labels (downbeat, beat,
+                                  non-beat — BeatNet output order)
+    beat_score (T,)  float32   — legacy continuous beat probability
+                                  (used by v1 single-channel model;
+                                  unused here)
     sr, hop, source            — metadata (unused for training, dropped)
 
-We pack the three training-relevant arrays into one contiguous .npy:
-    packed (T, 217) float32
+We pack the training-relevant arrays into one contiguous .npy:
+    packed (T, 218) float32
         cols [0:108]   = spectrum
         cols [108:216] = diff
-        col   216      = beat_score
+        col   216      = downbeat probability (labels[:, 0])
+        col   217      = non-downbeat beat probability (labels[:, 1])
+
+The two target columns are mutually exclusive in BeatNet's label
+convention — a frame is either a downbeat, a non-downbeat beat, or
+non-beat (col 216 + col 217 + col_non_beat ≈ 1). Independent BCE
+losses on each column drive the dual-channel beat-RNN.
 
 Benefits over the source .npz:
 - np.load(mmap_mode='r') returns a true memmap — slicing is a view, no
@@ -49,22 +58,29 @@ def _pack_one(args: tuple[Path, Path]) -> tuple[str, str]:
         with np.load(src) as d:
             if 'spectrum' not in d.files:
                 return ('skip', f'{src.name}: no spectrum (not a label file)')
-            if 'beat_score' not in d.files:
-                return ('skip', f'{src.name}: no beat_score (run augment first)')
+            if 'labels' not in d.files:
+                return ('skip', f'{src.name}: no labels (raw BeatNet output)')
             spec = np.asarray(d['spectrum'], dtype=np.float32)
             diff = np.asarray(d['diff'], dtype=np.float32)
-            bs = np.asarray(d['beat_score'], dtype=np.float32)
+            labels = np.asarray(d['labels'], dtype=np.float32)
         T = spec.shape[0]
         if diff.shape != (T, 108) or spec.shape != (T, 108):
             return ('err', f'{src.name}: unexpected shapes '
                            f'spec={spec.shape} diff={diff.shape}')
-        if bs.shape != (T,):
-            return ('err', f'{src.name}: beat_score shape {bs.shape} != ({T},)')
+        if labels.shape != (T, 3):
+            return ('err', f'{src.name}: labels shape {labels.shape} != ({T}, 3)')
 
-        packed = np.empty((T, 217), dtype=np.float32)
+        # BeatNet label order: col 0 = downbeat, col 1 = beat (non-downbeat),
+        # col 2 = non-beat. The two non-non-beat columns are mutually
+        # exclusive and become independent BCE targets.
+        downbeat = labels[:, 0]
+        beat_nondownbeat = labels[:, 1]
+
+        packed = np.empty((T, 218), dtype=np.float32)
         packed[:, :108] = spec
         packed[:, 108:216] = diff
-        packed[:, 216] = bs
+        packed[:, 216] = downbeat
+        packed[:, 217] = beat_nondownbeat
 
         tmp = Path(str(dst) + '.tmp')
         np.save(tmp, packed)
