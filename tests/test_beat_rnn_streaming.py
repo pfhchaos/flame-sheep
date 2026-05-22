@@ -98,7 +98,9 @@ def test_streaming_produces_beats_on_regular_clicks():
         frame = engine.push_hop(audio[i * HOP_SIZE:(i + 1) * HOP_SIZE])
         events = d.detect(frame)
         for e in events:
-            assert e.kind == 'rnn'
+            # kind is band-classified (low/mid/high) per the deploy
+            # plan's "heuristic kind, RNN timing" v1 design.
+            assert e.kind in ('low', 'mid', 'high'), e.kind
             beats.append(i * HOP_SIZE / SAMPLE_RATE)
     # Want at least a few beats (the engine + RNN both need warm-up).
     # Don't assert tight F1 here; that's eval_beat_detection's job.
