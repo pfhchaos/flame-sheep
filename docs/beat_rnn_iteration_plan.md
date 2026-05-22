@@ -137,14 +137,43 @@ the benchmark needs to stay still.
 ## When to retrain
 
 Triggers for the next training round (any one is sufficient):
-- Daemon's CQT differs meaningfully from training CQT (train/serve skew
-  fix — see `beat_rnn_deploy_plan.md`)
+- **Daemon's CQT differs meaningfully from training CQT** —
+  *empirically confirmed for v1*: prtcqt produces magnitudes ~77×
+  smaller than librosa.cqt for the same PCM. v1 ships with a scale-
+  correction band-aid in `BeatRNNDetector` (`_CQT_SCALE_TO_TRAINING
+  = 770.0`); next retrain MUST use daemon CQT directly to eliminate
+  the train/serve skew (see "Required: switch to daemon CQT" below).
 - New genre cluster identified where v1 underperforms (gap fill)
 - More than 2-3x corpus expansion since last train (diminishing returns
   on existing model size; time to scale)
 - A model improvement (architecture or hyperparams) wants validation
   against the existing data — even without new audio, worth retraining
   to confirm
+
+### Required: switch to daemon CQT for the next retrain
+
+The v1 training pipeline (`tools/generate_beat_labels.py`) computes CQT
+via `librosa.cqt`. The live daemon uses `prtcqt` (rt-cqt SlidingCqt).
+Per `tools/diagnose_cqt_skew.py`, these produce ~77× different magnitude
+scales for identical PCM input; per-bin correlation median is 0.59,
+not 1.0, so the mismatch isn't a clean scale factor either.
+
+For the next retrain:
+1. **Generate labels through the daemon's CQT, not librosa**. Modify
+   `tools/generate_beat_labels.py` to use `CqtEngine` directly
+   (instantiate it and feed audio hop-by-hop, mirroring the live
+   path).
+2. **Train on those daemon-CQT labels**. Same model architecture; the
+   features change.
+3. **Delete `_CQT_SCALE_TO_TRAINING` from `BeatRNNDetector`** —
+   training and deployment now use the same CQT, no scale correction
+   needed.
+
+This is the structural "train/serve skew" fix vs the v1 band-aid.
+Pattern recognition: the broader lesson (data representation is
+always where the bugs are) is also documented in
+`memory/feedback_*.md` if/when filed; this is the concrete
+instance.
 
 Avoid retraining triggers:
 - "It's been a while" — calendar time isn't a quality signal
