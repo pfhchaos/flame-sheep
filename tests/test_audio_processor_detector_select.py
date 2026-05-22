@@ -30,12 +30,18 @@ def _make_processor():
 
 
 def test_default_is_percentile():
-    """No config override → PercentileBeatDetector. Safety property:
-    misconfiguration shouldn't put us on the RNN path silently."""
+    """When detector.kind is set to 'percentile' the dispatch picks
+    PercentileBeatDetector. (cfg.reload() may apply a user audio.toml
+    that overrides the default, so we force 'percentile' explicitly
+    here rather than relying on the as-shipped default.)"""
     cfg.reload()
-    proc = _make_processor()
-    from flame_sheep_audio.beat_detector import PercentileBeatDetector
-    assert isinstance(proc._detector, PercentileBeatDetector)
+    cfg.detector.kind = 'percentile'
+    try:
+        proc = _make_processor()
+        from flame_sheep_audio.beat_detector import PercentileBeatDetector
+        assert isinstance(proc._detector, PercentileBeatDetector)
+    finally:
+        cfg.reload()
 
 
 def test_explicit_flux_selects_flux():
@@ -54,7 +60,7 @@ def test_rnn_requires_weights_path():
     daemon should fail loud rather than silently fall back."""
     cfg.reload()
     cfg.detector.kind = 'rnn'
-    # Default rnn_weights_path is empty string
+    cfg.detector.rnn_weights_path = ''   # force empty even if user toml sets one
     try:
         with pytest.raises(ValueError, match='rnn_weights_path'):
             _make_processor()
