@@ -1003,6 +1003,7 @@ class Library:
 
     def __init__(self, data_dir: Path | None = None):
         self.conn = _connect(data_dir)
+        self._data_dir = data_dir
 
     def close(self) -> None:
         self.conn.close()
@@ -1727,13 +1728,33 @@ class Library:
         self.conn.commit()
 
         # Thumbs-up breeder — direct genome upvotes only.
+        # Runs in a background thread so the render loop (which calls
+        # this via Orchestrator.tick → _handle_like → Library.rate)
+        # doesn't stall on the 7-child Genome.jitter + insert sequence.
+        # Empirically, doing this on the render thread tripped the
+        # watchdog after ~4s. The breeding thread opens its own SQLite
+        # connection (sqlite3.Connection is single-threaded by default)
+        # rather than sharing self.conn.
         if target_type == 'genome' and rating > 0:
-            try:
-                children = self.breed_thumbsup_children(target_id)
-                log.info('[thumbsup-breed] genome #%d -> %d children %s',
-                         target_id, len(children), children)
-            except Exception:
-                log.exception('[thumbsup-breed] failed for genome #%d', target_id)
+            import threading
+            parent_id = target_id
+            data_dir = self._data_dir
+
+            def _async_breed() -> None:
+                try:
+                    bg_lib = Library(data_dir)
+                    try:
+                        children = bg_lib.breed_thumbsup_children(parent_id)
+                        log.info('[thumbsup-breed] genome #%d -> %d children %s',
+                                 parent_id, len(children), children)
+                    finally:
+                        bg_lib.close()
+                except Exception:
+                    log.exception('[thumbsup-breed] failed for genome #%d',
+                                  parent_id)
+
+            threading.Thread(target=_async_breed, daemon=True,
+                              name=f'thumbsup-breed-{parent_id}').start()
 
     def breed_thumbsup_children(self, parent_genome_id: int,
                                 n_children: int = 7,
