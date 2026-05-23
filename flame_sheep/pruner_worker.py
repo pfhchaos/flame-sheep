@@ -69,6 +69,53 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 except Exception:
                     log.exception('[retrain] recommendation check failed')
 
+            # Generation-advance latch: this worker owns the breed and
+            # prune steps. Both can be heavy; do at most one per iteration
+            # and let the next loop tick re-check state.
+            try:
+                from .gen_advance import (
+                    bulk_breed, rank_prune, compute_breed_count,
+                    measure_disagreement,
+                    STATE_AWAITING_BREED, STATE_AWAITING_SCORE_NEW,
+                    STATE_AWAITING_PRUNE, STATE_IDLE,
+                )
+                from .storage import Library
+                if _lib_for_retrain is None:
+                    _lib_for_retrain = Library()
+                gen_state = _lib_for_retrain.get_gen_advance_state()
+
+                if gen_state == STATE_AWAITING_BREED:
+                    target = _lib_for_retrain.get_gen_advance_target()
+                    disagreement = measure_disagreement(conn)
+                    pop = conn.execute(
+                        'SELECT COUNT(*) FROM genomes WHERE COALESCE(archived,0)=0'
+                    ).fetchone()[0]
+                    n = compute_breed_count(disagreement, pop)
+                    log.info('[gen-advance] bulk-breed start: target gen %s, '
+                             'pop=%d, disagreement=%.3f, count=%d',
+                             target, pop, disagreement, n)
+                    result = bulk_breed(_lib_for_retrain, n)
+                    log.info('[gen-advance] bulk-breed done: produced %d/%d '
+                             'children. Flipping → awaiting_score_new',
+                             len(result['ids']), n)
+                    _lib_for_retrain.cas_gen_advance_state(
+                        STATE_AWAITING_BREED, STATE_AWAITING_SCORE_NEW)
+                    continue
+
+                if gen_state == STATE_AWAITING_PRUNE:
+                    target = _lib_for_retrain.get_gen_advance_target()
+                    current_gen = _lib_for_retrain.get_current_generation()
+                    result = rank_prune(_lib_for_retrain, current_gen)
+                    new_gen = _lib_for_retrain.advance_generation()
+                    _lib_for_retrain.clear_gen_advance()
+                    log.warning('[gen-advance] COMPLETE: now at generation %d '
+                                '(target was %s, archived %d, pop %d → %d)',
+                                new_gen, target, result['archived'],
+                                result['pop_before'], result['pop_after'])
+                    continue
+            except Exception:
+                log.exception('[gen-advance] step failed')
+
             if os.getloadavg()[0] > BackgroundPruner.LOAD_THRESHOLD:
                 stop_event.wait(BackgroundPruner.LOAD_CHECK_INTERVAL)
                 continue

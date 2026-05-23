@@ -359,6 +359,40 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                     except Exception:
                         log.exception('Failed to reload CNN weights, keeping previous')
 
+                # Generation-advance latch: when scoring is fully caught up
+                # (no stale-hash genomes left) and we're in a state this
+                # worker owns, flip the latch to hand off to the pruner.
+                # Speed isn't critical — idle-poll cadence is enough.
+                if cnn_weights_hash:
+                    try:
+                        from .gen_advance import (
+                            rescore_complete, all_active_fully_scored,
+                            STATE_AWAITING_RESCORE, STATE_AWAITING_BREED,
+                            STATE_AWAITING_SCORE_NEW, STATE_AWAITING_PRUNE,
+                        )
+                        from .storage import Library
+                        _lib = Library()
+                        state = _lib.get_gen_advance_state()
+                        if state == STATE_AWAITING_RESCORE and rescore_complete(
+                                conn, cnn_weights_hash):
+                            if _lib.cas_gen_advance_state(
+                                    STATE_AWAITING_RESCORE, STATE_AWAITING_BREED):
+                                log.info('[gen-advance] rescore complete '
+                                         '(target gen %s), flipped latch '
+                                         '→ awaiting_breed',
+                                         _lib.get_gen_advance_target())
+                        elif state == STATE_AWAITING_SCORE_NEW and all_active_fully_scored(
+                                conn, cnn_weights_hash):
+                            # Stricter check: includes unrendered bred genomes
+                            # so we don't advance before render_worker catches up.
+                            if _lib.cas_gen_advance_state(
+                                    STATE_AWAITING_SCORE_NEW, STATE_AWAITING_PRUNE):
+                                log.info('[gen-advance] new genomes rendered '
+                                         '+ scored, flipped latch → awaiting_prune')
+                        _lib.close()
+                    except Exception:
+                        log.exception('[gen-advance] latch check failed')
+
                 stop_event.wait(BackgroundCpuScorer.IDLE_CHECK_INTERVAL)
                 continue
 

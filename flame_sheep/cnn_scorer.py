@@ -217,6 +217,66 @@ def save_cnn_weights_file(path: str | Path, weights: np.ndarray,
              normalization_version=normalization_version)
 
 
+def expand_conv1_channels(base_weights: np.ndarray,
+                          base_in_channels: int,
+                          target_in_channels: int,
+                          layers_config: list[tuple]) -> np.ndarray:
+    """Expand the first conv layer's in_channels dimension by zero-padding.
+
+    Used when fine-tuning a model trained on fewer input channels (e.g. the
+    3-channel ES base) into a model with more channels (e.g. 4-channel
+    personal H/S/L/A). The new in_channel planes start at zero so the
+    expanded model behaves identically to the base on inputs where the new
+    channels are zero, and learns the new feature from gradient flow during
+    fine-tuning.
+
+    Args:
+        base_weights: flat (1D) weight array from the base model.
+        base_in_channels: in_channels the base was trained with.
+        target_in_channels: in_channels the target model expects.
+        layers_config: target model's layer config [(in_c, out_c, k, s, p), ...].
+            Only layers_config[0] is consulted (the first conv's kernel shape).
+
+    Returns:
+        flat (1D) weight array sized for the target model. Length increases
+        by (target_in - base_in) * out_c * k * k.
+
+    Raises:
+        ValueError: if target < base (would silently drop signal).
+    """
+    if base_in_channels == target_in_channels:
+        return base_weights
+    if base_in_channels > target_in_channels:
+        raise ValueError(
+            f'Cannot contract channels {base_in_channels} → {target_in_channels} — '
+            f'would silently discard input signal. Retrain from scratch instead.')
+
+    target_in_c, out_c, k, _, _ = layers_config[0]
+    if target_in_c != target_in_channels:
+        raise ValueError(
+            f'layers_config[0] in_channels={target_in_c} disagrees with '
+            f'target_in_channels={target_in_channels}')
+
+    base_conv1_n = out_c * base_in_channels * k * k
+    if base_conv1_n > len(base_weights):
+        raise ValueError(
+            f'base_weights too short ({len(base_weights)}) to contain '
+            f'conv1 kernel ({base_conv1_n} floats for {out_c}x{base_in_channels}x{k}x{k})')
+
+    conv1_kernel = base_weights[:base_conv1_n].reshape(
+        out_c, base_in_channels, k, k)
+    n_new = target_in_channels - base_in_channels
+    # Pad new in_channel planes at the END (index = base_in_channels). For
+    # the ES → personal case this puts A at index 3, matching the H/S/L/A
+    # ordering the data loader produces.
+    expanded = np.pad(conv1_kernel, [(0, 0), (0, n_new), (0, 0), (0, 0)],
+                      mode='constant', constant_values=0).astype(np.float32)
+    return np.concatenate([
+        expanded.flatten(),
+        base_weights[base_conv1_n:].astype(np.float32),
+    ])
+
+
 def load_vk_weights(model: AestheticNetVk, npy_path: str | Path) -> None:
     """Load flat weights from Vulkan trainer into AestheticNetVk.
 

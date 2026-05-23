@@ -311,8 +311,17 @@ def build_cnn_input(static_hits: np.ndarray,
                     swept_hits: np.ndarray,
                     first_hit: np.ndarray | None = None,
                     normalization: tuple | None = None,
-                    output_size: int = 256) -> np.ndarray:
-    """Build the (4, output_size, output_size) standardized CNN input.
+                    output_size: int = 256,
+                    n_channels: int = 4) -> np.ndarray:
+    """Build the (n_channels, output_size, output_size) standardized CNN input.
+
+    n_channels=4 (default): H, S, L, A — full domain representation. On
+    inputs lacking first_hit data, A is sentinel-filled.
+
+    n_channels=3: H, S, L only — used for ES pretraining where A would be
+    a constant sentinel anyway. Skipping the channel entirely makes the
+    pretrained model genuinely 3-input; a later personal fine-tune
+    expands conv1 to 4 channels with the new A column zero-initialized.
 
     Combines channel construction + resize + sentinel-aware standardization
     so masks derived from raw histograms stay aligned with the channels
@@ -323,8 +332,11 @@ def build_cnn_input(static_hits: np.ndarray,
     normalization=None returns the un-standardized raw channels at
     output_size (useful for inspection / visualization). With
     normalization=(mean, std), hit pixels are z-scored and sentinel
-    pixels are snapped to SENTINEL_STANDARDIZED.
+    pixels are snapped to SENTINEL_STANDARDIZED. mean/std vector length
+    must match n_channels.
     """
+    if n_channels not in (3, 4):
+        raise ValueError(f'n_channels must be 3 or 4, got {n_channels}')
     from PIL import Image
 
     H, S, L, A, masks = _build_native_channels_and_masks(
@@ -347,7 +359,8 @@ def build_cnn_input(static_hits: np.ndarray,
         H = resize_bilinear(H)
         S = resize_bilinear(S)
         L = resize_bilinear(L)
-        A = resize_bilinear(A)
+        if n_channels == 4:
+            A = resize_bilinear(A)
         masks = {
             'H': resize_nearest_bool(masks['H']),
             'S': resize_nearest_bool(masks['S']),
@@ -355,7 +368,12 @@ def build_cnn_input(static_hits: np.ndarray,
             'A': resize_nearest_bool(masks['A']),
         }
 
-    channels = np.stack([H, S, L, A], axis=0).astype(np.float32)
+    if n_channels == 4:
+        channels = np.stack([H, S, L, A], axis=0).astype(np.float32)
+        mask_layers = [masks['H'], masks['S'], masks['L'], masks['A']]
+    else:  # 3
+        channels = np.stack([H, S, L], axis=0).astype(np.float32)
+        mask_layers = [masks['H'], masks['S'], masks['L']]
 
     if normalization is None:
         return channels
@@ -368,12 +386,7 @@ def build_cnn_input(static_hits: np.ndarray,
     # negative outliers like -9 in sparse-coverage corpora, and gives
     # the model a consistent "dead pixel" signal across all four
     # channels at the same spatial locations.
-    mask_stack = np.stack([
-        masks['H'],
-        masks['S'],
-        masks['L'],
-        masks['A'],
-    ], axis=0)
+    mask_stack = np.stack(mask_layers, axis=0)
     return standardize_channels(channels, *normalization, masks=mask_stack)
 
 

@@ -64,10 +64,12 @@ class ImageStore:
     def __init__(self, manifest_path: Path, image_dir: Path,
                  image_size: int, cache_gb: float = 4.0,
                  channels: str = 'rgb',
+                 n_channels: int = 4,
                  normalization: tuple | None = None):
         self.image_dir = image_dir
         self.image_size = image_size
         self._channels = channels
+        self._n_channels = n_channels
         self._normalization = normalization
 
         self.entries = []
@@ -103,6 +105,7 @@ class ImageStore:
                     raw['swept_hits'], raw.get('first_hit'),
                     normalization=self._normalization,
                     output_size=sz,
+                    n_channels=self._n_channels,
                 )
             # Fall through to RGB if no .npz
 
@@ -120,7 +123,8 @@ class ImageStore:
 
     def get_batch(self, indices: list[int] | np.ndarray) -> np.ndarray:
         """Load a batch of images by index. Uses LRU cache."""
-        batch = np.zeros((len(indices), 4, self.image_size, self.image_size),
+        batch = np.zeros((len(indices), self._n_channels,
+                          self.image_size, self.image_size),
                          dtype=np.float32)
         for i, idx in enumerate(indices):
             if idx not in self._cache:
@@ -236,15 +240,32 @@ def main():
                         help='Model size: 25k / 55k / 100k')
     parser.add_argument('--mlp-head', action='store_true',
                         help='Use MLP head (Linear→ReLU→Linear) instead of single Linear')
-    parser.add_argument('--channels', type=str, default='rgb',
+    parser.add_argument('--channels', type=str, default='domain',
                         choices=['rgb', 'domain'],
-                        help='Input channels: rgb (RGB+swept) or domain (histogram-based H/S/L/A)')
+                        help='Input channels: domain (histogram-based H/S/L[/A], default) '
+                             'or rgb (deprecated, palette-index artifact in green channel)')
+    parser.add_argument('--channels-count', type=int, default=4, choices=[3, 4],
+                        help='Channel count for domain mode: 4 includes A '
+                             '(first-hit emergence, sentinel on ES), 3 omits A '
+                             'entirely. Use 3 for ES pretraining; 4 for personal.')
     parser.add_argument('--init-weights', type=str, default=None,
                         help='Load initial weights from .npy file (for resuming or fine-tuning)')
     args = parser.parse_args()
 
     global LAYERS, MLP_HEAD
-    LAYERS = MODEL_CONFIGS[args.model_size]
+    # rgb mode always uses 4 channels (R, G, B, swept). channels_count
+    # only applies to domain mode. Normalize the arg so downstream code
+    # (buffer alloc, forward shape) can read a single source of truth.
+    if args.channels == 'rgb':
+        args.channels_count = 4
+
+    # Copy MODEL_CONFIGS entry so we don't mutate the module-level constant
+    # when overriding the first layer's in_channels for 3-channel mode.
+    LAYERS = list(MODEL_CONFIGS[args.model_size])
+    if args.channels_count != LAYERS[0][0]:
+        # Override first layer's in_channels to match the requested count.
+        first = LAYERS[0]
+        LAYERS[0] = (args.channels_count, first[1], first[2], first[3], first[4])
     MLP_HEAD = args.mlp_head
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s',
@@ -288,9 +309,20 @@ def main():
                  [f'{x:.4f}' for x in normalization[0]],
                  [f'{x:.4f}' for x in normalization[1]])
 
+    # If 3-channel domain, trim normalization stats to first 3 entries.
+    # Per-channel stats are independent so H/S/L slices are valid as-is —
+    # no recomputation needed.
+    if args.channels == 'domain' and args.channels_count == 3 and normalization is not None:
+        normalization = (normalization[0][:3], normalization[1][:3])
+        log.info('Trimmed normalization to 3 channels (H, S, L): '
+                 'mean=%s std=%s',
+                 [f'{x:.4f}' for x in normalization[0]],
+                 [f'{x:.4f}' for x in normalization[1]])
+
     # Streaming image store (loads from disk on demand)
     store = ImageStore(data_dir / 'manifest.csv', data_dir, args.image_size,
                        cache_gb=args.cache_gb, channels=args.channels,
+                       n_channels=args.channels_count,
                        normalization=normalization)
     entries = store.entries
     log.info('Dataset: %d genomes, image cache: %.1f GB (%d images)',
@@ -322,7 +354,8 @@ def main():
              'MLP' if MLP_HEAD else 'linear')
 
     # Input buffer for batch uploads
-    input_buf = gpu.create_buffer(args.batch_size * 4 * args.image_size * args.image_size * 4)
+    input_buf = gpu.create_buffer(
+        args.batch_size * args.channels_count * args.image_size * args.image_size * 4)
     d_scores_buf = gpu.create_buffer(args.batch_size * 4)
 
     # Validation pairs — cross-gen composite, same method as training.
@@ -369,11 +402,11 @@ def main():
             model.zero_grad()
 
             gpu.upload(input_buf, w_imgs)
-            w_out = model.forward(input_buf, args.batch_size, (4, args.image_size, args.image_size))
+            w_out = model.forward(input_buf, args.batch_size, (args.channels_count, args.image_size, args.image_size))
             w_scores = gpu.download(w_out, np.float32, args.batch_size)[:B]
 
             gpu.upload(input_buf, l_imgs)
-            l_out = model.forward(input_buf, args.batch_size, (4, args.image_size, args.image_size))
+            l_out = model.forward(input_buf, args.batch_size, (args.channels_count, args.image_size, args.image_size))
             l_scores = gpu.download(l_out, np.float32, args.batch_size)[:B]
 
             # Margin ranking loss
@@ -395,7 +428,7 @@ def main():
 
             # Re-forward winner to restore layer state, then backward
             gpu.upload(input_buf, w_imgs)
-            model.forward(input_buf, args.batch_size, (4, args.image_size, args.image_size))
+            model.forward(input_buf, args.batch_size, (args.channels_count, args.image_size, args.image_size))
             d_w_scores = np.zeros(args.batch_size, dtype=np.float32)
             d_w_scores[:B] = -active / B
             gpu.upload(d_scores_buf, d_w_scores)
@@ -420,7 +453,7 @@ def main():
                 batch_imgs = np.concatenate([batch_imgs, pad])
             gpu.upload(input_buf, batch_imgs)
             out = model.forward(input_buf, args.batch_size,
-                                (4, args.image_size, args.image_size))
+                                (args.channels_count, args.image_size, args.image_size))
             scores = gpu.download(out, np.float32, args.batch_size)
             for j, idx in enumerate(batch_idx):
                 val_scores[idx] = scores[j]

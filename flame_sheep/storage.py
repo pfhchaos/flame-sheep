@@ -1178,30 +1178,115 @@ class Library:
         self.conn.commit()
         return new_gen
 
+    # ------------------------------------------------------------------
+    # Generation-advance latches
+    #
+    # State machine in metadata that orchestrates the post-train pipeline
+    # without a long-running coordinator process. Each background worker
+    # reads its trigger state, runs its step, CAS-flips to the next state.
+    # See docs/generational_architecture.md and flame_sheep/gen_advance.py.
+    #
+    # States:
+    #   idle               — no advance in progress (default)
+    #   awaiting_rescore   — new weights deployed, waiting for full rescore
+    #   awaiting_breed     — rescore done, mass breeder runs next
+    #   awaiting_score_new — bred genomes need scoring against new weights
+    #   awaiting_prune     — new genomes scored, pruner runs next
+    # ------------------------------------------------------------------
+
+    def get_gen_advance_state(self) -> str:
+        """Current latch state. Defaults to 'idle' if metadata missing."""
+        row = self.conn.execute(
+            "SELECT value FROM metadata WHERE key='gen_advance_state'"
+        ).fetchone()
+        return row[0] if row else 'idle'
+
+    def get_gen_advance_target(self) -> int | None:
+        """The new generation number the in-flight advance is targeting.
+        None when state is 'idle' or no target was set."""
+        row = self.conn.execute(
+            "SELECT value FROM metadata WHERE key='gen_advance_target'"
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return int(row[0])
+        except (ValueError, TypeError):
+            return None
+
+    def cas_gen_advance_state(self, expected: str, new: str,
+                              target: int | None = None) -> bool:
+        """Atomic compare-and-set on gen_advance_state.
+
+        Returns True iff the state was 'expected' and got flipped to 'new'.
+        Two workers racing on the same transition will see one True and
+        one False — only the True-getter runs the work.
+
+        If target is provided, also writes gen_advance_target in the same
+        transaction. Pass target on the *first* transition (idle →
+        awaiting_rescore) so downstream workers can read it.
+        """
+        # SQLite's UPDATE on a single row is atomic. Use the row count to
+        # detect the race. INSERT-OR-REPLACE handles the missing-row case
+        # for the very first transition (no row → can't CAS, so we seed).
+        cur = self.conn.cursor()
+        # Ensure the row exists with current value (no-op if already there).
+        cur.execute(
+            "INSERT OR IGNORE INTO metadata (key, value) "
+            "VALUES ('gen_advance_state', 'idle')"
+        )
+        cur.execute(
+            "UPDATE metadata SET value=? "
+            "WHERE key='gen_advance_state' AND value=?",
+            (new, expected),
+        )
+        won = cur.rowcount == 1
+        if won and target is not None:
+            cur.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) "
+                "VALUES ('gen_advance_target', ?)",
+                (str(target),),
+            )
+        self.conn.commit()
+        return won
+
+    def clear_gen_advance(self) -> None:
+        """Reset latches to idle and drop the target. Used by the final
+        step of the pipeline after advance_generation(), and by the
+        recovery CLI when something gets stuck."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) "
+            "VALUES ('gen_advance_state', 'idle')"
+        )
+        self.conn.execute(
+            "DELETE FROM metadata WHERE key='gen_advance_target'"
+        )
+        self.conn.commit()
+
     def retrain_recommendation(self,
                                fixed_threshold: int = 2000,
-                               relative_threshold: float = 1.5,
-                               cutover_total: int = 10_000) -> dict:
+                               relative_threshold: float = 1.5) -> dict:
         """Heuristic for whether enough new judgments warrant a new model gen.
 
         Each thumb (rating row) and each compare-mode pair counts as one
-        judgment, since they carry equivalent independent information
-        per click (a thumb is one absolute judgment about a single
-        genome; a compare is one relative judgment between two). The
-        K*M synthesized pair count from thumbs is NOT what's measured
-        here — that's a redundancy-inflated number; we care about
-        independent observations.
+        judgment, since they carry equivalent independent information per
+        click (a thumb is one absolute judgment about a single genome; a
+        compare is one relative judgment between two). The K*M synthesized
+        pair count from thumbs is NOT what's measured here — that's a
+        redundancy-inflated number; we care about independent observations.
 
-        Two phases:
-        - Early: fixed_threshold (default 2000) new judgments. Below
-          ~10K total observations the absolute count matters more than
-          the ratio, because each judgment has high marginal value.
-        - Late: relative_threshold * judgments_prev_gen. Once data is
-          plentiful, retraining frequency scales with the accumulated
-          base to amortize compute cost against marginal model gain.
+        Geometric throughout: threshold = max(fixed_threshold,
+        relative_threshold * judgments_prev_gen). fixed_threshold is the
+        floor; from gen 2 onward the 1.5x multiplier dominates.
 
-        cutover_total: switch from fixed to relative once total all-gen
-        judgments cross this many.
+        Gen 0 is excluded from prev_gen calculations — it's pre-generational
+        backfill (existing pairwise ratings stamped 0 at migration), not a
+        real cycled generation. Using it as the basis for gen 1's threshold
+        would yield a pathologically high number (1.5x of bootstrap pool).
+
+        Also short-circuits to should_retrain=False whenever a generation
+        advance is already in flight (gen_advance_state != 'idle'). No
+        point recommending a retrain we're literally executing.
 
         Returns a dict suitable for logging — current_gen, this_gen_count,
         threshold, should_retrain, and a human-readable message.
@@ -1218,37 +1303,48 @@ class Library:
         judgments_this = thumbs_this + pairwise_this
 
         # Previous generation's total judgments for the relative threshold.
-        prev_thumbs = self.conn.execute(
-            "SELECT COUNT(*) FROM ratings WHERE generation=? AND target_type='genome'",
-            (gen - 1,)
-        ).fetchone()[0] if gen > 0 else 0
-        prev_pairwise = self.conn.execute(
-            "SELECT COUNT(*) FROM pairwise_ratings WHERE generation=?",
-            (gen - 1,)
-        ).fetchone()[0] if gen > 0 else 0
-        judgments_prev = prev_thumbs + prev_pairwise
+        # Gen 0 is excluded — it's bootstrap backfill, not a real cycled
+        # generation. For gen 1, prev_basis collapses to 0 → threshold
+        # falls to the fixed_threshold floor.
+        if gen >= 2:
+            prev_thumbs = self.conn.execute(
+                "SELECT COUNT(*) FROM ratings WHERE generation=? AND target_type='genome'",
+                (gen - 1,)
+            ).fetchone()[0]
+            prev_pairwise = self.conn.execute(
+                "SELECT COUNT(*) FROM pairwise_ratings WHERE generation=?",
+                (gen - 1,)
+            ).fetchone()[0]
+            judgments_prev = prev_thumbs + prev_pairwise
+        else:
+            judgments_prev = 0
 
-        # All-generations total drives the phase choice.
+        # All-generations total — diagnostic only.
         total = self.conn.execute(
             "SELECT COUNT(*) FROM ratings WHERE target_type='genome'"
         ).fetchone()[0] + self.conn.execute(
             "SELECT COUNT(*) FROM pairwise_ratings"
         ).fetchone()[0]
 
-        if total < cutover_total:
-            threshold = fixed_threshold
-            mode = 'fixed'
+        threshold = max(fixed_threshold,
+                        int(relative_threshold * judgments_prev))
+        mode = 'geometric'
+
+        # Suppress recommendation if a gen advance is already in flight —
+        # the retrain has happened (or is happening); recommending it again
+        # is just noise and a foot-gun for any tool that auto-acts on this.
+        advancing = self.get_gen_advance_state() != 'idle'
+        should = (judgments_this >= threshold) and not advancing
+
+        if advancing:
+            tail = 'gen advance in flight, suppressing'
+        elif should:
+            tail = 'RETRAIN RECOMMENDED'
         else:
-            threshold = max(fixed_threshold,
-                            int(relative_threshold * max(judgments_prev, 1)))
-            mode = 'relative'
-
-        should = judgments_this >= threshold
-
+            tail = 'more data needed'
         msg = (f'gen {gen}: {judgments_this} new judgments '
                f'({thumbs_this} thumbs + {pairwise_this} pairwise), '
-               f'threshold={threshold} ({mode}, total={total}), '
-               f'{"RETRAIN RECOMMENDED" if should else "more data needed"}')
+               f'threshold={threshold} ({mode}, total={total}), {tail}')
         return {
             'current_gen': gen,
             'judgments_this_gen': judgments_this,
@@ -1258,6 +1354,7 @@ class Library:
             'all_gen_total': total,
             'threshold': threshold,
             'threshold_mode': mode,
+            'advancing': advancing,
             'should_retrain': should,
             'message': msg,
         }

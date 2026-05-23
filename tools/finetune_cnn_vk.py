@@ -53,8 +53,11 @@ def _load_image_rgb(static_png: bytes, swept_png: bytes | None,
 def _load_image_domain(hist_static: bytes, hist_swept: bytes,
                        hist_first_hit: bytes | None,
                        image_size: int,
-                       normalization: tuple | None = None) -> np.ndarray:
-    """Convert histogram blobs to (4, H, W) float32 domain-native input.
+                       normalization: tuple | None = None,
+                       n_channels: int = 4) -> np.ndarray:
+    """Convert histogram blobs to (n_channels, H, W) float32 domain input.
+
+    n_channels=4 (default): H, S, L, A. n_channels=3: drops A entirely.
 
     With normalization=(mean, std), applies sentinel-aware standardization
     (hit pixels z-scored, sentinels snapped to SENTINEL_STANDARDIZED).
@@ -68,7 +71,8 @@ def _load_image_domain(hist_static: bytes, hist_swept: bytes,
     swept = unpack_histogram(hist_swept)
     first_hit = unpack_histogram(hist_first_hit, dtype=np.uint8) if hist_first_hit else None
     return build_cnn_input(hits, colors, swept, first_hit,
-                           normalization=normalization, output_size=image_size)
+                           normalization=normalization, output_size=image_size,
+                           n_channels=n_channels)
 
 
 class DbImageStore:
@@ -83,15 +87,17 @@ class DbImageStore:
 
     def __init__(self, db_path: str, image_size: int, channels: str = 'rgb',
                  cache_gb: float = 2.0,
-                 normalization: tuple | None = None):
+                 normalization: tuple | None = None,
+                 n_channels: int = 4):
         import sqlite3
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.image_size = image_size
         self._channels = channels
+        self._n_channels = n_channels
         self._normalization = normalization
 
-        bytes_per_image = 4 * image_size * image_size * 4
+        bytes_per_image = n_channels * image_size * image_size * 4
         self.max_cache = int(cache_gb * 1e9 / bytes_per_image)
         self._cache: dict[int, np.ndarray] = {}
         self._access_order: list[int] = []
@@ -110,7 +116,8 @@ class DbImageStore:
             # Domain path standardizes inside _load_image_domain (sentinel-aware).
             img = _load_image_domain(
                 row['hist_static'], row['hist_swept'], row['hist_first_hit'],
-                self.image_size, normalization=self._normalization)
+                self.image_size, normalization=self._normalization,
+                n_channels=self._n_channels)
         else:
             row = self.conn.execute(
                 'SELECT render_static, render_swept FROM genome_blobs WHERE genome_id=?',
@@ -133,8 +140,9 @@ class DbImageStore:
         return img
 
     def get_batch(self, ids: list[int]) -> np.ndarray:
-        """Load a batch of images. Returns (B, 4, H, W) float32."""
-        batch = np.zeros((len(ids), 4, self.image_size, self.image_size),
+        """Load a batch of images. Returns (B, n_channels, H, W) float32."""
+        batch = np.zeros((len(ids), self._n_channels,
+                          self.image_size, self.image_size),
                          dtype=np.float32)
         for i, gid in enumerate(ids):
             img = self.get(gid)
@@ -168,79 +176,112 @@ def load_training_pairs(db_path: str, mode: str = 'mixed') -> tuple[list[tuple[i
 
     # 2. Thumbs up/down → synthetic pairs
     #
-    # A thumb is an absolute corpus-relative judgment: "this is liked
-    # compared to whatever else was in front of me when I rated it." Two
-    # filters narrow the pool to thumbs that are valid training signal
-    # against the CURRENT model+population:
+    # A thumb is a corpus-relative judgment: "this is liked compared to
+    # whatever else was in front of me when I rated it." Two rules govern
+    # what's valid training signal:
     #
-    # (a) The target genome is still in the active set (g.archived = 0).
-    #     Even within a generation, the genome must exist to render
-    #     against.
-    # (b) The rating was made in the current generation. Cross-generation
-    #     thumbs are training poison — the underlying corpus shifted out
-    #     from under them. See docs/generational_architecture.md.
+    # (a) Pair only within a generation. A gen-1 liked vs a gen-1 disliked
+    #     were contemporaries — valid pair. A gen-1 liked vs a gen-2
+    #     disliked never co-existed in the same corpus — invalid pair
+    #     (training poison). Past-generation thumbs stay valid forever as
+    #     long as we don't cross-pair them.
+    # (b) Gen 0 is excluded entirely. Bootstrap/seed corpus that was so
+    #     mixed it actively poisoned earlier training runs.
     #
-    # Pairwise pairs (below) don't need either filter at the same level:
-    # they're self-contained 2-genome comparisons whose meaning doesn't
-    # depend on the surrounding population, so they accumulate across
-    # generations. (Stale-genome filter is still applied so we can
-    # actually render them.)
-    current_generation = conn.execute(
-        "SELECT value FROM metadata WHERE key='current_generation'"
-    ).fetchone()
-    current_generation = int(current_generation[0]) if current_generation else 0
+    # Archived status is NOT a filter: downvoted genomes get archived by
+    # the pruner, but their renders survive and their thumbs are exactly
+    # the negative signal we need. The renders-exist filter below is the
+    # only existence check that matters.
+    #
+    # Pairwise pairs (above) accumulate across generations — they're
+    # self-contained 2-genome comparisons whose meaning doesn't depend
+    # on the surrounding population.
+    from collections import defaultdict
 
-    ratings = conn.execute('''
-        SELECT r.target_id, SUM(r.rating) as net
-        FROM ratings r
-        JOIN genomes g ON g.id = r.target_id
-        WHERE r.target_type='genome' AND g.archived = 0
-              AND r.generation = ?
-        GROUP BY r.target_id
-    ''', (current_generation,)).fetchall()
+    ratings_by_gen = conn.execute('''
+        SELECT target_id, generation, SUM(rating) as net
+        FROM ratings
+        WHERE target_type='genome' AND generation > 0
+        GROUP BY target_id, generation
+    ''').fetchall()
 
-    liked_ids = [r[0] for r in ratings if r[1] > 0]
-    disliked_ids = [r[0] for r in ratings if r[1] < 0]
+    liked_by_gen: dict[int, list[int]] = defaultdict(list)
+    disliked_by_gen: dict[int, list[int]] = defaultdict(list)
+    for target_id, gen, net in ratings_by_gen:
+        if net > 0:
+            liked_by_gen[gen].append(target_id)
+        elif net < 0:
+            disliked_by_gen[gen].append(target_id)
 
-    # Filter to genomes that have renders
+    # Filter each gen to genomes that have renders
     rendered = set(r[0] for r in conn.execute(
         'SELECT genome_id FROM genome_blobs WHERE render_static IS NOT NULL'
     ).fetchall())
-    liked_ids = [gid for gid in liked_ids if gid in rendered]
-    disliked_ids = [gid for gid in disliked_ids if gid in rendered]
+    all_gens = set(liked_by_gen) | set(disliked_by_gen)
+    for gen in all_gens:
+        liked_by_gen[gen] = [gid for gid in liked_by_gen[gen] if gid in rendered]
+        disliked_by_gen[gen] = [gid for gid in disliked_by_gen[gen] if gid in rendered]
+
+    # Usable gens have both sides — needed to form intra-gen pairs.
+    usable_gens = sorted(g for g in all_gens
+                         if liked_by_gen[g] and disliked_by_gen[g])
+    total_K = sum(len(liked_by_gen[g]) for g in usable_gens)
+    total_M = sum(len(disliked_by_gen[g]) for g in usable_gens)
+    total_KM = sum(len(liked_by_gen[g]) * len(disliked_by_gen[g])
+                   for g in usable_gens)
+
+    if usable_gens:
+        per_gen_summary = ', '.join(
+            f'gen{g}: {len(liked_by_gen[g])}L×{len(disliked_by_gen[g])}D'
+            for g in usable_gens)
+        log.info('Thumbs by generation: %s', per_gen_summary)
+
+    # Per-pair weights — info-content based, with a global scale factor
+    # that preserves backward-compatible loss magnitude (so existing LR
+    # tuning still applies).
+    #
+    # Information content:
+    #   - A real pairwise compare = 1 independent judgment.
+    #   - A synth pair from gen g comes from a pool of K_g+M_g judgments
+    #     producing K_g*M_g pair constraints — each pair is worth
+    #     (K_g+M_g)/(K_g*M_g) effective samples.
+    #
+    # Naive convention "synth=1.0 baseline, real=K*M/(K+M)" was exact for
+    # a single generation but over-weights low-density gens when pooled
+    # (gen with small K_g*M_g/(K_g+M_g) ratio gets same weight per pair as
+    # high-density gen, contradicting the info content).
+    #
+    # Per-gen convention: synth_g = (K_g+M_g)/(K_g*M_g), real = 1.0. This
+    # is info-exact but shrinks aggregate loss scale by total_KM/total_K+M,
+    # which would require LR retuning.
+    #
+    # Compromise: scale every weight by total_KM/(total_K+total_M). For a
+    # single gen this gives synth=1.0, real=K*M/(K+M) — identical to the
+    # original convention. For multi-gen it redistributes weight within
+    # the synth pool according to per-gen info density, while keeping the
+    # synth-vs-real aggregate balance constant. LR-stable.
+    if total_K > 0 and total_M > 0:
+        scale = total_KM / (total_K + total_M)
+    else:
+        scale = 1.0
+    real_weight = scale
+
+    # Synthesize every unique intra-gen pair exactly once. No oversampling
+    # — duplicating a pair would just inflate its gradient weight without
+    # adding information (the K_g+M_g underlying judgments are fixed).
+    thumbs_triples = []
+    if usable_gens:
+        for gen in usable_gens:
+            K_g = len(liked_by_gen[gen])
+            M_g = len(disliked_by_gen[gen])
+            w_g = ((K_g + M_g) / (K_g * M_g)) * scale
+            for w in liked_by_gen[gen]:
+                for l in disliked_by_gen[gen]:
+                    thumbs_triples.append((w, l, w_g))
 
     rng = np.random.default_rng()
-    thumbs_pairs = []
-    if liked_ids and disliked_ids:
-        # In thumbs mode, generate enough pairs to make training meaningful
-        # In mixed mode, cap at 2x pairwise count
-        if mode == 'thumbs':
-            n_thumbs = len(liked_ids) * len(disliked_ids)  # all combinations
-        else:
-            n_thumbs = max(len(pairwise_pairs) * 2, 1000)
-        for _ in range(n_thumbs):
-            w = rng.choice(liked_ids)
-            l = rng.choice(disliked_ids)
-            thumbs_pairs.append((w, l))
-
-    # Per-pair weights. Synthesized thumbs pairs from K liked × M disliked
-    # carry only K+M independent judgments total — each pair is worth
-    # (K+M)/(K*M) effective samples. A real pairwise compare is 1 effective
-    # sample. Ratio of per-pair informational value:
-    #     w_real / w_synth = K*M / (K+M)
-    # We normalize synth=1.0 and scale real up. With K=60 M=146 that's
-    # 60*146/206 = 42.5x. Without this weighting, the K*M synthesized pairs
-    # would dominate the loss by row count despite carrying less signal.
-    # See alter-ego analysis + Bradley-Terry / effective-sample-size theory.
-    K = len(liked_ids)
-    M = len(disliked_ids)
-    if K > 0 and M > 0:
-        real_weight = K * M / (K + M)
-    else:
-        real_weight = 1.0
 
     pairwise_triples = [(w, l, real_weight) for (w, l) in pairwise_pairs]
-    thumbs_triples = [(w, l, 1.0) for (w, l) in thumbs_pairs]
 
     if mode == 'thumbs':
         all_pairs = thumbs_triples
@@ -254,9 +295,10 @@ def load_training_pairs(db_path: str, mode: str = 'mixed') -> tuple[list[tuple[i
 
     stats = {
         'pairwise': len(pairwise_pairs),
-        'thumbs_liked': K,
-        'thumbs_disliked': M,
-        'thumbs_pairs': len(thumbs_pairs),
+        'thumbs_liked': total_K,
+        'thumbs_disliked': total_M,
+        'thumbs_pairs': len(thumbs_triples),
+        'thumbs_usable_gens': usable_gens,
         'total': len(all_pairs),
         'mode': mode,
         'real_pair_weight': real_weight,
@@ -313,7 +355,7 @@ def _snapshot_voted_genome_scores(db_path: str) -> dict:
 
 def _report_score_changes(snapshot: dict, gpu, model, store,
                            input_buf, batch_size: int,
-                           image_size: int) -> None:
+                           image_size: int, n_channels: int = 4) -> None:
     """After training, forward each snapshot genome through the model
     (now holding the best-val-acc weights) and print before/after
     scores grouped by rating. Tells you whether the new model is
@@ -339,7 +381,7 @@ def _report_score_changes(snapshot: dict, gpu, model, store,
                             dtype=np.float32)
             batch_imgs = np.concatenate([batch_imgs, pad])
         gpu.upload(input_buf, batch_imgs)
-        out = model.forward(input_buf, batch_size, (4, image_size, image_size))
+        out = model.forward(input_buf, batch_size, (n_channels, image_size, image_size))
         scores = gpu.download(out, np.float32, batch_size)
         for j in range(loaded_count):
             snapshot[batch_ids[j]]['after_score'] = float(scores[j])
@@ -397,9 +439,16 @@ def main():
                         help='Model size (auto-detected from base weights if omitted)')
     parser.add_argument('--mlp-head', action='store_true',
                         help='Use MLP head (auto-detected from base weights if omitted)')
-    parser.add_argument('--channels', type=str, default='rgb',
+    parser.add_argument('--channels', type=str, default='domain',
                         choices=['rgb', 'domain'],
-                        help='Input channels: rgb (RGB+swept) or domain (histogram H/S/L/A)')
+                        help='Input channels: domain (histogram H/S/L[/A], default) or rgb (deprecated, palette-index artifact in green channel)')
+    parser.add_argument('--channels-count', type=int, default=4, choices=[3, 4],
+                        help='Channel count for the target model. Default 4 '
+                             '(H/S/L/A) — what personal-data renders provide. '
+                             'Use 3 only if you specifically want to drop A '
+                             'from the target architecture. If base weights '
+                             'have fewer channels than the target, conv1 is '
+                             'zero-pad-expanded automatically.')
     parser.add_argument('--data-mode', type=str, default='mixed',
                         choices=['mixed', 'thumbs', 'pairwise'],
                         help='Training data: mixed (default), thumbs only (curriculum stage 1), pairwise only (stage 2)')
@@ -432,43 +481,91 @@ def main():
     else:
         log.info('--from-scratch: skipping --base-weights, will Kaiming-init')
 
+    # rgb mode is always 4-channel; reject mismatched flag
+    if args.channels == 'rgb' and args.channels_count != 4:
+        log.error('--channels rgb is always 4-channel (R, G, B, swept); '
+                  'cannot use --channels-count %d. Drop the flag or use '
+                  '--channels domain.', args.channels_count)
+        sys.exit(1)
+
     import train_cnn_vk
 
+    base_in_channels = None
     if args.model_size:
-        train_cnn_vk.LAYERS = MODEL_CONFIGS[args.model_size]
+        # Manual override: trust user. Channel count comes from the config.
+        chosen = list(MODEL_CONFIGS[args.model_size])
+        first = chosen[0]
+        chosen[0] = (args.channels_count, first[1], first[2], first[3], first[4])
+        train_cnn_vk.LAYERS = chosen
         train_cnn_vk.MLP_HEAD = args.mlp_head
+        if base_weights is not None:
+            # Best-effort detect base channel count from param count vs known shapes.
+            for ch in (3, 4):
+                conv_params = sum(co*ci*k*k + co
+                                  for (ci, co, k, _, _) in
+                                  [(ch, first[1], first[2], first[3], first[4])] + chosen[1:])
+                C = chosen[-1][1]
+                if (conv_params + C + 1 == n_params or
+                    conv_params + C * MLP_HIDDEN + MLP_HIDDEN + MLP_HIDDEN + 1 == n_params):
+                    base_in_channels = ch
+                    break
+            if base_in_channels is None:
+                log.warning('Could not infer base channel count from %d params; '
+                            'assuming target (%d). If wrong, expansion will fail.',
+                            n_params, args.channels_count)
+                base_in_channels = args.channels_count
     elif base_weights is None:
         log.error('--from-scratch requires --model-size to be specified '
                   '(no base weights to auto-detect from).')
         sys.exit(1)
     else:
-        # Auto-detect model size and head type from param count
+        # Auto-detect model size, head type, AND base channel count from param
+        # count. Iterate over plausible base-channel values (3, 4) since the
+        # ES base is 3-channel and the personal model is 4-channel.
         matched = False
-        for size_name, config in MODEL_CONFIGS.items():
-            C = config[-1][1]
-            conv_params = sum(co*ci*k*k + co for ci,co,k,_,_ in config)
-            # Check linear head
-            if conv_params + C + 1 == n_params:
-                train_cnn_vk.LAYERS = config
-                train_cnn_vk.MLP_HEAD = False
-                log.info('Auto-detected: %s linear (%d params)', size_name, n_params)
-                matched = True
-                break
-            # Check MLP head
-            mlp_params = C * MLP_HIDDEN + MLP_HIDDEN + MLP_HIDDEN + 1
-            if conv_params + mlp_params == n_params:
-                train_cnn_vk.LAYERS = config
-                train_cnn_vk.MLP_HEAD = True
-                log.info('Auto-detected: %s MLP (%d params)', size_name, n_params)
-                matched = True
+        for ch in (args.channels_count, 3, 4):
+            for size_name, config in MODEL_CONFIGS.items():
+                # Override first layer's in_channels for the trial
+                first = config[0]
+                trial_config = [(ch, first[1], first[2], first[3], first[4])] + list(config[1:])
+                C = trial_config[-1][1]
+                conv_params = sum(co*ci*k*k + co for ci,co,k,_,_ in trial_config)
+                if conv_params + C + 1 == n_params:
+                    target_first = (args.channels_count, first[1], first[2], first[3], first[4])
+                    train_cnn_vk.LAYERS = [target_first] + list(config[1:])
+                    train_cnn_vk.MLP_HEAD = False
+                    base_in_channels = ch
+                    log.info('Auto-detected: %s linear, base channels=%d → target %d (%d params)',
+                             size_name, ch, args.channels_count, n_params)
+                    matched = True
+                    break
+                mlp_params = C * MLP_HIDDEN + MLP_HIDDEN + MLP_HIDDEN + 1
+                if conv_params + mlp_params == n_params:
+                    target_first = (args.channels_count, first[1], first[2], first[3], first[4])
+                    train_cnn_vk.LAYERS = [target_first] + list(config[1:])
+                    train_cnn_vk.MLP_HEAD = True
+                    base_in_channels = ch
+                    log.info('Auto-detected: %s MLP, base channels=%d → target %d (%d params)',
+                             size_name, ch, args.channels_count, n_params)
+                    matched = True
+                    break
+            if matched:
                 break
         if not matched:
-            log.error('Cannot auto-detect model size for %d params. '
-                      'Known linear: %s, MLP: %s', n_params,
-                      [sum(co*ci*k*k+co for ci,co,k,_,_ in c)+c[-1][1]+1 for c in MODEL_CONFIGS.values()],
-                      [sum(co*ci*k*k+co for ci,co,k,_,_ in c)+c[-1][1]*MLP_HIDDEN+MLP_HIDDEN+MLP_HIDDEN+1
-                       for c in MODEL_CONFIGS.values()])
+            log.error('Cannot auto-detect model size + channels for %d params. '
+                      'Tried base channels (3, 4) × configs.', n_params)
             sys.exit(1)
+
+    # If base channels < target, expand conv1 with zero-padded new input planes.
+    if base_weights is not None and base_in_channels < args.channels_count:
+        from flame_sheep.cnn_scorer import expand_conv1_channels
+        log.info('Expanding conv1 channels: %d → %d (zero-pad new input planes)',
+                 base_in_channels, args.channels_count)
+        base_weights = expand_conv1_channels(
+            base_weights, base_in_channels, args.channels_count,
+            train_cnn_vk.LAYERS)
+        n_params = len(base_weights)
+        log.info('Expanded base weights: %d params', n_params)
 
     # Load training data from DB
     from flame_sheep.storage import _db_path
@@ -524,9 +621,17 @@ def main():
             f'Either bump NORMALIZATION_VERSION and rerun '
             f'tools/compute_normalization.py, or load weights that match.')
 
+    # Trim normalization to target channel count (per-channel stats are
+    # independent, so slicing the first N entries is exact).
+    if (args.channels == 'domain' and args.channels_count == 3
+            and normalization is not None):
+        normalization = (normalization[0][:3], normalization[1][:3])
+        log.info('Trimmed normalization to 3 channels (H, S, L)')
+
     # Image store
     store = DbImageStore(db, args.image_size, channels=args.channels,
-                          normalization=normalization)
+                         n_channels=args.channels_count,
+                         normalization=normalization)
 
     # Init GPU model
     gpu = VkCompute()
@@ -546,7 +651,8 @@ def main():
         log.info('Initialized fresh weights: %d params (seed=%d)', model.param_count(), args.seed)
 
     # Input/gradient buffers
-    input_buf = gpu.create_buffer(args.batch_size * 4 * args.image_size * args.image_size * 4)
+    input_buf = gpu.create_buffer(
+        args.batch_size * args.channels_count * args.image_size * args.image_size * 4)
     d_scores_buf = gpu.create_buffer(args.batch_size * 4)
 
     best_acc = 0.0
@@ -592,12 +698,12 @@ def main():
 
             # Forward winner
             gpu.upload(input_buf, w_imgs)
-            w_out = model.forward(input_buf, BS, (4, IMG_SZ, IMG_SZ))
+            w_out = model.forward(input_buf, BS, (args.channels_count, IMG_SZ, IMG_SZ))
             w_scores = gpu.download(w_out, np.float32, BS)[:B]
 
             # Forward loser
             gpu.upload(input_buf, l_imgs)
-            l_out = model.forward(input_buf, BS, (4, IMG_SZ, IMG_SZ))
+            l_out = model.forward(input_buf, BS, (args.channels_count, IMG_SZ, IMG_SZ))
             l_scores = gpu.download(l_out, np.float32, BS)[:B]
 
             # Weighted margin ranking loss. Each pair contributes its loss
@@ -628,7 +734,7 @@ def main():
 
             # Re-forward winner, then backward
             gpu.upload(input_buf, w_imgs)
-            model.forward(input_buf, BS, (4, IMG_SZ, IMG_SZ))
+            model.forward(input_buf, BS, (args.channels_count, IMG_SZ, IMG_SZ))
             d_w = np.zeros(BS, dtype=np.float32)
             d_w[:B] = -active_w
             gpu.upload(d_scores_buf, d_w)
@@ -658,7 +764,7 @@ def main():
                                dtype=np.float32)
                 batch_imgs = np.concatenate([batch_imgs, pad])
             gpu.upload(input_buf, batch_imgs)
-            out = model.forward(input_buf, BS, (4, IMG_SZ, IMG_SZ))
+            out = model.forward(input_buf, BS, (args.channels_count, IMG_SZ, IMG_SZ))
             scores = gpu.download(out, np.float32, BS)
             for j, idx in enumerate(batch_idx):
                 val_cache[idx] = scores[j]
@@ -695,7 +801,32 @@ def main():
     if best_weights is not None:
         model.load_weights(best_weights)
     _report_score_changes(voted_snapshot, gpu, model, store,
-                          input_buf, BS, IMG_SZ)
+                          input_buf, BS, IMG_SZ,
+                          n_channels=args.channels_count)
+
+    # Trigger the generation-advance pipeline. Only fires if at least one
+    # epoch produced a saved-best-weights — a 0-improvement run shouldn't
+    # bother the downstream workers. The score worker hot-reloads the new
+    # weights, rescores, then the latch chain breeds + prunes + advances.
+    if best_weights is not None:
+        try:
+            from flame_sheep.storage import Library
+            _lib = Library()
+            target = _lib.get_current_generation() + 1
+            won = _lib.cas_gen_advance_state('idle', 'awaiting_rescore',
+                                              target=target)
+            if won:
+                log.info('Latched gen advance: idle → awaiting_rescore '
+                         '(target gen %d). Score + pruner workers will '
+                         'pick it up.', target)
+            else:
+                existing = _lib.get_gen_advance_state()
+                log.warning('Could not latch gen advance: existing state '
+                            'is %r (not idle). Inspect with '
+                            'tools/gen_state.py', existing)
+            _lib.close()
+        except Exception:
+            log.exception('Failed to latch gen advance (training succeeded)')
 
     store.close()
     gpu.destroy()
