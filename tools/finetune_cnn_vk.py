@@ -264,6 +264,108 @@ def load_training_pairs(db_path: str, mode: str = 'mixed') -> tuple[list[tuple[i
     return all_pairs, stats
 
 
+def _backup_existing_weights(output: Path) -> None:
+    """If a weights file already exists at the output path, copy it
+    aside with a timestamp suffix. Cheap insurance — a bad fine-tune
+    is then one `cp` away from being reverted. Always run, not opt-in.
+    """
+    if not output.exists():
+        log.info('No existing weights at %s — fresh output, no backup needed',
+                 output)
+        return
+    import shutil
+    import time
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    backup = output.with_suffix(output.suffix + f'.backup_{stamp}')
+    shutil.copy2(output, backup)
+    log.info('Backed up existing weights: %s → %s', output, backup.name)
+
+
+def _snapshot_voted_genome_scores(db_path: str) -> dict:
+    """Snapshot the current cnn_score for every genome the user has
+    directly rated (thumbs up or down). After training, comparing old
+    vs new scores on the same genomes is the single best aggregate
+    signal that the new model actually learned what was taught — more
+    informative than val_acc alone, which can move on noise.
+    """
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute('''
+        SELECT g.id, g.cnn_score, r.rating
+          FROM genomes g
+          JOIN ratings r ON r.target_id = g.id
+         WHERE r.target_type = 'genome'
+           AND r.source = 'direct'
+           AND COALESCE(g.archived, 0) = 0
+           AND g.cnn_score IS NOT NULL
+         ORDER BY r.rating DESC, g.id
+    ''').fetchall()
+    conn.close()
+    snapshot = {}
+    for gid, score, rating in rows:
+        snapshot[gid] = {'before_score': float(score), 'rating': int(rating)}
+    log.info('Snapshot: %d directly-rated genomes (%d up, %d down)',
+             len(snapshot),
+             sum(1 for v in snapshot.values() if v['rating'] > 0),
+             sum(1 for v in snapshot.values() if v['rating'] < 0))
+    return snapshot
+
+
+def _report_score_changes(snapshot: dict, gpu, model, store,
+                           input_buf, batch_size: int,
+                           image_size: int) -> None:
+    """After training, forward each snapshot genome through the model
+    (now holding the best-val-acc weights) and print before/after
+    scores grouped by rating. Tells you whether the new model is
+    actually doing what the votes asked for — more informative than
+    aggregate val_acc, which can drift on noise.
+    """
+    if not snapshot:
+        return
+    import numpy as np
+    gids = list(snapshot.keys())
+    for i in range(0, len(gids), batch_size):
+        batch_ids = gids[i:i + batch_size]
+        batch_imgs = store.get_batch(batch_ids)
+        # Mark genomes the store couldn't load so we don't count them.
+        loaded_count = len(batch_imgs)
+        for j, gid in enumerate(batch_ids):
+            if j >= loaded_count:
+                snapshot[gid]['after_score'] = None
+        if loaded_count == 0:
+            continue
+        if loaded_count < batch_size:
+            pad = np.zeros((batch_size - loaded_count, *batch_imgs.shape[1:]),
+                            dtype=np.float32)
+            batch_imgs = np.concatenate([batch_imgs, pad])
+        gpu.upload(input_buf, batch_imgs)
+        out = model.forward(input_buf, batch_size, (4, image_size, image_size))
+        scores = gpu.download(out, np.float32, batch_size)
+        for j in range(loaded_count):
+            snapshot[batch_ids[j]]['after_score'] = float(scores[j])
+
+    valid = [v for v in snapshot.values() if v.get('after_score') is not None]
+    n_up = sum(1 for v in valid if v['rating'] > 0)
+    n_dn = sum(1 for v in valid if v['rating'] < 0)
+    n_up_moved_up = sum(1 for v in valid
+                        if v['rating'] > 0 and v['after_score'] > v['before_score'])
+    n_dn_moved_dn = sum(1 for v in valid
+                        if v['rating'] < 0 and v['after_score'] < v['before_score'])
+    mean_up_delta = (sum(v['after_score'] - v['before_score']
+                          for v in valid if v['rating'] > 0)
+                     / max(n_up, 1))
+    mean_dn_delta = (sum(v['after_score'] - v['before_score']
+                          for v in valid if v['rating'] < 0)
+                     / max(n_dn, 1))
+    log.info('=== Voted-genome score changes (new model vs old) ===')
+    log.info('  upvoted   moved up:   %d/%d (%.0f%%)  mean Δ = %+.3f',
+             n_up_moved_up, n_up,
+             100 * n_up_moved_up / max(n_up, 1), mean_up_delta)
+    log.info('  downvoted moved down: %d/%d (%.0f%%)  mean Δ = %+.3f',
+             n_dn_moved_dn, n_dn,
+             100 * n_dn_moved_dn / max(n_dn, 1), mean_dn_delta)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)-5s %(message)s',
                         datefmt='%H:%M:%S')
@@ -309,6 +411,10 @@ def main():
 
     output = Path(args.output) if args.output else (
         Path(__file__).resolve().parent.parent / 'flame_sheep/data/cnn_scorer_personal_vk.npy')
+
+    # Pre-flight safety: back up the existing weights so a bad fine-tune
+    # is one `cp` away from reverting. Always-on, not opt-in.
+    _backup_existing_weights(output)
 
     # Load base weights + normalization version stamp (None for legacy .npy).
     # --from-scratch skips this and Kaiming-inits the model after we know
@@ -367,6 +473,13 @@ def main():
     # Load training data from DB
     from flame_sheep.storage import _db_path
     db = str(_db_path())
+
+    # Snapshot pre-training scores for every directly-rated genome so
+    # we can report before/after changes after training completes. The
+    # gold-standard signal that the new model actually learned what
+    # was taught.
+    voted_snapshot = _snapshot_voted_genome_scores(db)
+
     all_pairs, stats = load_training_pairs(db, mode=args.data_mode)
     log.info('Training data: %d pairwise + %d thumbs-derived = %d total pairs',
              stats['pairwise'], stats['thumbs_pairs'], stats['total'])
@@ -576,6 +689,13 @@ def main():
 
     log.info('Best val accuracy: %.3f', best_acc)
     log.info('Weights saved to: %s', output)
+
+    # Restore the best weights into the in-process model and report
+    # how every directly-rated genome moved under the new model.
+    if best_weights is not None:
+        model.load_weights(best_weights)
+    _report_score_changes(voted_snapshot, gpu, model, store,
+                          input_buf, BS, IMG_SZ)
 
     store.close()
     gpu.destroy()
