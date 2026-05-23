@@ -93,7 +93,7 @@ def score_with_weights(weights_path: Path, val_pairs, val_genome_ids,
             for j, gid in enumerate(batch_ids):
                 scores[gid] = float(batch_scores[j])
 
-        correct = sum(1 for w, l in val_pairs
+        correct = sum(1 for w, l, _ in val_pairs
                       if scores.get(w, 0.0) > scores.get(l, 0.0))
         val_acc = correct / max(len(val_pairs), 1)
     finally:
@@ -147,8 +147,8 @@ def main():
     input_buf = gpu.create_buffer(args.batch_size * 4 * args.image_size * args.image_size * 4)
 
     # Genome ID set is identical for every checkpoint — compute once.
-    val_genome_ids = sorted(set(w for w, _ in val_pairs)
-                            | set(l for _, l in val_pairs))
+    val_genome_ids = sorted(set(w for w, _, _ in val_pairs)
+                            | set(l for _, l, _ in val_pairs))
 
     try:
         print()
