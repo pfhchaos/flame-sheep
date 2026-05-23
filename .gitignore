@@ -10,3 +10,12 @@ datasets/
 tests/audio_samples/
 tests/corpus/
 tools/corpus/
+
+# Model weights — generally not tracked. When base weights to publish
+# are determined, add them explicitly with `git add -f path/to/weights`.
+flame_sheep/data/*.npy
+flame_sheep/data/*.npz
+flame_sheep/data/*.backup_*
+
+# System-specific diagnostics
+VP_VULKANINFO_*.json
