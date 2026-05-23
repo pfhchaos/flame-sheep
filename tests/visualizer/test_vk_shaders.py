@@ -21,10 +21,9 @@ import torch.nn.functional as F
 # Add tools to path for SHADER_DIR
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'tools'))
 
-SHADER_DIR = Path(__file__).resolve().parent.parent.parent / 'flame_sheep' / 'shaders' / 'cnn'
-
 try:
-    from flame_sheep.vk_compute import VkCompute
+    from wallpaper_ml.vk_compute import VkCompute
+    from wallpaper_ml.layers import SHADER_DIR
     gpu = VkCompute()
     HAS_VK = True
 except Exception:

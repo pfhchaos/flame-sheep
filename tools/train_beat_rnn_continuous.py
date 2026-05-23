@@ -33,8 +33,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from flame_sheep.vk_compute import VkCompute
-from flame_sheep.wallpaper_ml import (
+from wallpaper_ml.vk_compute import VkCompute
+from wallpaper_ml import (
     build_beat_crnn, VkGRU, bce_loss_dispatch,
 )
 # Reuse infrastructure that doesn't change between 3-class and continuous modes.

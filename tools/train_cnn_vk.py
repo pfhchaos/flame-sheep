@@ -22,11 +22,9 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from flame_sheep.vk_compute import VkCompute
+from wallpaper_ml.vk_compute import VkCompute
 
 log = logging.getLogger(__name__)
-
-SHADER_DIR = Path(__file__).resolve().parent.parent / 'flame_sheep' / 'shaders' / 'cnn'
 
 # Layer definitions: (in_channels, out_channels, kernel, stride, padding)
 MODEL_CONFIGS = {
@@ -332,7 +330,7 @@ def main():
     gpu = VkCompute()
     log.info('GPU: %s', gpu.device_name)
 
-    from flame_sheep.wallpaper_ml import build_cnn_scorer
+    from wallpaper_ml import build_cnn_scorer
     model = build_cnn_scorer(gpu, LAYERS, batch_size=args.batch_size,
                               image_size=args.image_size, mlp_head=MLP_HEAD)
 

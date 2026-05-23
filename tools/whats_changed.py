@@ -31,8 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flame_sheep.cnn_scorer import load_cnn_weights_file
 from flame_sheep.storage import Library, _db_path
-from flame_sheep.vk_compute import VkCompute
-from flame_sheep.wallpaper_ml import build_cnn_scorer
+from wallpaper_ml.vk_compute import VkCompute
+from wallpaper_ml import build_cnn_scorer
 from train_cnn_vk import MODEL_CONFIGS
 from finetune_cnn_vk import DbImageStore
 

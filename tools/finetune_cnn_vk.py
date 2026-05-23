@@ -23,7 +23,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from flame_sheep.vk_compute import VkCompute
+from wallpaper_ml.vk_compute import VkCompute
 
 # Reuse training infrastructure from train_cnn_vk
 from train_cnn_vk import MODEL_CONFIGS, MLP_HIDDEN
@@ -638,7 +638,7 @@ def main():
     log.info('GPU: %s', gpu.device_name)
 
     import train_cnn_vk
-    from flame_sheep.wallpaper_ml import build_cnn_scorer
+    from wallpaper_ml import build_cnn_scorer
     model = build_cnn_scorer(gpu, train_cnn_vk.LAYERS,
                               batch_size=args.batch_size,
                               image_size=args.image_size,

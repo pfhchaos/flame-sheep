@@ -17,8 +17,8 @@ from pathlib import Path
 
 import numpy as np
 
-from flame_sheep.vk_compute import VkCompute
-from flame_sheep.wallpaper_ml import build_beat_crnn, VkGRU
+from wallpaper_ml.vk_compute import VkCompute
+from wallpaper_ml import build_beat_crnn, VkGRU
 
 
 def _read_npy_header_shape(path: Path) -> tuple[int, ...] | None:
@@ -408,7 +408,7 @@ def train_epoch(model, gpu, batches, lr: float, chunk_len: int,
                             and save_path is not None)
     last_val_time = time.monotonic()
 
-    from flame_sheep.wallpaper_ml import cross_entropy_dispatch
+    from wallpaper_ml import cross_entropy_dispatch
     N_CLASSES = 3
 
     # Unpack model layers — train loop drives them directly in seq mode

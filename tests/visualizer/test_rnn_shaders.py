@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 try:
-    from flame_sheep.vk_compute import VkCompute
+    from wallpaper_ml.vk_compute import VkCompute
     gpu = VkCompute()
     HAS_GPU = True
 except Exception:
@@ -36,7 +36,7 @@ class TestVkLinearForward:
     """VkLinear forward must match torch.nn.Linear."""
 
     def test_linear_no_relu(self):
-        from flame_sheep.wallpaper_ml import VkLinear
+        from wallpaper_ml import VkLinear
 
         B, I, O = 4, 16, 8
         rng = np.random.default_rng(42)
@@ -68,7 +68,7 @@ class TestVkLinearForward:
         np.testing.assert_allclose(vk_out, pt_out, atol=1e-4, rtol=1e-4)
 
     def test_linear_with_relu(self):
-        from flame_sheep.wallpaper_ml import VkLinear
+        from wallpaper_ml import VkLinear
 
         B, I, O = 4, 32, 16
         rng = np.random.default_rng(123)
@@ -101,7 +101,7 @@ class TestVkGRUForward:
     """VkGRU forward must match torch.nn.GRU."""
 
     def test_single_frame(self):
-        from flame_sheep.wallpaper_ml import VkGRU
+        from wallpaper_ml import VkGRU
 
         B, I, H = 2, 8, 4
         rng = np.random.default_rng(99)
@@ -173,7 +173,7 @@ class TestVkGRUForward:
 
     def test_multi_frame_sequence(self):
         """Multiple frames should match PyTorch GRU on a sequence."""
-        from flame_sheep.wallpaper_ml import VkGRU
+        from wallpaper_ml import VkGRU
 
         B, I, H, T = 2, 8, 4, 5
         rng = np.random.default_rng(77)
@@ -237,7 +237,7 @@ class TestBeatCRNNForward:
     """End-to-end BeatCRNN forward produces correct shape."""
 
     def test_build_and_forward(self):
-        from flame_sheep.wallpaper_ml import build_beat_crnn
+        from wallpaper_ml import build_beat_crnn
 
         B = 4
         input_size = 216  # 108 CQT + 108 diff
@@ -258,7 +258,7 @@ class TestBeatCRNNForward:
         assert np.all(np.isfinite(output))
 
     def test_param_count(self):
-        from flame_sheep.wallpaper_ml import build_beat_crnn
+        from wallpaper_ml import build_beat_crnn
 
         model = build_beat_crnn(gpu, input_size=216, hidden_size=48,
                                 n_classes=3, batch_size=1)
@@ -274,7 +274,7 @@ class TestVkLinearBackward:
     """VkLinear backward must match PyTorch autograd."""
 
     def test_linear_backward_no_relu(self):
-        from flame_sheep.wallpaper_ml import VkLinear
+        from wallpaper_ml import VkLinear
 
         B, I, O = 2, 8, 4
         rng = np.random.default_rng(55)
@@ -327,7 +327,7 @@ class TestVkLinearBackward:
         np.testing.assert_allclose(vk_db, pt_db, atol=1e-4, rtol=1e-4)
 
     def test_linear_backward_with_relu(self):
-        from flame_sheep.wallpaper_ml import VkLinear
+        from wallpaper_ml import VkLinear
 
         B, I, O = 2, 8, 4
         rng = np.random.default_rng(77)
@@ -378,7 +378,7 @@ class TestVkGRUBackward:
     """VkGRU backward (single timestep) must match PyTorch autograd."""
 
     def test_single_step_bptt(self):
-        from flame_sheep.wallpaper_ml import VkGRU
+        from wallpaper_ml import VkGRU
 
         B, I, H = 2, 8, 4
         rng = np.random.default_rng(123)

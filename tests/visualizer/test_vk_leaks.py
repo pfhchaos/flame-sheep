@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 try:
-    from flame_sheep.vk_compute import VkCompute
+    from wallpaper_ml.vk_compute import VkCompute
     gpu = VkCompute()
     HAS_GPU = True
 except Exception:
@@ -54,7 +54,7 @@ class TestTracking:
 
 class TestLinearLeaks:
     def test_forward_no_leak(self):
-        from flame_sheep.wallpaper_ml import VkLinear
+        from wallpaper_ml import VkLinear
         B, I, O = 4, 16, 8
         layer = VkLinear(gpu, I, O, batch_size=B)
         layer.init_weights(np.random.default_rng(0))
@@ -77,7 +77,7 @@ class TestLinearLeaks:
         in_buf.destroy()
 
     def test_forward_backward_no_leak(self):
-        from flame_sheep.wallpaper_ml import VkLinear
+        from wallpaper_ml import VkLinear
         B, I, O = 4, 16, 8
         layer = VkLinear(gpu, I, O, batch_size=B)
         layer.init_weights(np.random.default_rng(0))
@@ -109,7 +109,7 @@ class TestLinearLeaks:
 
 class TestGRULeaks:
     def test_forward_no_leak(self):
-        from flame_sheep.wallpaper_ml import VkGRU
+        from wallpaper_ml import VkGRU
         B, I, H = 2, 8, 4
         layer = VkGRU(gpu, I, H, batch_size=B, max_seq_len=4)
         layer.init_weights(np.random.default_rng(0))
@@ -136,7 +136,7 @@ class TestGRULeaks:
         in_buf.destroy()
 
     def test_forward_backward_no_leak(self):
-        from flame_sheep.wallpaper_ml import VkGRU
+        from wallpaper_ml import VkGRU
         B, I, H = 2, 8, 4
         layer = VkGRU(gpu, I, H, batch_size=B, max_seq_len=4)
         layer.init_weights(np.random.default_rng(0))
@@ -174,7 +174,7 @@ class TestBeatCRNNLeaks:
     """End-to-end model training loop must not leak."""
 
     def test_training_step_no_leak(self):
-        from flame_sheep.wallpaper_ml import build_beat_crnn, VkGRU
+        from wallpaper_ml import build_beat_crnn, VkGRU
 
         B = 2
         I = 216
@@ -224,7 +224,7 @@ class TestCNNScorerLeaks:
     the GPU during long training runs."""
 
     def test_full_training_step_no_leak(self):
-        from flame_sheep.wallpaper_ml import build_cnn_scorer
+        from wallpaper_ml import build_cnn_scorer
 
         B = 2
         layers_config = [
@@ -268,7 +268,7 @@ class TestCNNScorerLeaks:
     def test_pairwise_training_step_no_leak(self):
         """Pairwise (winner/loser re-forward + double backward) — what the
         finetune script does."""
-        from flame_sheep.wallpaper_ml import build_cnn_scorer
+        from wallpaper_ml import build_cnn_scorer
 
         B = 2
         layers_config = [
