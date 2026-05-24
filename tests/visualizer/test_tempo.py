@@ -4,7 +4,7 @@ Tests for tempo detection.
 
 import numpy as np
 import pytest
-from flame_sheep.tempo import (
+from flame_sheep.audio.tempo import (
     TempoTracker, TempoState,
     MIN_BPM, MAX_BPM, LOCK_THRESHOLD,
 )

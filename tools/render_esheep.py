@@ -215,7 +215,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load genomes
-    from flame_sheep.esheep_parser import load_esheep_genomes
+    from flame_sheep.storage.esheep_parser import load_esheep_genomes
     log.info('Loading genomes from %s...', args.db)
     genomes = load_esheep_genomes(
         args.db,

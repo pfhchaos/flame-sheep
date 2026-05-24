@@ -296,7 +296,7 @@ class TestSheepRendering:
     """Test that Electric Sheep genomes produce reasonable renders."""
 
     def _load_sheep(self, generation, sheep_id):
-        from flame_sheep.esheep_parser import load_esheep_genomes
+        from flame_sheep.storage.esheep_parser import load_esheep_genomes
         db_path = str(Path.home() / '.local/share/flame-sheep/esheep.db')
         genomes = load_esheep_genomes(db_path, generation=generation)
         for g, r, gen, sid in genomes:

@@ -209,18 +209,18 @@ def main() -> None:
         return
 
     if args.render_catalog:
-        from .catalog import generate_catalog
+        from .storage.catalog import generate_catalog
         generate_catalog(args.render_catalog, n_genomes=args.catalog_count,
                          n_evolve=args.catalog_evolve)
         return
 
     if args.render_unrated:
-        from .catalog import render_unrated
+        from .storage.catalog import render_unrated
         render_unrated(args.render_unrated)
         return
 
     if args.import_catalog:
-        from .catalog import import_catalog
+        from .storage.catalog import import_catalog
         import_catalog(args.import_catalog)
         return
 

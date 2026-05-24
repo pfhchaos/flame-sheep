@@ -16,7 +16,7 @@ from flame_sheep_audio import AudioProcessor, SAMPLE_RATE, FFT_SIZE, HOP_SIZE
 from flame_sheep_audio.source import FeedSource
 from flame_sheep_audio._cqt_engine import CqtEngine
 from flame_sheep_audio.tempo_acf import AutocorrelationTempoTracker
-from flame_sheep.tempo import TempoTracker
+from flame_sheep.audio.tempo import TempoTracker
 from synths import (
     DrumPattern, PatternSpec, ALL_PATTERNS,
     FOUR_FOUR, FOUR_FOUR_FAST, WALTZ, HALF_TIME,
