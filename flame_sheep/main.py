@@ -1,12 +1,10 @@
 """
 flame-sheep — entry point and main loop.
 
-Two modes:
-  default    — GLFW window via moderngl-window (for development / testing)
-  --wallpaper — wlr-layer-shell BACKGROUND surface (true wallpaper on sway)
-
-Core rendering/audio/genome logic lives in FlameSheepCore so it can be
-shared between both modes.
+This is a wallpaper system. The primary entry is --wallpaper (wlr-layer-shell
+BACKGROUND surface on sway). Other modes (--debug overlay, library commands,
+benchmarks) layer on top of that core. A future fullscreen mode would just be
+the same wallpaper code with a different wl_layer.
 """
 
 from __future__ import annotations
@@ -31,89 +29,20 @@ log = logging.getLogger(__name__)
 
 import argparse
 import sys
-import time
-import os
-import moderngl_window as mglw
-from moderngl_window import settings
 
 from .config import cfg
 from flame_sheep_audio import DEFAULT_DEVICE
-from .orchestrator import Orchestrator
-from .core import FlameSheepCore
-from .renderer import FlameRenderer, Viewport
 from .benchmark import _run_variation_benchmark
 from .library_cli import _run_library_commands
 from .wallpaper import _run_wallpaper
 
 
-# Set by main() before run_window_config — workaround for moderngl-window
-# not passing CLI args through to WindowConfig.__init__
-_AUDIO_DEVICE: str | int = DEFAULT_DEVICE
-_TEST_AUDIO:   bool = False
-
-
-
-class FlameSheepApp(mglw.WindowConfig):
-    """moderngl-window wrapper — used for windowed/dev mode."""
-    title       = 'flame-sheep'
-    gl_version  = (4, 3)
-    resizable   = True
-    vsync       = True
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._orch = Orchestrator(audio_device=_AUDIO_DEVICE, test_audio=_TEST_AUDIO)
-        self._core = FlameSheepCore(orchestrator=self._orch)
-        self._orch.start()
-        w, h = self.window_size
-        self._renderer = FlameRenderer(self.ctx, w, h)
-        self._viewport = Viewport(0, 0, w, h)
-        log.info('flame-sheep started. Press Q to quit, F to force genome swap.')
-
-    def on_render(self, time_val: float, frame_time: float):
-        self.ctx.clear(0.0, 0.0, 0.0)
-        self._orch.tick()
-        frame = self._core.tick(frame_time)
-        self._renderer.upload_audio(frame.spectrum)
-        self._renderer.upload_genome(frame.genome)
-        self._renderer.upload_palette(frame.palette)
-        if self._core.needs_walker_reset:
-            self._renderer.reset_walkers()
-            self._core.needs_walker_reset = False
-        self._renderer.clear_histogram(decay=0.3)
-        self._renderer.dispatch_chaos_game(iterations=frame.iterations)
-        self.ctx.memory_barrier()
-        self._renderer.reduce_histogram_max()
-        w, h = self.window_size
-        self._renderer.render_tonemap(self._viewport, w, h, brightness=frame.brightness)
-
-    def key_event(self, key, action, modifiers):
-        if action == self.wnd.keys.ACTION_PRESS:
-            if key == self.wnd.keys.Q:
-                self._orch.stop()
-                self.wnd.close()
-            elif key == self.wnd.keys.F:
-                self._core.force_genome_swap()
-
-    def close(self):
-        self._orch.stop()
-
-
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description='flame-sheep: audio-reactive flame fractal wallpaper',
-        # Don't error on moderngl-window's own flags — we strip ours then
-        # leave the rest for mglw to handle.
-        add_help=False,
     )
-    parser.add_argument('-h', '--help', action='store_true')
     parser.add_argument('--wallpaper', action='store_true',
                         help='run as wlr-layer-shell wallpaper (no window chrome)')
-    parser.add_argument('--fullscreen', action='store_true', help='run fullscreen (windowed mode only)')
-    parser.add_argument('--width',  type=int, default=1920)
-    parser.add_argument('--height', type=int, default=1080)
     parser.add_argument('--list-audio', action='store_true', help='list audio devices and exit')
     parser.add_argument('--audio-device', default=DEFAULT_DEVICE,
                         help=f'audio input device name or index (default: {DEFAULT_DEVICE!r})')
@@ -159,12 +88,7 @@ def main() -> None:
                         help='logging verbosity: global (INFO) or per-component '
                              '(flame_sheep_audio.tempo_acf=DEBUG). Repeatable.')
 
-    # parse_known_args so moderngl-window's own flags don't cause errors here
-    args, remaining = parser.parse_known_args()
-
-    if args.help:
-        parser.print_help()
-        return
+    args = parser.parse_args()
 
     from .log import setup_logging
     # Parse --log-level args: bare value = global, name=LEVEL = per-component
@@ -184,10 +108,6 @@ def main() -> None:
         else:
             global_level = spec.upper()
     setup_logging(level=global_level, component_levels=component_levels)
-
-    global _AUDIO_DEVICE, _TEST_AUDIO
-    _AUDIO_DEVICE = args.audio_device
-    _TEST_AUDIO   = args.test_audio
 
     if args.list_audio:
         from flame_sheep_audio import list_monitor_devices
@@ -239,16 +159,10 @@ def main() -> None:
                        test_pattern=args.test_pattern)
         return
 
-    # Strip our flags from sys.argv so moderngl-window's arg parser
-    # doesn't choke on arguments it doesn't know about.
-    sys.argv = [sys.argv[0]] + remaining
-
-    settings.WINDOW['class']      = 'moderngl_window.context.glfw.Window'
-    settings.WINDOW['size']       = (args.width, args.height)
-    settings.WINDOW['fullscreen'] = args.fullscreen
-    settings.WINDOW['title']      = 'flame-sheep'
-
-    mglw.run_window_config(FlameSheepApp)
+    # No mode given — print help. flame-sheep is a wallpaper system; running
+    # without a mode is almost always a user error.
+    parser.print_help()
+    sys.exit(2)
 
 
 if __name__ == '__main__':
