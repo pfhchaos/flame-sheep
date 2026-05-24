@@ -112,6 +112,46 @@ class GpuContext:
         self.canvas_h = canvas_h
         self.ppmm = ppmm
 
+    # --- Shader compilation -------------------------------------------------
+
+    def compile_compute_shader(self, path: 'Path',
+                               defines: dict[str, str] | None = None,
+                               source_transform: 'Callable[[str], str] | None' = None
+                               ) -> 'moderngl.ComputeShader':
+        """Load + #include-resolve + (optionally) #define-inject +
+        (optionally) apply source_transform + compile a compute shader.
+
+        Returns a moderngl.ComputeShader today; future Vulkan port will
+        return a backend-agnostic wrapper of the same shape.
+
+        defines values get rendered as ``#define KEY VALUE`` and inserted
+        right after the first newline (which puts them after #version).
+        For bare ``#define KEY`` form, use value=``''``.
+
+        source_transform runs BEFORE define injection and is for shader-
+        specific source manipulation (e.g. flame.comp's symmetry-group
+        GLSL substitution).
+        """
+        src = path.read_text()
+        src = _resolve_includes(src, path.parent)
+        if source_transform is not None:
+            src = source_transform(src)
+        if defines:
+            block = '\n'.join(
+                f'#define {k}' if v == '' else f'#define {k} {v}'
+                for k, v in defines.items())
+            src = src.replace('\n', '\n' + block + '\n', 1)
+        return self._ctx.compute_shader(src)
+
+    def compile_program(self, vert_path: 'Path',
+                        frag_path: 'Path') -> 'moderngl.Program':
+        """Load + #include-resolve both shader files + compile a vert/frag
+        program. Sources are read fresh per call — no caching today; if
+        repeated reads of tonemap.vert show up as a hotspot we can add it."""
+        vs = _resolve_includes(vert_path.read_text(), vert_path.parent)
+        fs = _resolve_includes(frag_path.read_text(), frag_path.parent)
+        return self._ctx.program(vertex_shader=vs, fragment_shader=fs)
+
 
 class FlameRenderer:
     """
@@ -141,42 +181,34 @@ class FlameRenderer:
 
     def _load_shaders(self, scoring: bool = False) -> None:
         from .variations._symmetry_groups import generate_glsl
-        flame_src = (SHADER_DIR / 'flame.comp').read_text()
-        flame_src = _resolve_includes(flame_src, SHADER_DIR)
-        flame_src = flame_src.replace('// {{SYMMETRY_GROUPS}}', generate_glsl())
-        if scoring:
-            # Insert after #version line — GLSL requires #version first
-            flame_src = flame_src.replace('\n', '\n#define SCORING_MODE\n', 1)
-        self.compute_shader = self.ctx.compute_shader(flame_src)
-        self.clear_shader = self.ctx.compute_shader(
-            (SHADER_DIR / 'clear.comp').read_text()
+
+        def _inject_symmetry(src: str) -> str:
+            return src.replace('// {{SYMMETRY_GROUPS}}', generate_glsl())
+
+        flame_defines = {'SCORING_MODE': ''} if scoring else None
+        self.compute_shader = self.gpu.compile_compute_shader(
+            SHADER_DIR / 'flame.comp',
+            defines=flame_defines,
+            source_transform=_inject_symmetry,
         )
-        self.tonemap_program = self.ctx.program(
-            vertex_shader   = (SHADER_DIR / 'tonemap.vert').read_text(),
-            fragment_shader = (SHADER_DIR / 'tonemap.frag').read_text(),
-        )
-        self.blur_program = self.ctx.program(
-            vertex_shader   = (SHADER_DIR / 'tonemap.vert').read_text(),
-            fragment_shader = (SHADER_DIR / 'blur.frag').read_text(),
-        )
-        self.downsample_hist_shader = self.ctx.compute_shader(
-            (SHADER_DIR / 'downsample_hist.comp').read_text()
-        )
-        self.reduce_max_shader = self.ctx.compute_shader(
-            (SHADER_DIR / 'reduce_max.comp').read_text()
-        )
-        self.test_pattern_program = self.ctx.program(
-            vertex_shader   = (SHADER_DIR / 'tonemap.vert').read_text(),
-            fragment_shader = (SHADER_DIR / 'test_pattern.frag').read_text(),
-        )
+        self.clear_shader = self.gpu.compile_compute_shader(
+            SHADER_DIR / 'clear.comp')
+        self.tonemap_program = self.gpu.compile_program(
+            SHADER_DIR / 'tonemap.vert', SHADER_DIR / 'tonemap.frag')
+        self.blur_program = self.gpu.compile_program(
+            SHADER_DIR / 'tonemap.vert', SHADER_DIR / 'blur.frag')
+        self.downsample_hist_shader = self.gpu.compile_compute_shader(
+            SHADER_DIR / 'downsample_hist.comp')
+        self.reduce_max_shader = self.gpu.compile_compute_shader(
+            SHADER_DIR / 'reduce_max.comp')
+        self.test_pattern_program = self.gpu.compile_program(
+            SHADER_DIR / 'tonemap.vert', SHADER_DIR / 'test_pattern.frag')
         # Deferred — VAO created after quad_vbo exists
         self._test_pattern_vao = None
-        self.de_shader = self.ctx.compute_shader(
-            (SHADER_DIR / 'density_estimation.comp').read_text()
-        )
-        self.tonemap_flam3_program = self.ctx.program(
-            vertex_shader   = (SHADER_DIR / 'tonemap.vert').read_text(),
-            fragment_shader = (SHADER_DIR / 'tonemap_flam3.frag').read_text(),
+        self.de_shader = self.gpu.compile_compute_shader(
+            SHADER_DIR / 'density_estimation.comp')
+        self.tonemap_flam3_program = self.gpu.compile_program(
+            SHADER_DIR / 'tonemap.vert', SHADER_DIR / 'tonemap_flam3.frag'
         )
 
     def _create_resources(self) -> None:
@@ -289,10 +321,8 @@ class FlameRenderer:
         # Temporal blend — per-surface previous frame FBOs
         self._temporal_fbos: dict[tuple[int, int], tuple] = {}
         self.temporal_decay = 0.0  # per-second decay rate (0=off, 0.5=gentle, 0.9=heavy trails)
-        self._temporal_mix_prog = self.ctx.program(
-            vertex_shader   = (SHADER_DIR / 'tonemap.vert').read_text(),
-            fragment_shader = (SHADER_DIR / 'temporal_mix.frag').read_text(),
-        )
+        self._temporal_mix_prog = self.gpu.compile_program(
+            SHADER_DIR / 'tonemap.vert', SHADER_DIR / 'temporal_mix.frag')
         self._temporal_mix_vao = self.ctx.vertex_array(
             self._temporal_mix_prog,
             [(self.quad_vbo, '2f', 'in_pos')],
