@@ -22,7 +22,7 @@ def _run_variation_benchmark() -> None:
     """Benchmark variations and library genomes on the GPU."""
     import moderngl
     from .genome import (Genome, Variation, NUM_VARIATIONS)
-    from .renderer import FlameRenderer, LIVE_ITER_MAX
+    from .renderer import FlameRenderer, GpuContext, LIVE_ITER_MAX
 
     # Variation names for display
     var_names = {}
@@ -34,7 +34,7 @@ def _run_variation_benchmark() -> None:
             var_names[val] = name
 
     ctx = moderngl.create_context(standalone=True)
-    renderer = FlameRenderer(ctx, 1920, 1080)
+    renderer = FlameRenderer(GpuContext(ctx, 1920, 1080))
 
     n_warmup = 5
     n_frames = 30

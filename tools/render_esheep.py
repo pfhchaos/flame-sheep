@@ -46,8 +46,8 @@ def create_renderer(size: int):
     ctx = moderngl.create_context(standalone=True, backend='egl')
     log.info('GPU: %s', ctx.info['GL_RENDERER'])
 
-    from flame_sheep.renderer import FlameRenderer
-    renderer = FlameRenderer(ctx, size, size)
+    from flame_sheep.renderer import FlameRenderer, GpuContext
+    renderer = FlameRenderer(GpuContext(ctx, size, size))
     return ctx, renderer
 
 

@@ -105,12 +105,12 @@ def render_genome_gpu(genome, ctx, size: int = 2048, n_frames: int = 60,
 
     Caches the renderer to avoid recompiling shaders per genome.
     """
-    from ..renderer import FlameRenderer, Viewport, N_ITERS
+    from ..renderer import FlameRenderer, GpuContext, Viewport, N_ITERS
     import moderngl
 
     cache_key = (id(ctx), size)
     if cache_key not in _renderer_cache:
-        _renderer_cache[cache_key] = FlameRenderer(ctx, size, size)
+        _renderer_cache[cache_key] = FlameRenderer(GpuContext(ctx, size, size))
     renderer = _renderer_cache[cache_key]
     renderer.upload_genome(genome)
     renderer.reset_walkers()

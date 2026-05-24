@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .genome import Genome
-from .renderer import FlameRenderer, Viewport
+from .renderer import FlameRenderer, GpuContext, Viewport
 
 if TYPE_CHECKING:
     from .storage import Library
@@ -288,9 +288,9 @@ class CompareRenderer:
         center_surf = self.surfaces.get(center_name, self.first_surf)
         cmp_w = center_surf.width // 2 // self.CMP_SCALE
         cmp_h = center_surf.height // self.CMP_SCALE
-        self.renderer = FlameRenderer(self.ctx, cmp_w, cmp_h)
+        self.renderer = FlameRenderer(GpuContext(self.ctx, cmp_w, cmp_h,
+                                                  ppmm=self.canvas_ppmm / self.CMP_SCALE))
         self.renderer.blur_radius = 0.0
-        self.renderer.set_ppmm(self.canvas_ppmm / self.CMP_SCALE)
         # Restore main renderer's bindings after our pipeline creation
         main_renderer.bind_buffers()
         log.info(f'[compare] created renderer at {cmp_w}x{cmp_h}')

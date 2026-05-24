@@ -280,7 +280,7 @@ def main():
     )
 
     from .storage import _genome_from_json, _ensure_schema
-    from .renderer import FlameRenderer
+    from .renderer import FlameRenderer, GpuContext
 
     db = _db_path()
     conn = sqlite3.connect(str(db))
@@ -308,7 +308,7 @@ def main():
              len(rows), total, args.size, args.size, args.frames)
 
     ctx = _create_context()
-    renderer = FlameRenderer(ctx, args.size, args.size, scoring=True)
+    renderer = FlameRenderer(GpuContext(ctx, args.size, args.size), scoring=True)
 
     scored = 0
     t0 = time.monotonic()

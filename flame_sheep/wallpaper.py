@@ -20,7 +20,7 @@ from .genome import Genome
 from .orchestrator import Orchestrator
 from .core import FlameSheepCore
 from .display import _monitor_cfg, _get_output_layout, _ensure_singleton
-from .renderer import FlameRenderer, Viewport
+from .renderer import FlameRenderer, GpuContext, Viewport
 from .screen_layout import PhysicalViewport
 from .command_handlers import WallpaperCommands
 
@@ -120,9 +120,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # Bind context to first surface and create the moderngl wrapper
     session.make_current(first_surf)
     ctx = session.create_moderngl_context()
-    renderer = FlameRenderer(ctx, canvas_w, canvas_h)
+    renderer = FlameRenderer(GpuContext(ctx, canvas_w, canvas_h, ppmm=canvas_ppmm))
     renderer.blur_radius = blur_radius
-    renderer.set_ppmm(canvas_ppmm)
 
     renderer.temporal_decay = 0.0  # image-space temporal off (using histogram decay instead)
 

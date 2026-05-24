@@ -87,23 +87,57 @@ class Viewport:
         return f'Viewport(x={self.x}, y={self.y}, w={self.w}, h={self.h})'
 
 
-class FlameRenderer:
-    """
-    Owns all GL resources for the full virtual canvas.
+class GpuContext:
+    """Shared GPU plumbing for visualizers — moderngl context, canvas
+    dimensions, physical scale. Stage 0 starts as a thin wrapper; later
+    phases move shader compilation, resource allocation, shared mesh,
+    framework render helpers, and snapshot infrastructure in here.
 
-    canvas_w, canvas_h  — full virtual canvas size in render pixels (may be
-                          half the physical size for performance).
+    A visualizer composes with this rather than inheriting — `viz.gpu`
+    is the framework handle, viz code owns its own dispatch logic.
+
+    Backend-agnostic surface: today wraps moderngl, future versions
+    may wrap Vulkan. The underlying ctx is _ctx (private convention)
+    so consumer code goes through public methods that survive a
+    backend change. For Phase 1 the ctx is also exposed publicly via
+    ``self.ctx`` as a migration shim — moves to private once all
+    resource allocation has been factored through methods (Phase 5).
     """
 
     def __init__(self, ctx: moderngl.Context, canvas_w: int, canvas_h: int,
-                 scoring: bool = False, n_walkers: int = N_WALKERS):
-        self.ctx        = ctx
-        self.canvas_w   = canvas_w
-        self.canvas_h   = canvas_h
+                 ppmm: float = 1.0) -> None:
+        self._ctx = ctx
+        self.ctx = ctx  # migration shim — same object, will go private later
+        self.canvas_w = canvas_w
+        self.canvas_h = canvas_h
+        self.ppmm = ppmm
+
+
+class FlameRenderer:
+    """
+    Owns flame-specific GPU resources for the full virtual canvas.
+    Composes with a GpuContext for shared infrastructure.
+
+    canvas_w / canvas_h are read from self.gpu — full virtual canvas
+    size in render pixels (may be half the physical size for performance).
+    """
+
+    def __init__(self, gpu: GpuContext, scoring: bool = False,
+                 n_walkers: int = N_WALKERS):
+        self.gpu        = gpu
+        self.ctx        = gpu.ctx  # local alias — same moderngl context
         self.n_walkers  = n_walkers
 
         self._load_shaders(scoring=scoring)
         self._create_resources()
+
+    @property
+    def canvas_w(self) -> int:
+        return self.gpu.canvas_w
+
+    @property
+    def canvas_h(self) -> int:
+        return self.gpu.canvas_h
 
     def _load_shaders(self, scoring: bool = False) -> None:
         from .variations._symmetry_groups import generate_glsl
@@ -516,13 +550,9 @@ class FlameRenderer:
         p['u_surface_w']  = surface_w
         p['u_surface_h']  = surface_h
         if 'u_ppmm' in p:
-            p['u_ppmm']   = getattr(self, '_ppmm', 1.0)
+            p['u_ppmm']   = self.gpu.ppmm
 
         self._test_pattern_vao.render(moderngl.TRIANGLES)
-
-    def set_ppmm(self, ppmm: float) -> None:
-        """Set canvas pixels per millimeter (for test pattern physical grid)."""
-        self._ppmm = ppmm
 
     def render_tonemap(self, viewport: Viewport, surface_w: int, surface_h: int,
                        brightness: float = 6.0, dt: float = 1/60,

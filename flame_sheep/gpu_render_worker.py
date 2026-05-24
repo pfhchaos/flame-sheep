@@ -75,7 +75,8 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
     from flame_sheep_audio import N_BINS
     from .genome import _score_from_histogram
 
-    renderer = FlameRenderer(ctx, render_size, render_size,
+    from .renderer import GpuContext
+    renderer = FlameRenderer(GpuContext(ctx, render_size, render_size),
                               scoring=True, n_walkers=scoring_walkers)
 
     # Fixed rainbow palette for scoring renders (genome doesn't own a palette)
