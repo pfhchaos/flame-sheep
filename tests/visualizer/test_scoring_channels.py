@@ -157,18 +157,27 @@ class TestNormalizeChannels:
         assert result.min() >= -1e-6
         assert result.max() <= 1.0 + 1e-6
 
-    def test_all_zeros_produces_zeros(self):
+    def test_all_zeros_produces_sentinels(self):
+        # Empty histogram: H and A snap to SENTINEL_VALUE (1.0) so the
+        # model sees a consistent "no hits / no first_hit" categorical
+        # marker. L and S are 0 (natural log-min). See scoring_channels
+        # _build_native_channels_and_masks.
         h, w = 32, 32
         zeros = np.zeros((h, w), dtype=np.uint32)
         result = normalize_channels(zeros, zeros, zeros, output_size=32)
-        np.testing.assert_array_equal(result, 0.0)
+        np.testing.assert_array_equal(result[0], 1.0)  # H sentinel
+        np.testing.assert_array_equal(result[1], 0.0)  # S
+        np.testing.assert_array_equal(result[2], 0.0)  # L
+        np.testing.assert_array_equal(result[3], 1.0)  # A sentinel
 
-    def test_no_first_hit_gives_zero_alpha(self, small_histograms):
+    def test_no_first_hit_gives_sentinel_alpha(self, small_histograms):
+        # ES corpus has no first_hit data; A is sentinel-filled with 1.0
+        # so the model sees "this entire image has no A signal" as a
+        # coherent categorical state at a known location.
         static_hits, static_colors, swept_hits, _ = small_histograms
         result = normalize_channels(static_hits, static_colors, swept_hits,
                                     first_hit=None, output_size=32)
-        # A channel (index 3) should be all zeros when no first_hit
-        np.testing.assert_array_equal(result[3], 0.0)
+        np.testing.assert_array_equal(result[3], 1.0)
 
     def test_channel_order_HSLA(self, small_histograms):
         """Verify channels are H, S, L, A as documented."""
@@ -209,16 +218,17 @@ class TestNormalizeChannels:
         assert (result[2] > 0).any()
 
     def test_h_channel_bounded_by_palette(self, rng):
-        """H channel = color_acc / (hits * COLOR_SCALE), clipped to [0,1]."""
+        """H channel = clip(color_acc / (hits * COLOR_SCALE)) * (240/255).
+        The (240/255) factor leaves SENTINEL_VALUE=1.0 distinguishable from
+        max-palette pixels (which top out at 240/255 ≈ 0.941)."""
         h, w = 16, 16
         hits = np.full((h, w), 100, dtype=np.uint32)
         # Colors at exactly half palette: 0.5 * hits * COLOR_SCALE
         colors = (0.5 * hits * COLOR_SCALE).astype(np.uint32)
         swept = np.ones((h, w), dtype=np.uint32)
         result = normalize_channels(hits, colors, swept, output_size=16)
-        # H channel should be ~0.5
         h_channel = result[0]
-        np.testing.assert_allclose(h_channel, 0.5, atol=0.01)
+        np.testing.assert_allclose(h_channel, 0.5 * (240.0 / 255.0), atol=0.01)
 
     def test_gamma_boosts_faint_structure(self, rng):
         """With gamma > 1, faint hits should be boosted relative to linear."""

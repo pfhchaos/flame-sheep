@@ -133,22 +133,9 @@ class TestSwayHeadless:
         assert o['rect']['width'] > 0
         assert o['rect']['height'] > 0
 
-    def test_sway_layout_query(self, headless_sway):
-        """flame-sheep's _get_sway_layout should work against headless sway."""
-        old_swaysock = os.environ.get('SWAYSOCK')
-        os.environ['SWAYSOCK'] = headless_sway['swaysock']
-        try:
-            from flame_sheep.main import _get_sway_layout
-            layout = _get_sway_layout()
-            assert len(layout) >= 1
-            name = list(layout.keys())[0]
-            assert layout[name]['w'] > 0
-            assert layout[name]['h'] > 0
-        finally:
-            if old_swaysock:
-                os.environ['SWAYSOCK'] = old_swaysock
-            else:
-                os.environ.pop('SWAYSOCK', None)
+    # test_sway_layout_query removed: the standalone _get_sway_layout helper
+    # was merged into _get_output_layout + _swaymsg_fallback (display.py).
+    # The behavior is exercised by test_wayland_output_layout below.
 
     def test_wayland_output_layout(self, headless_sway):
         """Compositor-agnostic _get_output_layout via wl_output protocol."""
@@ -159,7 +146,7 @@ class TestSwayHeadless:
         old_display = os.environ.get('WAYLAND_DISPLAY')
         os.environ['WAYLAND_DISPLAY'] = wayland_display
         try:
-            from flame_sheep.main import _get_output_layout
+            from flame_sheep.display import _get_output_layout
             layout = _get_output_layout()
             assert len(layout) >= 1
             name = list(layout.keys())[0]

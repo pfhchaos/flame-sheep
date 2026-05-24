@@ -436,7 +436,7 @@ class TestForceSwap:
 
 class TestContribute:
     def test_contribute_produces_genome(self, axis):
-        from flame_sheep.main import FlameSheepCore
+        from flame_sheep.core import FlameSheepCore
         frame = FlameSheepCore.FrameState(
             genome=None, palette=None,
             spectrum=np.zeros(108, dtype=np.float32),
@@ -447,7 +447,7 @@ class TestContribute:
 
     def test_contribute_applies_rotation(self, axis):
         """Rotation phase should produce a different genome than no rotation."""
-        from flame_sheep.main import FlameSheepCore
+        from flame_sheep.core import FlameSheepCore
         # Get unrotated output
         axis._rotation.phase = 0.0
         frame0 = FlameSheepCore.FrameState(

@@ -261,12 +261,15 @@ class TestPrepareInputDomain:
         # A channel (index 3) should be nonzero
         assert tensor[0, 3].sum() > 0
 
-    def test_without_first_hit_alpha_zero(self):
+    def test_without_first_hit_alpha_sentinel(self):
+        # Without first_hit data (e.g. ES corpus), A is sentinel-filled
+        # with 1.0 — a coherent "no A signal" categorical marker that the
+        # model can learn to ignore rather than misinterpret as data.
         static = self._make_hist_static_blob()
         swept = self._make_hist_blob()
         tensor = _prepare_input_domain(static, swept, hist_first_hit=None)
-        # A channel should be zeros
-        assert tensor[0, 3].sum() == 0
+        H, W = tensor.shape[-2:]
+        assert tensor[0, 3].sum() == H * W  # all-1.0 sentinel
 
 
 # ----------------------------------------------------------------
@@ -278,6 +281,9 @@ class TestDefaultWeightsPath:
         path = _default_weights_path()
         assert isinstance(path, Path)
 
-    def test_path_has_npy_extension(self):
+    def test_path_has_npz_extension(self):
+        # Default deployed weights are .npz now (carries normalization
+        # version metadata alongside the array). The .npy form is legacy
+        # and triggers a "loading without normalization" warning.
         path = _default_weights_path()
-        assert path.suffix == '.npy'
+        assert path.suffix == '.npz'

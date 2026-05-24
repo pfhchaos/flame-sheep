@@ -18,17 +18,20 @@ class TestDefaultMapping:
             assert rm.has_role(role)
 
     def test_default_routing(self):
+        # Default: low=kick=downbeat, mid=snare=backbeat, high=hihat=subdivision.
+        # Matches what drum-set physics suggests; was previously reversed
+        # in an earlier draft of DEFAULT_MAPPING.
         rm = RoleMapper()
-        assert rm.band_for_role(SUBDIVISION) == 'low'
-        assert rm.band_for_role(DOWNBEAT) == 'mid'
-        assert rm.band_for_role(BACKBEAT) == 'high'
+        assert rm.band_for_role(DOWNBEAT) == 'low'
+        assert rm.band_for_role(BACKBEAT) == 'mid'
+        assert rm.band_for_role(SUBDIVISION) == 'high'
         assert rm.band_for_role(ENERGY) == 'subbass'
 
     def test_reverse_lookup(self):
         rm = RoleMapper()
-        assert rm.role_for_band('low') == SUBDIVISION
-        assert rm.role_for_band('mid') == DOWNBEAT
-        assert rm.role_for_band('high') == BACKBEAT
+        assert rm.role_for_band('low') == DOWNBEAT
+        assert rm.role_for_band('mid') == BACKBEAT
+        assert rm.role_for_band('high') == SUBDIVISION
 
     def test_unknown_band_returns_none(self):
         rm = RoleMapper()
@@ -57,7 +60,7 @@ class TestEventRouting:
     def test_role_for_beat_event(self):
         rm = RoleMapper()
         event = BeatEvent(kind='low', energy=0.8)
-        assert rm.role_for_event(event) == SUBDIVISION
+        assert rm.role_for_event(event) == DOWNBEAT
 
     def test_role_for_unknown_event(self):
         rm = RoleMapper()
@@ -73,7 +76,8 @@ class TestBandState:
             bands = {'low': BandState(rms=0.9), 'mid': BandState(rms=0.1)}
 
         audio = FakeAudio()
-        state = rm.band_state(audio, SUBDIVISION)
+        # DOWNBEAT maps to 'low' in DEFAULT_MAPPING.
+        state = rm.band_state(audio, DOWNBEAT)
         assert state.rms == 0.9
 
     def test_missing_band_returns_default(self):
