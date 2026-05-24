@@ -21,6 +21,7 @@ from .orchestrator import Orchestrator
 from .core import FlameSheepCore
 from .display import _monitor_cfg, _get_output_layout, _ensure_singleton
 from .renderer import FlameRenderer, Viewport
+from .screen_layout import PhysicalViewport
 from .command_handlers import WallpaperCommands
 
 log = logging.getLogger(__name__)
@@ -85,15 +86,24 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     log.info(f'physical canvas: {total_phys_w_mm:.0f}x{total_phys_h_mm:.0f}mm '
           f'-> render {canvas_w}x{canvas_h}px @ {canvas_ppmm:.2f} px/mm')
 
-    # --- compute viewport for each output (in canvas pixels) ---
-    viewports: dict[str, Viewport] = {}
-    for name, g in active.items():
-        vx = int(phys_x[name] * canvas_ppmm)
-        vy = int(phys_y[name] * canvas_ppmm)
-        vw = int(g['phys_w_mm'] * canvas_ppmm)
-        vh = int(g['phys_h_mm'] * canvas_ppmm)
-        viewports[name] = Viewport(vx, vy, vw, vh)
-        log.info(f'{name}: viewport {vw}x{vh}+{vx},{vy} (canvas px)')
+    # --- compute viewport for each output ---
+    # PhysicalViewport describes screen geometry in mm (the natural unit for
+    # multi-monitor composition); to_viewport(ppmm) projects into pixel-space
+    # Viewports for the renderer. Keeps mm logic out of the renderer's API.
+    phys_viewports: dict[str, PhysicalViewport] = {
+        name: PhysicalViewport(
+            x_mm=phys_x[name],
+            y_mm=phys_y[name],
+            w_mm=g['phys_w_mm'],
+            h_mm=g['phys_h_mm'],
+        )
+        for name, g in active.items()
+    }
+    viewports: dict[str, Viewport] = {
+        name: pv.to_viewport(canvas_ppmm) for name, pv in phys_viewports.items()
+    }
+    for name, vp in viewports.items():
+        log.info(f'{name}: viewport {vp.w}x{vp.h}+{vp.x},{vp.y} (canvas px)')
 
     # --- one session: one wl_display, one EGL display, one GL context ---
     session = WallpaperSession()
