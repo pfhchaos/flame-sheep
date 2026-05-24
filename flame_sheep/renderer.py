@@ -112,6 +112,33 @@ class GpuContext:
         self.canvas_h = canvas_h
         self.ppmm = ppmm
 
+        # Shared fullscreen-quad mesh: NX×NY grid of triangles, not a single
+        # rectangle. Per-triangle bilinear UV interpolation is bounded by the
+        # cell size; a single huge triangle would accumulate float error toward
+        # the corners. Used by any program drawing a fullscreen pass (tonemap,
+        # blur, test pattern, post-processing). Allocated once at GpuContext
+        # construction so all consumers share the same VBO.
+        NX, NY = 8, 2  # 8 columns × 2 rows = 32 triangles
+        verts = []
+        for iy in range(NY):
+            y0 = -1.0 + 2.0 * iy / NY
+            y1 = -1.0 + 2.0 * (iy + 1) / NY
+            for ix in range(NX):
+                x0 = -1.0 + 2.0 * ix / NX
+                x1 = -1.0 + 2.0 * (ix + 1) / NX
+                verts.extend([x0, y0, x1, y0, x0, y1])
+                verts.extend([x1, y0, x1, y1, x0, y1])
+        self.quad_vbo = self._ctx.buffer(
+            np.array(verts, dtype=np.float32).tobytes())
+
+    def make_quad_vao(self, program: 'moderngl.Program',
+                      in_attr: str = 'in_pos') -> 'moderngl.VertexArray':
+        """Bind the shared fullscreen-quad VBO to `program`'s vertex
+        attribute named `in_attr` (default ``in_pos``). One VAO per
+        program — the binding is shader-specific, even though the data
+        isn't."""
+        return self._ctx.vertex_array(program, [(self.quad_vbo, '2f', in_attr)])
+
     # --- Shader compilation -------------------------------------------------
 
     def compile_compute_shader(self, path: 'Path',
@@ -290,29 +317,10 @@ class FlameRenderer:
         self.walker_buf = self.ctx.buffer(walker_data.tobytes())
         self.walker_buf.bind_to_storage_buffer(1)
 
-        # Fullscreen quad — grid mesh to minimize bilinear interpolation
-        # error from UV skew. Split horizontally at center (y=0) and into
-        # vertical strips. The x*y error term is bounded by the cell size.
-        NX, NY = 8, 2  # 8 columns × 2 rows = 32 triangles
-        verts = []
-        for iy in range(NY):
-            y0 = -1.0 + 2.0 * iy / NY
-            y1 = -1.0 + 2.0 * (iy + 1) / NY
-            for ix in range(NX):
-                x0 = -1.0 + 2.0 * ix / NX
-                x1 = -1.0 + 2.0 * (ix + 1) / NX
-                verts.extend([x0, y0, x1, y0, x0, y1])
-                verts.extend([x1, y0, x1, y1, x0, y1])
-        quad_verts = np.array(verts, dtype=np.float32)
-        self.quad_vbo = self.ctx.buffer(quad_verts.tobytes())
-        self.quad_vao = self.ctx.vertex_array(
-            self.tonemap_program,
-            [(self.quad_vbo, '2f', 'in_pos')],
-        )
-        self.blur_vao = self.ctx.vertex_array(
-            self.blur_program,
-            [(self.quad_vbo, '2f', 'in_pos')],
-        )
+        # Fullscreen-quad VAOs — bind the shared VBO (owned by GpuContext)
+        # to each program that draws a fullscreen pass.
+        self.quad_vao = self.gpu.make_quad_vao(self.tonemap_program)
+        self.blur_vao = self.gpu.make_quad_vao(self.blur_program)
 
         # Blur FBOs — created lazily per surface size
         self._blur_fbos = {}
@@ -323,10 +331,7 @@ class FlameRenderer:
         self.temporal_decay = 0.0  # per-second decay rate (0=off, 0.5=gentle, 0.9=heavy trails)
         self._temporal_mix_prog = self.gpu.compile_program(
             SHADER_DIR / 'tonemap.vert', SHADER_DIR / 'temporal_mix.frag')
-        self._temporal_mix_vao = self.ctx.vertex_array(
-            self._temporal_mix_prog,
-            [(self.quad_vbo, '2f', 'in_pos')],
-        )
+        self._temporal_mix_vao = self.gpu.make_quad_vao(self._temporal_mix_prog)
 
         # Temporal decay tracking for tonemap normalization
         self._decay = 0.0  # set by clear_histogram()
@@ -562,10 +567,7 @@ class FlameRenderer:
         is identical.
         """
         if self._test_pattern_vao is None:
-            self._test_pattern_vao = self.ctx.vertex_array(
-                self.test_pattern_program,
-                [(self.quad_vbo, '2f', 'in_pos')],
-            )
+            self._test_pattern_vao = self.gpu.make_quad_vao(self.test_pattern_program)
 
         _bind_default_framebuffer()
         self.ctx.viewport = (0, 0, surface_w, surface_h)
@@ -774,10 +776,7 @@ class FlameRenderer:
                 }
                 """,
             )
-            self._debug_circle_vao = self.ctx.vertex_array(
-                self._debug_circle_prog,
-                [(self.quad_vbo, '2f', 'in_pos')],
-            )
+            self._debug_circle_vao = self.gpu.make_quad_vao(self._debug_circle_prog)
 
         self.ctx.enable(moderngl.BLEND)
         self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
