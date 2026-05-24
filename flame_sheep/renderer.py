@@ -139,6 +139,38 @@ class GpuContext:
         isn't."""
         return self._ctx.vertex_array(program, [(self.quad_vbo, '2f', in_attr)])
 
+    # --- Resource allocation -----------------------------------------------
+
+    def allocate_storage_buffer(self, size_bytes: int,
+                                initial: bytes | None = None
+                                ) -> 'moderngl.Buffer':
+        """Allocate an SSBO of size_bytes. ``initial`` (if given) is
+        uploaded; otherwise the buffer is uninitialized (caller responsible
+        for writing before first read).
+
+        moderngl's ctx.buffer needs SOMETHING to size from — there's no
+        "allocate empty of size N" API. We zero-fill in the uninitialized
+        path to keep callers from seeing garbage."""
+        if initial is None:
+            initial = bytes(size_bytes)
+        elif len(initial) != size_bytes:
+            raise ValueError(
+                f'initial bytes ({len(initial)}) != requested size ({size_bytes})')
+        return self._ctx.buffer(initial)
+
+    def allocate_texture(self, size: tuple[int, int], components: int,
+                         dtype: str, initial: bytes | None = None,
+                         filter: tuple | None = None
+                         ) -> 'moderngl.Texture':
+        """Allocate a 2D texture. dtype matches moderngl's spec ('f4', 'f2',
+        'f1', 'u1', etc.). ``filter`` is an optional (min, mag) filter tuple
+        — defaults to whatever moderngl picks (nearest)."""
+        tex = self._ctx.texture(size, components=components, dtype=dtype,
+                                 data=initial)
+        if filter is not None:
+            tex.filter = filter
+        return tex
+
     # --- Shader compilation -------------------------------------------------
 
     def compile_compute_shader(self, path: 'Path',
@@ -246,40 +278,45 @@ class FlameRenderer:
         # Histogram SSBO (binding=0): two packed uint arrays
         #   [0        .. n_pixels-1] = hit_count
         #   [n_pixels .. 2*n_pixels-1] = color_acc
-        histogram_data = np.zeros(n_pixels * 2, dtype=np.uint32)
-        self.histogram_buf = self.ctx.buffer(histogram_data.tobytes())
+        histogram_bytes = bytes(n_pixels * 2 * 4)  # uint32
+        self.histogram_buf = self.gpu.allocate_storage_buffer(
+            len(histogram_bytes), initial=histogram_bytes)
         self.histogram_buf.bind_to_storage_buffer(0)
 
         # DE input/output histogram SSBOs (binding=11, 12)
-        self._de_in_buf = self.ctx.buffer(histogram_data.tobytes())
-        self._de_out_buf = self.ctx.buffer(histogram_data.tobytes())
+        self._de_in_buf = self.gpu.allocate_storage_buffer(
+            len(histogram_bytes), initial=histogram_bytes)
+        self._de_out_buf = self.gpu.allocate_storage_buffer(
+            len(histogram_bytes), initial=histogram_bytes)
         self._de_in_buf.bind_to_storage_buffer(11)
         self._de_out_buf.bind_to_storage_buffer(12)
 
         # Per-transform hit counts SSBO (binding=7)
-        xform_hits_data = np.zeros(n_pixels * MAX_TRANSFORMS, dtype=np.uint32)
-        self.transform_hits_buf = self.ctx.buffer(xform_hits_data.tobytes())
+        self.transform_hits_buf = self.gpu.allocate_storage_buffer(
+            n_pixels * MAX_TRANSFORMS * 4)  # uint32 zero-init
         self.transform_hits_buf.bind_to_storage_buffer(7)
 
         # Downsampled histogram for symmetry scoring (binding=6)
         self._ds_w = min(256, w)
         self._ds_h = min(256, h)
-        ds_data = np.zeros(self._ds_w * self._ds_h, dtype=np.uint32)
-        self._ds_buf = self.ctx.buffer(ds_data.tobytes())
+        self._ds_buf = self.gpu.allocate_storage_buffer(
+            self._ds_w * self._ds_h * 4)  # uint32 zero-init
         self._ds_buf.bind_to_storage_buffer(6)
 
         # Max hit count buffer (binding=8): single uint for tonemap normalization
-        self._max_buf = self.ctx.buffer(np.zeros(1, dtype=np.uint32).tobytes())
+        self._max_buf = self.gpu.allocate_storage_buffer(4)  # one uint32
         self._max_buf.bind_to_storage_buffer(8)
 
         # Palette texture: 256 x 1 RGB32F
-        self.palette_tex = self.ctx.texture((256, 1), components=3, dtype='f4')
-        self.palette_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        self.palette_tex = self.gpu.allocate_texture(
+            (256, 1), components=3, dtype='f4',
+            filter=(moderngl.LINEAR, moderngl.LINEAR))
 
         # Audio spectrum texture: N_BINS x 1 R32F
         from flame_sheep_audio import N_BINS
-        self.audio_tex = self.ctx.texture((N_BINS, 1), components=1, dtype='f4')
-        self.audio_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        self.audio_tex = self.gpu.allocate_texture(
+            (N_BINS, 1), components=1, dtype='f4',
+            filter=(moderngl.LINEAR, moderngl.LINEAR))
 
         # Genome SSBOs — all have MAX_TRANSFORMS+1 slots (+1 for final xform)
         n_slots = MAX_TRANSFORMS + 1
@@ -296,13 +333,17 @@ class FlameRenderer:
 
         color_speeds_data = np.full(n_slots, 0.5, dtype=np.float32)
 
-        self.affines_buf      = self.ctx.buffer(affines_data.tobytes())
-        self.active_vars_buf  = self.ctx.buffer(active_vars_data.tobytes())
-        self.colors_buf       = self.ctx.buffer(colors_data.tobytes())
-        self.color_speeds_buf = self.ctx.buffer(color_speeds_data.tobytes())
-        self.weights_buf      = self.ctx.buffer(weights_data.tobytes())
-        self.post_affines_buf = self.ctx.buffer(post_affines_data.tobytes())
-        self.pre_vars_buf     = self.ctx.buffer(pre_vars_data.tobytes())
+        def _ssbo(data: np.ndarray):
+            b = data.tobytes()
+            return self.gpu.allocate_storage_buffer(len(b), initial=b)
+
+        self.affines_buf      = _ssbo(affines_data)
+        self.active_vars_buf  = _ssbo(active_vars_data)
+        self.colors_buf       = _ssbo(colors_data)
+        self.color_speeds_buf = _ssbo(color_speeds_data)
+        self.weights_buf      = _ssbo(weights_data)
+        self.post_affines_buf = _ssbo(post_affines_data)
+        self.pre_vars_buf     = _ssbo(pre_vars_data)
 
         self.affines_buf.bind_to_storage_buffer(2)
         self.active_vars_buf.bind_to_storage_buffer(3)
@@ -314,7 +355,9 @@ class FlameRenderer:
 
         # Walker state SSBO (binding=1)
         walker_data = np.random.uniform(-1, 1, (self.n_walkers, 3)).astype(np.float32)
-        self.walker_buf = self.ctx.buffer(walker_data.tobytes())
+        walker_bytes = walker_data.tobytes()
+        self.walker_buf = self.gpu.allocate_storage_buffer(
+            len(walker_bytes), initial=walker_bytes)
         self.walker_buf.bind_to_storage_buffer(1)
 
         # Fullscreen-quad VAOs — bind the shared VBO (owned by GpuContext)
@@ -424,7 +467,7 @@ class FlameRenderer:
         n_pixels = self.canvas_w * self.canvas_h
         if self.histogram_buf.size >= n_pixels * 4 * 4:
             return  # already doubled
-        new_buf = self.ctx.buffer(np.zeros(n_pixels * 4, dtype=np.uint32).tobytes())
+        new_buf = self.gpu.allocate_storage_buffer(n_pixels * 4 * 4)  # uint32 zero-init
         new_buf.bind_to_storage_buffer(0)
         self.histogram_buf = new_buf
         # Update stride to account for doubled hits region
