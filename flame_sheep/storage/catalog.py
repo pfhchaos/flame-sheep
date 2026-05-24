@@ -30,7 +30,7 @@ def render_genome_to_image(genome, size: int = 512,
     Returns uint8 array of shape (size, size, 4).
     """
     import warnings
-    from .variations import apply_variations_cpu
+    from ..variations import apply_variations_cpu
 
     bound = 4.0
     hit_grid = np.zeros((size, size), dtype=np.float64)
@@ -105,7 +105,7 @@ def render_genome_gpu(genome, ctx, size: int = 2048, n_frames: int = 60,
 
     Caches the renderer to avoid recompiling shaders per genome.
     """
-    from .renderer import FlameRenderer, Viewport, N_ITERS
+    from ..renderer import FlameRenderer, Viewport, N_ITERS
     import moderngl
 
     cache_key = (id(ctx), size)
@@ -173,8 +173,8 @@ def generate_catalog(
     Creates output_dir/unsorted/ with rendered PNGs.
     Creates output_dir/good/ and output_dir/bad/ for sorting.
     """
-    from .storage import Library
-    from .genome import Genome, _score_from_histogram
+    from . import Library
+    from ..genome import Genome, _score_from_histogram
 
     output = Path(output_dir)
     for subdir in ['unsorted', 'good', 'bad']:
@@ -245,7 +245,7 @@ def generate_catalog(
             continue
 
         # Score the rendered image and store in DB
-        from .image_scorer import score_from_image
+        from ..image_scorer import score_from_image
         img_scores = score_from_image(img)
         score_cols = ', '.join(f'{k}=?' for k in img_scores)
         lib.conn.execute(
@@ -280,7 +280,7 @@ def render_unrated(
     max_genomes: int = 100,
 ) -> None:
     """Render existing unrated genomes from the library for evaluation."""
-    from .storage import Library
+    from . import Library
 
     output = Path(output_dir)
     for subdir in ['unsorted', 'good', 'meh', 'bad']:
@@ -354,7 +354,7 @@ def import_catalog(catalog_dir: str | Path) -> None:
     Reads genome IDs from filenames in good/ and bad/ directories
     and records votes in the database.
     """
-    from .storage import Library
+    from . import Library
 
     catalog = Path(catalog_dir)
     lib = Library()

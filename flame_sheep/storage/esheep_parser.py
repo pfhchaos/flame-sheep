@@ -13,8 +13,8 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from .genome import Genome, Transform, NUM_VARIATIONS
-from .variations._registry import Variation, VAR_PARAMS_SPEC
+from ..genome import Genome, Transform, NUM_VARIATIONS
+from ..variations._registry import Variation, VAR_PARAMS_SPEC
 
 log = logging.getLogger(__name__)
 
