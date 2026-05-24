@@ -322,7 +322,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 if not session.make_current(surf):
                     continue  # this surface is dead, skip it
                 if _test_pattern:
-                    renderer.render_test_pattern(viewports[name], surf.width, surf.height)
+                    renderer.gpu.render_test_pattern(viewports[name], surf.width, surf.height)
                 elif commands.comparing and name == commands.compare.surf_name:
                     commands.compare.tonemap_surface(surf, frame)
                 elif commands.comparing:

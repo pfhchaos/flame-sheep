@@ -131,6 +131,13 @@ class GpuContext:
         self.quad_vbo = self._ctx.buffer(
             np.array(verts, dtype=np.float32).tobytes())
 
+        # Lazy slots for framework render helpers (compiled on first use —
+        # most callers never touch test pattern or debug overlays).
+        self._test_pattern_program = None
+        self._test_pattern_vao = None
+        self._debug_circle_program = None
+        self._debug_circle_vao = None
+
     def make_quad_vao(self, program: 'moderngl.Program',
                       in_attr: str = 'in_pos') -> 'moderngl.VertexArray':
         """Bind the shared fullscreen-quad VBO to `program`'s vertex
@@ -170,6 +177,104 @@ class GpuContext:
         if filter is not None:
             tex.filter = filter
         return tex
+
+    # --- Surface state -----------------------------------------------------
+
+    def bind_default_framebuffer(self) -> None:
+        """Bind the windowing system's default framebuffer for direct screen
+        rendering. Equivalent to glBindFramebuffer(GL_FRAMEBUFFER, 0)."""
+        _bind_default_framebuffer()
+
+    # --- Framework render helpers ------------------------------------------
+
+    def render_test_pattern(self, viewport: 'Viewport',
+                             surface_w: int, surface_h: int) -> None:
+        """Render an alignment grid for multi-monitor calibration. Used to
+        debug the framework's own viewport math — viz authors don't have
+        to think about it. Programs + VAO compiled lazily on first call."""
+        if self._test_pattern_program is None:
+            self._test_pattern_program = self.compile_program(
+                SHADER_DIR / 'tonemap.vert',
+                SHADER_DIR / 'test_pattern.frag')
+            self._test_pattern_vao = self.make_quad_vao(self._test_pattern_program)
+
+        self.bind_default_framebuffer()
+        self._ctx.viewport = (0, 0, surface_w, surface_h)
+
+        p = self._test_pattern_program
+        p['u_width']      = self.canvas_w
+        p['u_height']     = self.canvas_h
+        p['u_viewport_x'] = viewport.x
+        p['u_viewport_y'] = viewport.y
+        p['u_viewport_w'] = viewport.w
+        p['u_viewport_h'] = viewport.h
+        p['u_surface_w']  = surface_w
+        p['u_surface_h']  = surface_h
+        if 'u_ppmm' in p:
+            p['u_ppmm']   = self.ppmm
+
+        self._test_pattern_vao.render(moderngl.TRIANGLES)
+
+    def draw_debug_circle(self, ndc_x: float, ndc_y: float,
+                           surface_w: int, surface_h: int,
+                           radius_px: float = 30.0,
+                           color: tuple[float, float, float] = (1.0, 0.0, 0.0)
+                           ) -> None:
+        """Draw a debug circle overlay at NDC coords (-1..1) on the
+        currently-bound framebuffer. Inline shader (no .frag file —
+        debug-only convenience). Lazy compile on first call."""
+        if self._debug_circle_program is None:
+            self._debug_circle_program = self._ctx.program(
+                vertex_shader="""
+                #version 430
+                in vec2 in_pos;
+                void main() { gl_Position = vec4(in_pos, 0.0, 1.0); }
+                """,
+                fragment_shader="""
+                #version 430
+                uniform vec2 u_center;
+                uniform float u_radius;
+                uniform vec2 u_resolution;
+                uniform vec3 u_color;
+                out vec4 fragColor;
+                void main() {
+                    vec2 pixel = gl_FragCoord.xy;
+                    vec2 center_px = (u_center * 0.5 + 0.5) * u_resolution;
+                    float dist = length(pixel - center_px);
+                    float ring = smoothstep(u_radius - 2.0, u_radius - 1.0, dist)
+                               * (1.0 - smoothstep(u_radius + 1.0, u_radius + 2.0, dist));
+                    if (ring < 0.01) discard;
+                    fragColor = vec4(u_color * ring, ring);
+                }
+                """,
+            )
+            self._debug_circle_vao = self.make_quad_vao(self._debug_circle_program)
+
+        self._ctx.enable(moderngl.BLEND)
+        self._ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        p = self._debug_circle_program
+        p['u_center'] = (ndc_x, ndc_y)
+        p['u_radius'] = radius_px
+        p['u_resolution'] = (float(surface_w), float(surface_h))
+        p['u_color'] = color
+        self._debug_circle_vao.render(moderngl.TRIANGLES)
+        self._ctx.disable(moderngl.BLEND)
+
+    # --- Snapshot helpers --------------------------------------------------
+
+    def framebuffer_to_png_bytes(self, fbo: 'moderngl.Framebuffer',
+                                  width: int, height: int) -> bytes:
+        """Read an FBO's color attachment, flip Y for image conventions,
+        encode as PNG. Doesn't release the FBO — caller manages lifetime
+        of the resources it created."""
+        import io
+        from PIL import Image
+        data = fbo.read(components=4)
+        img = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 4)
+        img = img[::-1].copy()  # OpenGL origin is bottom-left
+        buf = io.BytesIO()
+        Image.fromarray(img, 'RGBA').save(buf, format='PNG', optimize=True)
+        return buf.getvalue()
 
     # --- Shader compilation -------------------------------------------------
 
@@ -260,10 +365,6 @@ class FlameRenderer:
             SHADER_DIR / 'downsample_hist.comp')
         self.reduce_max_shader = self.gpu.compile_compute_shader(
             SHADER_DIR / 'reduce_max.comp')
-        self.test_pattern_program = self.gpu.compile_program(
-            SHADER_DIR / 'tonemap.vert', SHADER_DIR / 'test_pattern.frag')
-        # Deferred — VAO created after quad_vbo exists
-        self._test_pattern_vao = None
         self.de_shader = self.gpu.compile_compute_shader(
             SHADER_DIR / 'density_estimation.comp')
         self.tonemap_flam3_program = self.gpu.compile_program(
@@ -388,10 +489,6 @@ class FlameRenderer:
         self.reduce_max_shader['u_hist_offset'] = 0
         self.tonemap_program['u_hist_offset'] = 0
         self.tonemap_program['u_hist_stride'] = n_pixels
-
-        # Debug overlay (lazy init)
-        self._debug_circle_prog = None
-        self._debug_circle_vao = None
 
     def reset_walkers(self) -> None:
         """Re-randomize walker positions. Call after a genome swap to avoid
@@ -603,32 +700,6 @@ class FlameRenderer:
             self._blur_fbos[key] = (fbo_a, tex_a, fbo_b, tex_b)
         return self._blur_fbos[key]
 
-    def render_test_pattern(self, viewport: Viewport, surface_w: int, surface_h: int) -> None:
-        """Render a grid test pattern for multi-monitor alignment.
-
-        Uses the same vertex shader as the tonemap, so viewport slicing
-        is identical.
-        """
-        if self._test_pattern_vao is None:
-            self._test_pattern_vao = self.gpu.make_quad_vao(self.test_pattern_program)
-
-        _bind_default_framebuffer()
-        self.ctx.viewport = (0, 0, surface_w, surface_h)
-
-        p = self.test_pattern_program
-        p['u_width']      = self.canvas_w
-        p['u_height']     = self.canvas_h
-        p['u_viewport_x'] = viewport.x
-        p['u_viewport_y'] = viewport.y
-        p['u_viewport_w'] = viewport.w
-        p['u_viewport_h'] = viewport.h
-        p['u_surface_w']  = surface_w
-        p['u_surface_h']  = surface_h
-        if 'u_ppmm' in p:
-            p['u_ppmm']   = self.gpu.ppmm
-
-        self._test_pattern_vao.render(moderngl.TRIANGLES)
-
     def render_tonemap(self, viewport: Viewport, surface_w: int, surface_h: int,
                        brightness: float = 6.0, dt: float = 1/60,
                        screen_rect: tuple[int, int, int, int] | None = None,
@@ -784,55 +855,6 @@ class FlameRenderer:
                 (current_fbo, current_tex),  # new blend (scratch)
             ]
 
-    def draw_debug_circle(self, ndc_x: float, ndc_y: float,
-                          surface_w: int, surface_h: int,
-                          radius_px: float = 30.0,
-                          color: tuple[float, float, float] = (1.0, 0.0, 0.0)) -> None:
-        """Draw a circle overlay at NDC coords (-1..1) on current framebuffer.
-
-        ndc_x, ndc_y: position in normalized device coords (-1..1)
-        radius_px: circle radius in pixels
-        color: RGB float tuple
-        """
-        if self._debug_circle_prog is None:
-            self._debug_circle_prog = self.ctx.program(
-                vertex_shader="""
-                #version 430
-                in vec2 in_pos;
-                void main() { gl_Position = vec4(in_pos, 0.0, 1.0); }
-                """,
-                fragment_shader="""
-                #version 430
-                uniform vec2 u_center;
-                uniform float u_radius;
-                uniform vec2 u_resolution;
-                uniform vec3 u_color;
-                out vec4 fragColor;
-                void main() {
-                    vec2 pixel = gl_FragCoord.xy;
-                    vec2 center_px = (u_center * 0.5 + 0.5) * u_resolution;
-                    float dist = length(pixel - center_px);
-                    float ring = smoothstep(u_radius - 2.0, u_radius - 1.0, dist)
-                               * (1.0 - smoothstep(u_radius + 1.0, u_radius + 2.0, dist));
-                    if (ring < 0.01) discard;
-                    fragColor = vec4(u_color * ring, ring);
-                }
-                """,
-            )
-            self._debug_circle_vao = self.gpu.make_quad_vao(self._debug_circle_prog)
-
-        self.ctx.enable(moderngl.BLEND)
-        self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-
-        p = self._debug_circle_prog
-        p['u_center'] = (ndc_x, ndc_y)
-        p['u_radius'] = radius_px
-        p['u_resolution'] = (float(surface_w), float(surface_h))
-        p['u_color'] = color
-        self._debug_circle_vao.render(moderngl.TRIANGLES)
-
-        self.ctx.disable(moderngl.BLEND)
-
     def _get_temporal_fbos(self, w: int, h: int):
         """Get or create FBOs for temporal blending at given size.
         Returns (accum_fbo, accum_tex, current_fbo, current_tex, blend_fbo, blend_tex).
@@ -860,9 +882,6 @@ class FlameRenderer:
             brightness: gamma parameter for tone mapping
             linear_mode: if True, skip log-density (for post-DE histograms)
         """
-        import io
-        from PIL import Image
-
         w, h = self.canvas_w, self.canvas_h
         fbo_tex = self.ctx.texture((w, h), components=4, dtype='f1')
         fbo = self.ctx.framebuffer(color_attachments=[fbo_tex])
@@ -891,16 +910,10 @@ class FlameRenderer:
 
         self.quad_vao.render(moderngl.TRIANGLES)
 
-        data = fbo.read(components=4)
-        img = np.frombuffer(data, dtype=np.uint8).reshape(h, w, 4)
-        img = img[::-1].copy()  # flip Y (OpenGL origin is bottom-left)
-
+        png = self.gpu.framebuffer_to_png_bytes(fbo, w, h)
         fbo.release()
         fbo_tex.release()
-
-        buf = io.BytesIO()
-        Image.fromarray(img, 'RGBA').save(buf, format='PNG', optimize=True)
-        return buf.getvalue()
+        return png
 
     def snapshot_de_png(self, brightness: float = 6.0,
                         max_radius: int = 9, curve: float = 0.4) -> bytes:
@@ -930,9 +943,6 @@ class FlameRenderer:
             sample_density: total samples per pixel (for k2 normalization)
             highlight_power: hue preservation power (-1 = disabled)
         """
-        import io
-        from PIL import Image
-
         w, h = self.canvas_w, self.canvas_h
 
         # Compute k1 and k2 matching flam3's rect.c
@@ -977,16 +987,10 @@ class FlameRenderer:
 
         self.quad_vao.render(moderngl.TRIANGLES)
 
-        data = fbo.read(components=4)
-        img = np.frombuffer(data, dtype=np.uint8).reshape(h, w, 4)
-        img = img[::-1].copy()
-
+        png = self.gpu.framebuffer_to_png_bytes(fbo, w, h)
         fbo.release()
         fbo_tex.release()
-
-        buf = io.BytesIO()
-        Image.fromarray(img, 'RGBA').save(buf, format='PNG', optimize=True)
-        return buf.getvalue()
+        return png
 
     def histogram_centroid_ndc(self) -> tuple[float, float] | None:
         """Compute the hit-weighted centroid from the coarse histogram.
