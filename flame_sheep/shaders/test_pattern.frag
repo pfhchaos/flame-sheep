@@ -4,8 +4,8 @@
 // test_pattern.frag — grid/calibration pattern for multi-monitor alignment
 // ============================================================
 // Renders a grid directly from UV coordinates, bypassing the chaos game
-// and histogram. Goes through the same vertex shader (with skew) so
-// perspective and viewport slicing behave identically to the fractal.
+// and histogram. Goes through the same vertex shader as the tonemap so
+// viewport slicing behaves identically to the fractal.
 //
 // Shows:
 //   - Grid lines at regular intervals (alignment across screen edges)
@@ -34,7 +34,7 @@ void main() {
     float cx = float(u_viewport_x) + v_uv.x * float(u_surface_w) * scale_x;
     float cy = float(u_viewport_y) + (1.0 - v_uv.y) * float(u_surface_h) * scale_y;
 
-    // Discard pixels outside canvas (overscan region)
+    // Discard pixels outside canvas (viewport beyond canvas bounds)
     if (cx < 0.0 || cx >= float(u_width) || cy < 0.0 || cy >= float(u_height)) {
         frag_color = vec4(0.0, 0.0, 0.0, 1.0);
         return;

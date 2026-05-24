@@ -80,16 +80,6 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     RENDER_SCALE = 0.5  # render at half the max PPI for performance
     canvas_ppmm = max_ppi / 25.4 * RENDER_SCALE  # pixels per mm in canvas
     
-    # Overscan: expand canvas vertically so the trapezoid from perspective
-    # skew is fully covered with fractal data (no black corners).
-    overscan = _monitor_cfg('__default__', 'overscan', 0.02)
-    from types import SimpleNamespace as _NS
-    if isinstance(overscan, _NS):
-        overscan = 0.02
-    has_skew = any(abs(_monitor_cfg(n, 'skew', 0.0)) > 0.1 for n in active)
-    if has_skew:
-        total_phys_h_mm *= (1.0 + 2.0 * overscan)
-
     canvas_w = int(total_phys_w_mm * canvas_ppmm)
     canvas_h = int(total_phys_h_mm * canvas_ppmm)
     log.info(f'physical canvas: {total_phys_w_mm:.0f}x{total_phys_h_mm:.0f}mm '
@@ -102,9 +92,6 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         vy = int(phys_y[name] * canvas_ppmm)
         vw = int(g['phys_w_mm'] * canvas_ppmm)
         vh = int(g['phys_h_mm'] * canvas_ppmm)
-        # Shift viewports down by overscan amount to center in expanded canvas
-        if has_skew:
-            vy += int(canvas_h * overscan / (1.0 + 2.0 * overscan))
         viewports[name] = Viewport(vx, vy, vw, vh)
         log.info(f'{name}: viewport {vw}x{vh}+{vx},{vy} (canvas px)')
 
@@ -127,11 +114,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     renderer.blur_radius = blur_radius
     renderer.set_ppmm(canvas_ppmm)
 
-    # Per-monitor perspective skew from config
-    _monitor_skew = {name: _monitor_cfg(name, 'skew', 0.0) for name in viewports}
     renderer.temporal_decay = 0.0  # image-space temporal off (using histogram decay instead)
 
-    _blur_comparison = False
     _test_pattern = test_pattern
 
     # --- library + evolution state ---
@@ -328,7 +312,6 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             for name, surf in ready.items():
                 if not session.make_current(surf):
                     continue  # this surface is dead, skip it
-                renderer.set_skew(_monitor_skew.get(name, 0.0))
                 if _test_pattern:
                     renderer.render_test_pattern(viewports[name], surf.width, surf.height)
                 elif commands.comparing and name == commands.compare.surf_name:
@@ -336,10 +319,6 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 elif commands.comparing:
                     # Side monitors: black during compare mode
                     ctx.clear(0.0, 0.0, 0.0, 1.0)
-                elif _blur_comparison and surf.width >= 3000:
-                    renderer.render_blur_comparison(viewports[name], surf.width, surf.height,
-                                                    brightness=frame.brightness,
-                                                    radii=(0.6, 1.0))
                 else:
                     renderer.render_tonemap(viewports[name], surf.width, surf.height,
                                            brightness=frame.brightness)

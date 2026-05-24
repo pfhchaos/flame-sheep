@@ -252,9 +252,6 @@ class FlameRenderer:
         self._blur_fbos = {}
         self.blur_radius = 1.0  # adjustable blur strength
 
-        # Per-surface skew amount (0 = head-on)
-        self._skew = 0.0
-
         # Temporal blend — per-surface previous frame FBOs
         self._temporal_fbos: dict[tuple[int, int], tuple] = {}
         self.temporal_decay = 0.0  # per-second decay rate (0=off, 0.5=gentle, 0.9=heavy trails)
@@ -326,16 +323,6 @@ class FlameRenderer:
 
         self._last_zoom = genome.zoom
         self.palette_tex.write(genome.palette.tobytes())
-
-    def set_skew(self, angle_deg: float = 0.0) -> None:
-        """Set perspective skew for angled monitors.
-
-        angle_deg: physical angle of the monitor relative to viewer.
-        Positive = angled away on right, negative = angled away on left.
-        0 = facing viewer directly.
-        """
-        import math
-        self._skew = math.tan(math.radians(angle_deg)) * 0.5 if abs(angle_deg) > 0.1 else 0.0
 
     def set_rotation(self, angle: float) -> None:
         """Update only the rotation uniforms (no genome re-upload)."""
@@ -507,8 +494,8 @@ class FlameRenderer:
     def render_test_pattern(self, viewport: Viewport, surface_w: int, surface_h: int) -> None:
         """Render a grid test pattern for multi-monitor alignment.
 
-        Uses the same vertex shader (with skew) as the tonemap, so
-        perspective correction and viewport slicing are identical.
+        Uses the same vertex shader as the tonemap, so viewport slicing
+        is identical.
         """
         if self._test_pattern_vao is None:
             self._test_pattern_vao = self.ctx.vertex_array(
@@ -518,11 +505,6 @@ class FlameRenderer:
 
         _bind_default_framebuffer()
         self.ctx.viewport = (0, 0, surface_w, surface_h)
-
-        try:
-            self.test_pattern_program['u_skew'] = self._skew
-        except KeyError:
-            pass
 
         p = self.test_pattern_program
         p['u_width']      = self.canvas_w
@@ -590,12 +572,6 @@ class FlameRenderer:
             # blend (output of mix → becomes new accum next frame)
             (accum_fbo, accum_tex), (current_fbo, current_tex), (blend_fbo, blend_tex) = \
                 self._get_temporal_fbos(surface_w, surface_h)
-
-        # Set skew for angled monitors
-        try:
-            self.tonemap_program['u_skew'] = self._skew
-        except KeyError:
-            pass  # uniform optimized out when always 0
 
         if self.blur_radius <= 0:
             # No spatial blur — tonemap directly
@@ -702,210 +678,6 @@ class FlameRenderer:
                 (accum_fbo, accum_tex),      # new current (scratch)
                 (current_fbo, current_tex),  # new blend (scratch)
             ]
-
-    def _render_comparison_old(self, viewport: Viewport, surface_w: int, surface_h: int,
-                          brightness: float = 6.0, dt: float = 1/60) -> None:
-        """Render 4 quadrants: raw / gaussian / temporal / both.
-
-        Temporarily overrides blur_radius and temporal_decay to render
-        each combination into a quadrant of the screen.
-        """
-        hw = surface_w // 2
-        hh = surface_h // 2
-
-        saved_blur = self.blur_radius
-        saved_decay = self.temporal_decay
-
-        # Scale viewport to fit each quadrant
-        # Each quadrant shows the full fractal at half resolution
-        quadrants = [
-            (0,  hh, hw, hh, 0.0, 0.0),    # top-left: raw
-            (hw, hh, hw, hh, saved_blur, 0.0),  # top-right: gaussian only
-            (0,  0,  hw, hh, 0.0, saved_decay),  # bottom-left: temporal only
-            (hw, 0,  hw, hh, saved_blur, saved_decay),  # bottom-right: both
-        ]
-
-        for qx, qy, qw, qh, blur, decay in quadrants:
-            self.blur_radius = blur
-            self.temporal_decay = decay
-
-            # Render tonemap to a temp FBO at quadrant size, then blit
-            # to the correct quadrant on screen.
-            # Simpler approach: just set the GL viewport and render directly.
-
-            # For temporal blend, each quadrant needs its own accum FBOs
-            # keyed by quadrant position. Hack: offset the size key.
-            if decay > 0:
-                # Use unique key per quadrant for temporal FBOs
-                orig_get = self._get_temporal_fbos
-                _qkey = (qw + qx, qh + qy)  # unique per quadrant
-                if _qkey not in self._temporal_fbos:
-                    fbos = []
-                    for _ in range(3):
-                        tex = self.ctx.texture((qw, qh), components=4, dtype='f2')
-                        tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
-                        fbo = self.ctx.framebuffer(color_attachments=[tex])
-                        fbo.use()
-                        self.ctx.clear(0.0, 0.0, 0.0, 1.0)
-                        fbos.append((fbo, tex))
-                    self._temporal_fbos[_qkey] = fbos
-
-            self.render_tonemap(viewport, qw, qh, brightness=brightness, dt=dt)
-
-            # If no temporal, the result is on the default framebuffer at
-            # viewport (0,0,qw,qh). Need to blit to the correct quadrant.
-            # For temporal, the blit already happened.
-            # This is messy — let me use a simpler approach.
-
-        self.blur_radius = saved_blur
-        self.temporal_decay = saved_decay
-
-    def render_comparison_v2(self, viewport: Viewport, surface_w: int, surface_h: int,
-                             brightness: float = 6.0, dt: float = 1/60) -> None:
-        """Render 4 vertical strips comparing blur modes on one fractal.
-
-        Left to right: raw | gaussian | temporal | both.
-        Uses the temporal_mix shader in comparison mode.
-        """
-        temporal_mix = 1.0 - 0.5 ** (dt / self.temporal_decay) if self.temporal_decay > 0 else 1.0
-
-        # Get/create comparison FBOs (keyed specially to not conflict)
-        cmp_key = ('cmp', surface_w, surface_h)
-        if cmp_key not in self._temporal_fbos:
-            fbos = []
-            for _ in range(3):
-                tex = self.ctx.texture((surface_w, surface_h), components=4, dtype='f2')
-                tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
-                fbo = self.ctx.framebuffer(color_attachments=[tex])
-                fbo.use()
-                self.ctx.clear(0.0, 0.0, 0.0, 1.0)
-                fbos.append((fbo, tex))
-            self._temporal_fbos[cmp_key] = fbos
-
-        (accum_fbo, accum_tex), (current_fbo, current_tex), (gauss_fbo, gauss_tex) = \
-            self._temporal_fbos[cmp_key]
-
-        # Step 1: tonemap → current_fbo (raw, unblurred)
-        current_fbo.use()
-        self.ctx.viewport = (0, 0, surface_w, surface_h)
-        self.palette_tex.use(location=0)
-        p = self.tonemap_program
-        p['u_palette']       = 0
-        p['u_width']         = self.canvas_w
-        p['u_height']        = self.canvas_h
-        p['u_viewport_x']    = viewport.x
-        p['u_viewport_y']    = viewport.y
-        p['u_viewport_w']    = viewport.w
-        p['u_viewport_h']    = viewport.h
-        p['u_surface_w']     = surface_w
-        p['u_surface_h']     = surface_h
-        p['u_gamma']         = brightness
-        self.quad_vao.render(moderngl.TRIANGLES)
-
-        # Step 2: gaussian blur current → gauss_fbo (reuse blur FBOs for temp)
-        blur_a, blur_a_tex, blur_b, blur_b_tex = self._get_blur_fbos(surface_w, surface_h)
-        # Horizontal
-        blur_a.use()
-        self.ctx.viewport = (0, 0, surface_w, surface_h)
-        current_tex.use(location=0)
-        bp = self.blur_program
-        bp['u_texture']   = 0
-        bp['u_direction'] = (1.0 / surface_w, 0.0)
-        bp['u_radius']    = self.blur_radius
-        self.blur_vao.render(moderngl.TRIANGLES)
-        # Vertical → gauss_fbo
-        gauss_fbo.use()
-        blur_a_tex.use(location=0)
-        bp['u_texture']   = 0
-        bp['u_direction'] = (0.0, 1.0 / surface_h)
-        bp['u_radius']    = self.blur_radius
-        self.blur_vao.render(moderngl.TRIANGLES)
-
-        # Step 3: comparison blend → screen
-        # The shader splits into 4 strips using u_comparison=1
-        _bind_default_framebuffer()
-        self.ctx.viewport = (0, 0, surface_w, surface_h)
-        current_tex.use(location=0)   # u_current = raw frame
-        accum_tex.use(location=1)     # u_previous = accumulated
-        gauss_tex.use(location=2)     # u_gauss = blurred frame
-        tp = self._temporal_mix_prog
-        tp['u_current']    = 0
-        tp['u_previous']   = 1
-        tp['u_gauss']      = 2
-        tp['u_mix_factor'] = temporal_mix
-        tp['u_comparison'] = 1
-        self._temporal_mix_vao.render(moderngl.TRIANGLES)
-
-        # Step 4: update accumulator — copy current frame into accum
-        # for next frame's temporal blend. Simple overwrite, not blend,
-        # because the comparison shader handles the blend per-strip.
-        self.ctx.copy_framebuffer(accum_fbo, current_fbo)
-
-    def render_blur_comparison(self, viewport: Viewport, surface_w: int, surface_h: int,
-                               brightness: float = 6.0,
-                               radii: tuple[float, ...] = (0.0, 0.3, 0.6, 1.0)) -> None:
-        """Render vertical strips with different gaussian blur radii."""
-        # Tonemap to a shared FBO first
-        raw_tex = self.ctx.texture((surface_w, surface_h), components=4, dtype='f2')
-        raw_tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
-        raw_fbo = self.ctx.framebuffer(color_attachments=[raw_tex])
-        raw_fbo.use()
-        self.ctx.viewport = (0, 0, surface_w, surface_h)
-
-        self.palette_tex.use(location=0)
-        p = self.tonemap_program
-        p['u_palette']       = 0
-        p['u_width']         = self.canvas_w
-        p['u_height']        = self.canvas_h
-        p['u_viewport_x']    = viewport.x
-        p['u_viewport_y']    = viewport.y
-        p['u_viewport_w']    = viewport.w
-        p['u_viewport_h']    = viewport.h
-        p['u_surface_w']     = surface_w
-        p['u_surface_h']     = surface_h
-        p['u_gamma']         = brightness
-        self.quad_vao.render(moderngl.TRIANGLES)
-
-        n_strips = len(radii)
-        strip_w = surface_w // n_strips
-
-        _bind_default_framebuffer()
-
-        for i, radius in enumerate(radii):
-            if radius <= 0:
-                # No blur — blit raw directly to strip
-                self.ctx.viewport = (i * strip_w, 0, strip_w, surface_h)
-                raw_tex.use(location=0)
-                bp = self.blur_program
-                bp['u_texture']   = 0
-                bp['u_direction'] = (0.0, 0.0)
-                bp['u_radius']    = 0.0
-                self.blur_vao.render(moderngl.TRIANGLES)
-            else:
-                # Blur into temp FBOs then blit to strip
-                fbo_a, tex_a, fbo_b, tex_b = self._get_blur_fbos(surface_w, surface_h)
-                bp = self.blur_program
-
-                # Horizontal blur
-                fbo_a.use()
-                self.ctx.viewport = (0, 0, surface_w, surface_h)
-                raw_tex.use(location=0)
-                bp['u_texture']   = 0
-                bp['u_direction'] = (1.0 / surface_w, 0.0)
-                bp['u_radius']    = radius
-                self.blur_vao.render(moderngl.TRIANGLES)
-
-                # Vertical blur → strip on screen
-                _bind_default_framebuffer()
-                self.ctx.viewport = (i * strip_w, 0, strip_w, surface_h)
-                tex_a.use(location=0)
-                bp['u_texture']   = 0
-                bp['u_direction'] = (0.0, 1.0 / surface_h)
-                bp['u_radius']    = radius
-                self.blur_vao.render(moderngl.TRIANGLES)
-
-        raw_tex.release()
-        raw_fbo.release()
 
     def draw_debug_circle(self, ndc_x: float, ndc_y: float,
                           surface_w: int, surface_h: int,

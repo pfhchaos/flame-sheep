@@ -64,7 +64,7 @@ void main() {
     int px = u_viewport_x + int(v_uv.x * float(u_surface_w) * scale_x);
     int py = u_viewport_y + int((1.0 - v_uv.y) * float(u_surface_h) * scale_y);
 
-    // Discard pixels outside canvas (overscan region)
+    // Discard pixels outside canvas (viewport beyond canvas bounds)
     if (px < 0 || px >= u_width || py < 0 || py >= u_height) {
         frag_color = vec4(0.0, 0.0, 0.0, 1.0);
         return;
