@@ -13,7 +13,7 @@ from flame_sheep.storage import Library, compute_motion_field, MOTION_GRID
 from flame_sheep.loops import (
     compose_loops, save_best_loops, LoopCandidate, _build_one_loop,
     crossover, mutate_loop, evolve_loops,
-    loop_overlap, _too_similar,
+    _too_similar,
     loop_sequence, cycle_length, STRUCTURES,
 )
 
@@ -241,21 +241,9 @@ class TestMutateLoop:
 # ----------------------------------------------------------------
 
 class TestLoopOverlap:
-
-    def test_identical_is_one(self):
-        ids = [1, 2, 3, 4]
-        assert loop_overlap(None, ids, ids) == 1.0
-
-    def test_disjoint_is_zero(self):
-        assert loop_overlap(None, [1, 2, 3], [4, 5, 6]) == 0.0
-
-    def test_partial_overlap(self):
-        # 2 shared out of 4
-        overlap = loop_overlap(None, [1, 2, 3, 4], [3, 4, 5, 6])
-        assert 0.4 <= overlap <= 0.6
-
-    def test_empty_is_zero(self):
-        assert loop_overlap(None, [], [1, 2]) == 0.0
+    # loop_overlap() removed when its logic was inlined into _too_similar
+    # (commit 82fc08d). Standalone-overlap tests dropped with it; the
+    # _too_similar test below exercises the same shape end-to-end.
 
     def test_too_similar_catches_high_overlap(self, lib_with_loops):
         loops = lib_with_loops.top_loops(n=1)
