@@ -220,6 +220,16 @@ def main():
                         help='Max seconds per file (None = full)')
     parser.add_argument('--max-files', type=int, default=None,
                         help='Max number of files to process')
+    parser.add_argument('--worker-id', type=int, default=0,
+                        help='When parallelizing via multiple invocations, '
+                             'this worker processes files[worker_id::n_workers]. '
+                             'Default 0 (process all files).')
+    parser.add_argument('--n-workers', type=int, default=1,
+                        help='Total number of parallel worker processes. '
+                             'Each invocation strides through the file list. '
+                             'Default 1 (no parallelism). For 8-way parallel, '
+                             'launch 8 processes with --worker-id 0..7 '
+                             '--n-workers 8.')
     args = parser.parse_args()
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -232,6 +242,16 @@ def main():
 
     if args.max_files:
         files = files[:args.max_files]
+
+    if args.n_workers > 1:
+        # Stride-slice the file list so workers don't overlap. Stride
+        # rather than block-split because file durations vary — striding
+        # tends to even out per-worker total work better than contiguous
+        # blocks (one worker doesn't end up with all the long tracks).
+        total = len(files)
+        files = files[args.worker_id::args.n_workers]
+        print(f"Worker {args.worker_id}/{args.n_workers}: "
+              f"{len(files)}/{total} files (stride={args.n_workers})")
 
     print(f"Found {len(files)} audio files")
     print(f"Output: {args.output}")
