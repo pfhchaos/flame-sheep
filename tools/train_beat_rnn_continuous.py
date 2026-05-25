@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from wallpaper_ml.vk_compute import VkCompute
 from wallpaper_ml import (
-    build_beat_crnn, VkGRU, bce_loss_dispatch,
+    build_beat_crnn, VkGRU, bce_loss_dispatch, bce_loss_multich_dispatch,
 )
 # Reuse infrastructure that doesn't change between 3-class and continuous modes.
 from train_beat_rnn import (
@@ -46,11 +46,13 @@ from train_beat_rnn import (
 
 def materialize_batch_continuous(batch_spec, dataset, chunk_len: int,
                                   cache: LazyFileCache,
-                                  target_col: int = 216):
+                                  target_col: int = 216,
+                                  n_classes: int = 1,
+                                  label_key: str = 'beat_score'):
     """Build a continuous-target batch.
 
     inputs: (B, T, 216) — spectrum + diff
-    targets: (B, T) — single-channel target sliced from `target_col`
+    targets: (B, T) for n_classes=1, or (B, T, n_classes) for n_classes>1
 
     Packed format conventions (see tools/pack_beat_labels.py):
     - 217-col packed: col 216 = beat_score (legacy v1 single-channel)
@@ -58,8 +60,16 @@ def materialize_batch_continuous(batch_spec, dataset, chunk_len: int,
       (current; both target columns coexist so two models can train
        from the same packed corpus, one per column).
 
-    `target_col` selects which column the BCE loss targets. Default 216
-    works for both v1 (beat_score) and v2 downbeat training.
+    Single-channel (n_classes=1):
+        `target_col` selects which column the BCE loss targets. Default 216
+        works for both v1 (beat_score) and v2 downbeat training.
+
+    Multi-channel (n_classes=3, label_key='labels_hier'):
+        Reads `labels_hier` [T, 3] from the .npz directly (hierarchical
+        sigmoid targets: downbeat / any-beat / any-onset). Packed format
+        not yet supported for this mode — falls back to per-file .npz
+        load. Slower but works against the existing label files
+        regenerated with the 3-channel madmom-augmented label pipeline.
     """
     batch_inputs = []
     batch_targets = []
@@ -67,7 +77,32 @@ def materialize_batch_continuous(batch_spec, dataset, chunk_len: int,
         path, _ = dataset[file_idx]
         entry = cache.get(path)
         end = start + chunk_len
-        if isinstance(entry, np.memmap) or (
+
+        if n_classes > 1:
+            # Multi-channel path: read labels_hier directly from .npz.
+            # Packed multi-channel format not yet defined; using .npz
+            # keeps the trainer working against today's regenerated
+            # label files. Repack support is a follow-up optimization.
+            if isinstance(entry, np.memmap) or (
+                    isinstance(entry, np.ndarray) and entry.ndim == 2):
+                raise RuntimeError(
+                    f'{path.name}: n_classes>1 requires .npz with '
+                    f'{label_key!r} field; packed .npy not supported yet.')
+            if label_key not in entry:
+                raise RuntimeError(
+                    f'{path.name} has no {label_key!r} key — regenerate '
+                    f'labels with tools/generate_beat_labels.py to add '
+                    f'hierarchical 3-channel targets.')
+            spec, diff = entry['spectrum'], entry['diff']
+            labels_hier = entry[label_key]
+            if labels_hier.shape[1] != n_classes:
+                raise RuntimeError(
+                    f'{path.name}: {label_key} has {labels_hier.shape[1]} '
+                    f'channels, n_classes={n_classes}')
+            inp = np.concatenate([spec[start:end], diff[start:end]], axis=1)
+            batch_inputs.append(inp)
+            batch_targets.append(labels_hier[start:end])
+        elif isinstance(entry, np.memmap) or (
                 isinstance(entry, np.ndarray) and entry.ndim == 2
                 and entry.shape[1] in (217, 218)):
             # Packed mmap format. View slicing is free.
@@ -107,7 +142,8 @@ class ContinuousPrepPipeline:
 
     def __init__(self, batches, dataset, chunk_len: int,
                  cache: LazyFileCache, max_queue: int = 2,
-                 n_workers: int = 8, target_col: int = 216):
+                 n_workers: int = 8, target_col: int = 216,
+                 n_classes: int = 1, label_key: str = 'beat_score'):
         import queue, threading
         from concurrent.futures import ThreadPoolExecutor
         self.batches = batches
@@ -115,6 +151,8 @@ class ContinuousPrepPipeline:
         self.chunk_len = chunk_len
         self.cache = cache
         self.target_col = target_col
+        self.n_classes = n_classes
+        self.label_key = label_key
         self.queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._stop = threading.Event()
         # n_workers threads decompress .npz files in parallel during
@@ -137,9 +175,15 @@ class ContinuousPrepPipeline:
             list(self._executor.map(self.cache.get, unique_paths))
             inputs, targets = materialize_batch_continuous(
                 batch_spec, self.dataset, self.chunk_len, self.cache,
-                target_col=self.target_col)
+                target_col=self.target_col,
+                n_classes=self.n_classes, label_key=self.label_key)
             inputs_TBF = np.ascontiguousarray(inputs.transpose(1, 0, 2))
-            targets_TB = np.ascontiguousarray(targets.transpose(1, 0))
+            if self.n_classes > 1:
+                # (B, T, C) → (T, B, C). Per-timestep slice in train loop
+                # is targets_TBC[t] which is (B, C) flat after ravel.
+                targets_TB = np.ascontiguousarray(targets.transpose(1, 0, 2))
+            else:
+                targets_TB = np.ascontiguousarray(targets.transpose(1, 0))
             self.queue.put((inputs_TBF, targets_TB))
         self.queue.put(None)
 
@@ -322,7 +366,9 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
                            save_path: Path | None = None,
                            epoch_num: int = 0,
                            prep_workers: int = 8,
-                           target_col: int = 216):
+                           target_col: int = 216,
+                           n_classes: int = 1,
+                           label_key: str = 'beat_score'):
     """Train one epoch in continuous mode (single output channel, BCE)."""
     losses = []
     mid_epoch_val_active = (val_batches and val_data is not None
@@ -334,7 +380,8 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
 
     prep = ContinuousPrepPipeline(batches, dataset, chunk_len, cache,
                                    max_queue=2, n_workers=prep_workers,
-                                   target_col=target_col)
+                                   target_col=target_col,
+                                   n_classes=n_classes, label_key=label_key)
     n_batches = len(batches)
 
     prep_iter = iter(prep)
@@ -356,20 +403,30 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
         gpu.upload(input_seq_buf, inputs_TBF.ravel())
         gpu.upload(target_seq_buf, targets_TB.ravel())
 
-        # Forward — same seq-mode dispatches as 3-class. Final linear
-        # produces (B*T, 1) logits since the model was built with
-        # n_classes=1.
+        # Forward — same seq-mode dispatches regardless of n_classes.
+        # Final linear produces (B*T, n_classes) logits.
         linear_in.forward(input_seq_buf, BT, (linear_in.in_features,))
         gru.forward_sequence(linear_in.output_buf, gru_seq_out_buf,
                               B_actual, T)
         linear_out.forward(gru_seq_out_buf, BT, (gru.hidden_size,))
 
-        # BCE loss + grad in one dispatch (single channel)
-        bce_loss_dispatch(
-            gpu, linear_out.output_buf, target_seq_buf,
-            grad_acc_buf, loss_acc_buf,
-            batch_size=BT, target_offset_floats=0, t_inv=1.0,
-        )
+        # BCE loss + grad. Single-channel path uses the original shader;
+        # multi-channel routes through bce_loss_multich_dispatch which
+        # treats each channel as an independent sigmoid + BCE (no softmax
+        # constraint between them).
+        if n_classes == 1:
+            bce_loss_dispatch(
+                gpu, linear_out.output_buf, target_seq_buf,
+                grad_acc_buf, loss_acc_buf,
+                batch_size=BT, target_offset_floats=0, t_inv=1.0,
+            )
+        else:
+            bce_loss_multich_dispatch(
+                gpu, linear_out.output_buf, target_seq_buf,
+                grad_acc_buf, loss_acc_buf,
+                batch_size=BT, n_classes=n_classes,
+                target_offset_floats=0, t_inv=1.0,
+            )
 
         loss_per = gpu.download(loss_acc_buf, np.float32, BT)
         chunk_loss = float(loss_per.mean())
@@ -436,6 +493,25 @@ def main():
                              'target. 216 = downbeat (or v1 beat_score); '
                              '217 = non-downbeat beat (default 216 — train '
                              'two separate models, one per target column).')
+    parser.add_argument('--n-classes', type=int, default=1, choices=[1, 3],
+                        help='Output heads. 1 = single-channel BCE (default, '
+                             'backward-compatible). 3 = multi-head sigmoid + '
+                             'per-channel BCE for hierarchical (downbeat / '
+                             'any-beat / any-onset) labels. Requires '
+                             '--label-key labels_hier and .npz inputs with '
+                             'the labels_hier field present.')
+    parser.add_argument('--label-key', type=str, default='beat_score',
+                        help='Key in the .npz to read targets from. Defaults '
+                             'to beat_score (single-channel). Use '
+                             'labels_hier for n_classes=3 hierarchical '
+                             'targets (run tools/generate_beat_labels.py to '
+                             'add it to your label corpus).')
+    parser.add_argument('--proj-size', type=int, default=32,
+                        help='Input projection dimension (linear: 216 → '
+                             'proj_size → GRU). v1 default 32 stayed tight; '
+                             'v2 (3-head) bumps to 64 to give each head '
+                             'more raw spectrum signal. Must match the '
+                             'runtime _PROJ_SIZE in beat_rnn.py.')
     parser.add_argument('--prep-workers', type=int, default=8,
                         help='Threads decompressing .npz files in parallel '
                              'inside the prep pipeline (default 8).')
@@ -461,11 +537,22 @@ def main():
     val_data = [dataset[i] for i in val_idx]
     print(f'Train: {len(train_data)} files, Val: {len(val_data)} files')
 
+    # Sanity check: multi-head mode requires hierarchical labels.
+    if args.n_classes > 1 and args.label_key != 'labels_hier':
+        print(f'WARN: --n-classes={args.n_classes} but '
+              f'--label-key={args.label_key!r}. Multi-head mode is meant '
+              f"for hierarchical labels (run tools/generate_beat_labels.py "
+              f"to add labels_hier to your corpus). Continuing — you "
+              f"probably want --label-key labels_hier.", file=sys.stderr)
+
     gpu = VkCompute()
-    # n_classes=1: continuous single-channel output. seq_mode=True so
-    # linear layers' output buffers are sized for B*T flat batches.
+    # seq_mode=True so linear layers' output buffers are sized for B*T
+    # flat batches. n_classes drives the output dim of linear_out and
+    # therefore the shape of grad_acc / target buffers below.
     model = build_beat_crnn(gpu, input_size=216, hidden_size=args.hidden,
-                             n_classes=1, batch_size=args.batch_size,
+                             proj_size=args.proj_size,
+                             n_classes=args.n_classes,
+                             batch_size=args.batch_size,
                              max_seq_len=args.chunk_len, seq_mode=True)
 
     start_epoch = 0
@@ -490,20 +577,24 @@ def main():
         print(f'--no-resume: fresh init (seed={args.seed})')
 
     print(f'Model: {model.param_count()} parameters (hidden={args.hidden}, '
-          f'output=1)')
+          f'proj={args.proj_size}, output={args.n_classes})')
     print(f'Chunk length: {args.chunk_len} frames ({args.chunk_len / OUR_FPS:.2f}s)')
     if args.val_interval > 0:
         print(f'Mid-epoch validation: every {args.val_interval / 60:.0f} minutes')
     print()
 
     BT = args.batch_size * args.chunk_len
+    C = args.n_classes
     in_buf = gpu.create_buffer(args.batch_size * 216 * 4)
     grad_buf = gpu.create_buffer(args.batch_size * 4)  # not used in seq path
     input_seq_buf = gpu.create_buffer(BT * 216 * 4)
-    target_seq_buf = gpu.create_buffer(BT * 4)         # (T, B) single channel
+    # Target + grad buffers sized for n_classes channels. Loss is summed
+    # over channels into a single (BT,) accumulator (the multich BCE
+    # shader handles this; for n_classes=1 it's the same as before).
+    target_seq_buf = gpu.create_buffer(BT * C * 4)
     gru_seq_out_buf = gpu.create_buffer(BT * args.hidden * 4)
     loss_acc_buf = gpu.create_buffer(BT * 4)
-    grad_acc_buf = gpu.create_buffer(BT * 4)           # (T, B) grad on logit
+    grad_acc_buf = gpu.create_buffer(BT * C * 4)
 
     file_cache = LazyFileCache(max_files=args.file_cache_size)
 
@@ -528,7 +619,15 @@ def main():
             save_path=args.output, epoch_num=epoch,
             prep_workers=args.prep_workers,
             target_col=args.target_col,
+            n_classes=args.n_classes,
+            label_key=args.label_key,
         )
+        # Validation: for now uses col 0 of multi-head output for the
+        # F1 metric (downbeat detection — the most-imbalanced head and
+        # therefore the most informative single-channel sanity check).
+        # Per-channel F1 breakout is a follow-up — gives us per-axis
+        # ground-truth on whether the multi-head training is actually
+        # separating signals or just learning a common "beat" prior.
         val_loss, val_f1, val_metrics = validate_continuous(
             model, gpu, val_batches, args.chunk_len, in_buf,
             val_data, file_cache, peak_threshold=args.peak_threshold,
