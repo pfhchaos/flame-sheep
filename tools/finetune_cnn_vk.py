@@ -448,7 +448,17 @@ def main():
                              'Use 3 only if you specifically want to drop A '
                              'from the target architecture. If base weights '
                              'have fewer channels than the target, conv1 is '
-                             'zero-pad-expanded automatically.')
+                             'expanded automatically (see --new-channel-init).')
+    parser.add_argument('--new-channel-init', type=str, default='zero',
+                        choices=['zero', 'matched', 'kaiming'],
+                        help='How to initialize the added conv1 channel planes '
+                             'when expanding base weights. zero (default): '
+                             'planes start at 0, model learns from gradient '
+                             'flow only (slow under low LR). matched: sample '
+                             'from N(0, std) matched to existing channels — '
+                             'gives the new column parity-scale contribution '
+                             'from epoch 1. kaiming: fresh fan_in-scaled '
+                             'init. See cnn_scorer.expand_conv1_channels.')
     parser.add_argument('--data-mode', type=str, default='mixed',
                         choices=['mixed', 'thumbs', 'pairwise'],
                         help='Training data: mixed (default), thumbs only (curriculum stage 1), pairwise only (stage 2)')
@@ -556,14 +566,17 @@ def main():
                       'Tried base channels (3, 4) × configs.', n_params)
             sys.exit(1)
 
-    # If base channels < target, expand conv1 with zero-padded new input planes.
+    # If base channels < target, expand conv1 with new input planes per
+    # the chosen init strategy.
     if base_weights is not None and base_in_channels < args.channels_count:
         from flame_sheep.cnn_scorer import expand_conv1_channels
-        log.info('Expanding conv1 channels: %d → %d (zero-pad new input planes)',
-                 base_in_channels, args.channels_count)
+        log.info('Expanding conv1 channels: %d → %d (init=%s)',
+                 base_in_channels, args.channels_count, args.new_channel_init)
         base_weights = expand_conv1_channels(
             base_weights, base_in_channels, args.channels_count,
-            train_cnn_vk.LAYERS)
+            train_cnn_vk.LAYERS,
+            new_channel_init=args.new_channel_init,
+            seed=args.seed)
         n_params = len(base_weights)
         log.info('Expanded base weights: %d params', n_params)
 

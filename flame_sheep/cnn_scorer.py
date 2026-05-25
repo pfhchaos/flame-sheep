@@ -220,15 +220,14 @@ def save_cnn_weights_file(path: str | Path, weights: np.ndarray,
 def expand_conv1_channels(base_weights: np.ndarray,
                           base_in_channels: int,
                           target_in_channels: int,
-                          layers_config: list[tuple]) -> np.ndarray:
-    """Expand the first conv layer's in_channels dimension by zero-padding.
+                          layers_config: list[tuple],
+                          new_channel_init: str = 'zero',
+                          seed: int | None = None) -> np.ndarray:
+    """Expand the first conv layer's in_channels dimension.
 
     Used when fine-tuning a model trained on fewer input channels (e.g. the
     3-channel ES base) into a model with more channels (e.g. 4-channel
-    personal H/S/L/A). The new in_channel planes start at zero so the
-    expanded model behaves identically to the base on inputs where the new
-    channels are zero, and learns the new feature from gradient flow during
-    fine-tuning.
+    personal H/S/L/A).
 
     Args:
         base_weights: flat (1D) weight array from the base model.
@@ -236,14 +235,37 @@ def expand_conv1_channels(base_weights: np.ndarray,
         target_in_channels: in_channels the target model expects.
         layers_config: target model's layer config [(in_c, out_c, k, s, p), ...].
             Only layers_config[0] is consulted (the first conv's kernel shape).
+        new_channel_init: how to initialize the added channel planes.
+            'zero' (default, backward-compatible): planes start at 0 — model
+              behaves identically to base on inputs where the new channels
+              are zero, learns the new feature purely from gradient flow.
+              Cold-start tax: gradient signal on the new column is small
+              until the model starts caring about it, so convergence is
+              slow under low LR.
+            'matched': sample from N(0, std) where std matches the RMS of
+              the existing (trained) channels. Gives the new column
+              parity-scale contribution from epoch 1 — model treats it as
+              "another channel like the others, just untrained" rather
+              than a dead channel. Trade-off: adds noise to the otherwise
+              clean inherited features, may destabilize H/S/L learning
+              briefly.
+            'kaiming': fresh Kaiming-uniform init scaled to the full
+              (target) fan_in. Treats the new column as if it were
+              random-init in a fresh-built model. Most generic.
+        seed: RNG seed for 'matched'/'kaiming' modes. None → nondeterministic.
 
     Returns:
         flat (1D) weight array sized for the target model. Length increases
         by (target_in - base_in) * out_c * k * k.
 
     Raises:
-        ValueError: if target < base (would silently drop signal).
+        ValueError: if target < base (would silently drop signal), or if
+            new_channel_init is unknown.
     """
+    if new_channel_init not in ('zero', 'matched', 'kaiming'):
+        raise ValueError(
+            f'new_channel_init={new_channel_init!r} not in '
+            f'{{zero, matched, kaiming}}')
     if base_in_channels == target_in_channels:
         return base_weights
     if base_in_channels > target_in_channels:
@@ -266,11 +288,28 @@ def expand_conv1_channels(base_weights: np.ndarray,
     conv1_kernel = base_weights[:base_conv1_n].reshape(
         out_c, base_in_channels, k, k)
     n_new = target_in_channels - base_in_channels
-    # Pad new in_channel planes at the END (index = base_in_channels). For
-    # the ES → personal case this puts A at index 3, matching the H/S/L/A
-    # ordering the data loader produces.
-    expanded = np.pad(conv1_kernel, [(0, 0), (0, n_new), (0, 0), (0, 0)],
-                      mode='constant', constant_values=0).astype(np.float32)
+
+    # Build the new in-channel planes per the chosen init strategy.
+    rng = np.random.default_rng(seed)
+    new_shape = (out_c, n_new, k, k)
+    if new_channel_init == 'zero':
+        new_planes = np.zeros(new_shape, dtype=np.float32)
+    elif new_channel_init == 'matched':
+        # Match the standard deviation of the trained columns. Use std
+        # rather than RMS so we ignore any non-zero mean (which is
+        # signal, not noise) and avoid biasing the new planes.
+        existing_std = float(conv1_kernel.std()) or 1e-3
+        new_planes = (rng.standard_normal(new_shape).astype(np.float32)
+                       * existing_std)
+    else:  # 'kaiming'
+        fan_in = target_in_channels * k * k
+        std = float(np.sqrt(2.0 / fan_in))
+        new_planes = (rng.standard_normal(new_shape).astype(np.float32) * std)
+
+    # Concatenate along in_channels (axis=1). Places new planes at the END
+    # (index = base_in_channels) — for the ES → personal case this puts
+    # A at index 3, matching the H/S/L/A ordering the data loader produces.
+    expanded = np.concatenate([conv1_kernel, new_planes], axis=1).astype(np.float32)
     return np.concatenate([
         expanded.flatten(),
         base_weights[base_conv1_n:].astype(np.float32),
