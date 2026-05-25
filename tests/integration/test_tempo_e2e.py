@@ -48,7 +48,11 @@ def _run_tempo_e2e(pattern: DrumPattern, min_duration: float = 20.0) -> float:
 
     engine = CqtEngine()
     stability = MagnitudeStability()
-    detector = FluxBeatDetector(sharpness=True, stability=stability)
+    # CqtEngine produces 108-bin flux; the detector's default freqs are the
+    # 1025-bin FFT array. Pass the CQT bin centers so the band masks size
+    # to the same axis (matches production wiring in processor.py).
+    detector = FluxBeatDetector(sharpness=True, stability=stability,
+                                freqs=engine.bin_centers)
     density = OnsetDensityTracker()
     hop_dur = HOP_SIZE / SAMPLE_RATE
     tracker = AutocorrelationTempoTracker(hop_duration=hop_dur)

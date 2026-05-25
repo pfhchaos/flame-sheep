@@ -288,7 +288,12 @@ class TestFullPipelineRendering:
         hits_with_final = self._render_genome(gpu_ctx, g2, n_frames=20)
 
         assert np.count_nonzero(hits_no_final) > 50
-        assert np.count_nonzero(hits_with_final) > 50
+        # Spherical maps r → 1/r, so a contraction attractor sitting at
+        # r ≈ 0.5-0.8 lands at r ≈ 1.25-2.0 — most points end up outside
+        # the [-1, 1] viewport and only a narrow strip survives. The
+        # intent here is "final xform actually fires"; np.array_equal
+        # below carries the bulk of that assertion.
+        assert np.count_nonzero(hits_with_final) > 20
         assert not np.array_equal(hits_no_final, hits_with_final)
 
 

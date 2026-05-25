@@ -302,6 +302,9 @@ RANDOM_VARIATIONS = {
     Variation.ARCH, Variation.PARABOLA, Variation.RAYS,
     Variation.CONIC, Variation.SQUARE, Variation.TWINTRIAN,
     Variation.WEDGE_JULIA,
+    # batch 3 — late parametric/conditional variations that all call _rand()
+    Variation.SPLITBRDR, Variation.PHOENIX_JULIA,
+    Variation.JULIAQ, Variation.GLYNNIA,
 }
 
 # ---------------------------------------------------------------------------
@@ -396,6 +399,14 @@ PARAM_FIXTURES: dict[int, dict[str, float]] = {
     Variation.SEPARATION: {'separation_x': 0.5, 'separation_y': 0.5,
                            'separation_xinside': 0.2, 'separation_yinside': 0.3},
     Variation.POPCORN2: {'popcorn2_x': 0.1, 'popcorn2_y': 0.1, 'popcorn2_c': 3.0},
+    Variation.SPLITBRDR: {'splitbrdr_x': 0.25, 'splitbrdr_y': 0.25,
+                          'splitbrdr_px': 0.0, 'splitbrdr_py': 0.0},
+    Variation.PHOENIX_JULIA: {'phoenix_power': 3.0, 'phoenix_dist': 1.0,
+                              'phoenix_x_distort': -0.5, 'phoenix_y_distort': 0.0},
+    Variation.JULIAQ: {'juliaq_power': 3.0, 'juliaq_divisor': 2.0},
+    Variation.MINKOWSKOPE: {'mskope_separation': 0.5, 'mskope_frequencyx': -2.0,
+                            'mskope_frequencyy': 2.0, 'mskope_amplitude': 0.5,
+                            'mskope_perturbation': 1.0, 'mskope_damping': 0.0},
 }
 
 # GPU golden test uses multiple param sets per variation for branch coverage
