@@ -804,11 +804,22 @@ def main():
                           input_buf, BS, IMG_SZ,
                           n_channels=args.channels_count)
 
-    # Trigger the generation-advance pipeline. Only fires if at least one
-    # epoch produced a saved-best-weights — a 0-improvement run shouldn't
-    # bother the downstream workers. The score worker hot-reloads the new
-    # weights, rescores, then the latch chain breeds + prunes + advances.
-    if best_weights is not None:
+    # Trigger the generation-advance pipeline — ONLY if this run wrote to
+    # the deployed weights path. Experiment runs (output to a separate
+    # path, e.g. ~/datasets/esheep-cnn/ for fine-tune A/B testing) must
+    # NOT hijack production: the score worker hot-reloads on the deployed
+    # file's mtime, so latching for an experiment that produced unrelated
+    # weights would kick off rescoring with whatever was on disk at the
+    # deployed path (which doesn't reflect this experiment at all).
+    #
+    # Match on resolved canonical path of the deployed location (handles
+    # .npy vs .npz, relative paths, symlinks).
+    deployed = (Path(__file__).resolve().parent.parent /
+                'flame_sheep/data/cnn_scorer_personal_vk').resolve()
+    output_resolved = output.resolve()
+    is_deployment = (output_resolved.with_suffix('') == deployed)
+
+    if best_weights is not None and is_deployment:
         try:
             from flame_sheep.storage import Library
             _lib = Library()
@@ -827,6 +838,9 @@ def main():
             _lib.close()
         except Exception:
             log.exception('Failed to latch gen advance (training succeeded)')
+    elif best_weights is not None:
+        log.info('Experiment run (output != deployed weights path); '
+                 'NOT latching gen advance. Output: %s', output_resolved)
 
     store.close()
     gpu.destroy()
