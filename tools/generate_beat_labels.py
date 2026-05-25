@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate beat detection training labels using BeatNet as oracle.
+"""Generate beat detection training labels using BeatNet + madmom oracles.
 
 Requires Python 3.10 (madmom compatibility). Run with:
     python3.10 tools/generate_beat_labels.py ~/music/ -o ~/datasets/beat-labels/
@@ -8,8 +8,22 @@ For each audio file:
   1. Compute CQT spectrum at our native hop rate (48kHz, 512 hop)
   2. Run BeatNet to get per-frame [downbeat, beat, non-beat] soft labels
      (channel 0 = downbeat, 2 = non-beat; class 2 is the majority class)
-  3. Resample BeatNet labels to align with our frame rate
-  4. Save as .npz: spectrum + diff + labels + metadata
+  3. Run madmom RNNOnsetProcessor for non-beat-onset detection
+     (drives the palette axis — fills, syncopation, off-beat hits)
+  4. Resample all to our frame rate, build hierarchical 3-channel labels
+  5. Save as .npz: spectrum + diff + labels + labels_hier + onsets + metadata
+
+Hierarchical labels (`labels_hier`, shape [T, 3]) use independent sigmoid
+semantics rather than softmax — each channel fires on its own class plus
+broader superclasses:
+  col 0: downbeat probability (fires on downbeats only)
+  col 1: beat probability     (fires on ALL beats including downbeats)
+  col 2: onset probability    (fires on ALL onsets including beats)
+
+Runtime classifier picks the most specific class that fires:
+  downbeat > beat > onset > nothing. Each head learns its own decision
+  boundary against pure non-events; no softmax constraint, no
+  imbalance pathology.
 """
 
 import argparse
@@ -29,6 +43,15 @@ import torch
 
 from BeatNet.model import BDA
 from BeatNet.log_spect import LOG_SPECT
+
+# madmom for non-beat-onset detection. RNNOnsetProcessor is the slow-but-
+# accurate default; we run it once per file at label-generation time so
+# inference cost doesn't matter.
+from madmom.features.onsets import RNNOnsetProcessor
+
+# madmom fps is 100 (matches its default). Used for resampling its
+# per-frame onset activation to our frame rate.
+MM_FPS = 100.0
 
 # Our audio parameters
 OUR_SAMPLE_RATE = 48000
@@ -95,7 +118,41 @@ def resample_labels(bn_labels: np.ndarray, n_our_frames: int) -> np.ndarray:
     return bn_labels[indices].astype(np.float32)
 
 
+def resample_1d(values: np.ndarray, src_fps: float,
+                n_our_frames: int) -> np.ndarray:
+    """Resample a 1-D per-frame signal at src_fps to our frame rate.
+    Nearest-neighbor; matches resample_labels' semantics for consistency."""
+    n_src = len(values)
+    our_times = np.arange(n_our_frames) / OUR_FPS
+    src_times = np.arange(n_src) / src_fps
+    indices = np.searchsorted(src_times, our_times, side='right') - 1
+    indices = np.clip(indices, 0, n_src - 1)
+    return values[indices].astype(np.float32)
+
+
+def build_hierarchical_labels(bn_labels: np.ndarray,
+                               onset_activations: np.ndarray) -> np.ndarray:
+    """Build [T, 3] hierarchical labels: (downbeat, beat, onset).
+
+    bn_labels: [T, 3] BeatNet softmax (cols = downbeat, beat, non-beat).
+    onset_activations: [T] madmom onset probability (already resampled).
+
+    Each output channel fires on its own class PLUS broader superclasses:
+      col 0 = bn_labels[:, 0]                        — downbeat only
+      col 1 = bn_labels[:, 0] + bn_labels[:, 1]      — any beat
+      col 2 = max(any_beat, onset_activations)       — any onset
+    Both are clipped to [0, 1] since BeatNet's softmax sums to ~1 and the
+    max with the onset signal can push slightly over from independent
+    sources. Independent sigmoid semantics — no softmax constraint.
+    """
+    downbeat = bn_labels[:, 0]
+    any_beat = np.clip(bn_labels[:, 0] + bn_labels[:, 1], 0.0, 1.0)
+    any_onset = np.clip(np.maximum(any_beat, onset_activations), 0.0, 1.0)
+    return np.stack([downbeat, any_beat, any_onset], axis=1).astype(np.float32)
+
+
 def process_file(audio_path: Path, model: BDA, proc: LOG_SPECT,
+                 onset_proc: RNNOnsetProcessor,
                  output_dir: Path, max_duration=None) -> bool:
     """Process one audio file. Returns True on success."""
     try:
@@ -109,11 +166,17 @@ def process_file(audio_path: Path, model: BDA, proc: LOG_SPECT,
         cqt_frames = compute_cqt_frames(audio_48k)
         n_frames = len(cqt_frames)
 
-        # BeatNet activations
+        # BeatNet activations (softmax over [downbeat, beat, non-beat])
         bn_probs = compute_beatnet_activations(str(audio_path), model, proc)
-
-        # Resample to our frame rate
         labels = resample_labels(bn_probs, n_frames)
+
+        # madmom onset activations (per-frame probability at 100 fps)
+        # Reads its own audio internally; resample to our frame rate.
+        onset_raw = onset_proc(str(audio_path))
+        onsets = resample_1d(np.asarray(onset_raw), MM_FPS, n_frames)
+
+        # Hierarchical 3-channel labels for the multi-head model
+        labels_hier = build_hierarchical_labels(labels, onsets)
 
         # First-order difference (half-wave rectified)
         diff = np.zeros_like(cqt_frames)
@@ -127,9 +190,11 @@ def process_file(audio_path: Path, model: BDA, proc: LOG_SPECT,
 
         np.savez_compressed(
             out_path,
-            spectrum=cqt_frames,   # [T, 108] float32
-            diff=diff,             # [T, 108] float32
-            labels=labels,         # [T, 3] float32 — soft probabilities
+            spectrum=cqt_frames,    # [T, 108] float32
+            diff=diff,              # [T, 108] float32
+            labels=labels,          # [T, 3] float32 — BeatNet softmax (legacy)
+            labels_hier=labels_hier,  # [T, 3] float32 — hierarchical sigmoid targets
+            onsets=onsets,          # [T] float32 — raw madmom onset (debug/dev)
             sr=OUR_SAMPLE_RATE,
             hop=OUR_HOP,
             source=str(audio_path),
@@ -189,12 +254,17 @@ def main():
         mode='online',
     )
 
+    # madmom onset processor (RNN, slow but accurate — labels are generated
+    # once per track so inference cost is acceptable).
+    print("Loading madmom RNNOnsetProcessor...")
+    onset_proc = RNNOnsetProcessor()
+
     # Process
     success = 0
     for i, f in enumerate(files):
         rel = f.relative_to(args.input) if f.is_relative_to(args.input) else f.name
         print(f"[{i+1}/{len(files)}] {rel}")
-        if process_file(f, model, proc, args.output, args.max_duration):
+        if process_file(f, model, proc, onset_proc, args.output, args.max_duration):
             success += 1
 
     print(f"\nDone: {success}/{len(files)} files")
