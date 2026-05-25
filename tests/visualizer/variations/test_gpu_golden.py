@@ -501,7 +501,10 @@ RANDOM_VARIATIONS = {Variation.JULIA, Variation.SATTRACTOR, Variation.WALLPAPER,
                      Variation.SUPER_SHAPE, Variation.NOISE, Variation.PIE,
                      Variation.ARCH, Variation.PARABOLA, Variation.RAYS,
                      Variation.CONIC, Variation.SQUARE, Variation.TWINTRIAN,
-                     Variation.WEDGE_JULIA}
+                     Variation.WEDGE_JULIA,
+                     # batch 3 RNG variations (122-126 era)
+                     Variation.SPLITBRDR, Variation.PHOENIX_JULIA,
+                     Variation.JULIAQ, Variation.GLYNNIA}
 
 # Variation names for readable output
 VAR_NAMES: dict[int, str] = {}

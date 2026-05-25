@@ -367,14 +367,17 @@ static void v_split(helper_t *f, double w) {
     f->p0 += w * f->tx * sx;  /* NOTE: flam3 uses sx for p0 (y-based) */
     f->p1 += w * f->ty * sy;  /* and sy for p1 (x-based) */
 }
-/* 80: whorl — CONDITIONAL: inside vs outside r=1 */
+/* 80: whorl — flam3 uses (w - r) as denominator in BOTH branches.
+ * Earlier version had (r - w) on the outside branch which flips the
+ * sign of the angle term — disagreed with the real flam3 source.
+ * Confirmed against ~/projects/flam3/variations.c::var80_whorl. */
 static void v_whorl(helper_t *f, double w) {
     double r = f->sqr;
     double a;
     if (r < w)
         a = f->atanyx + f->xf->whorl_inside / (w - r);
     else
-        a = f->atanyx + f->xf->whorl_outside / (r - w);
+        a = f->atanyx + f->xf->whorl_outside / (w - r);
     f->p0 += w * r * cos(a);
     f->p1 += w * r * sin(a);
 }

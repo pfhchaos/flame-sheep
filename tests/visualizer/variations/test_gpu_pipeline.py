@@ -196,10 +196,10 @@ class TestFullPipelineRendering:
     """Test complete chaos game rendering produces expected pixel coverage."""
 
     def _render_genome(self, gpu_ctx, genome, n_frames=10):
-        from flame_sheep.renderer import FlameRenderer
+        from flame_sheep.renderer import FlameRenderer, GpuContext
         from flame_sheep_audio import N_BINS
 
-        renderer = FlameRenderer(gpu_ctx, 256, 256)
+        renderer = FlameRenderer(GpuContext(gpu_ctx, 256, 256))
         renderer.upload_genome(genome)
         renderer.reset_walkers()
         renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
@@ -306,7 +306,7 @@ class TestSheepRendering:
 
     def test_sheep_69369_cpu_vs_gpu_coverage(self, gpu_ctx):
         """Sheep 69369 should produce similar coverage on GPU as CPU."""
-        from flame_sheep.renderer import FlameRenderer
+        from flame_sheep.renderer import FlameRenderer, GpuContext
         from flame_sheep.variations._cpu import apply_variations_cpu
         from flame_sheep_audio import N_BINS
 
@@ -348,7 +348,7 @@ class TestSheepRendering:
                     cpu_points.add((gx, gy))
 
         # GPU chaos game
-        renderer = FlameRenderer(gpu_ctx, grid, grid)
+        renderer = FlameRenderer(GpuContext(gpu_ctx, grid, grid))
         renderer.upload_genome(g)
         renderer.reset_walkers()
         renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
