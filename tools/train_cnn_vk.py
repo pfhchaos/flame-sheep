@@ -63,20 +63,51 @@ class ImageStore:
                  image_size: int, cache_gb: float = 4.0,
                  channels: str = 'rgb',
                  n_channels: int = 4,
-                 normalization: tuple | None = None):
+                 normalization: tuple | None = None,
+                 entries_filter: set[tuple[int, int]] | None = None,
+                 input_channel_mask: np.ndarray | None = None):
+        """
+        Args:
+            entries_filter: if provided, only manifest rows whose
+                (generation, sheep_id) tuple is in this set are kept. Used
+                for staged-training corpus subsetting (e.g., smooth-Q1 ES).
+            input_channel_mask: per-channel multiplier (shape =
+                (n_channels,)) applied to each batch before return. Used
+                for staged-training input masking (e.g., [0, 1, 1, 0] for
+                L+S-only stage).
+        """
         self.image_dir = image_dir
         self.image_size = image_size
         self._channels = channels
         self._n_channels = n_channels
         self._normalization = normalization
+        self._input_channel_mask: np.ndarray | None = None
+        if input_channel_mask is not None:
+            arr = np.asarray(input_channel_mask, dtype=np.float32)
+            if arr.shape != (n_channels,):
+                raise ValueError(
+                    f'input_channel_mask shape {arr.shape} != '
+                    f'({n_channels},)')
+            if not np.allclose(arr, 1.0):
+                self._input_channel_mask = arr.reshape(1, n_channels, 1, 1)
 
         self.entries = []
+        n_filtered = 0
         with open(manifest_path) as f:
             for row in csv.DictReader(f):
+                gen = int(row['generation'])
+                if entries_filter is not None:
+                    sid = int(row['sheep_id'])
+                    if (gen, sid) not in entries_filter:
+                        n_filtered += 1
+                        continue
                 self.entries.append((
                     row['static_path'], row['swept_path'],
-                    int(row['rating']), int(row['generation']),
+                    int(row['rating']), gen,
                 ))
+        if entries_filter is not None:
+            print(f'  ImageStore: {len(self.entries)} kept, '
+                  f'{n_filtered} filtered out')
 
         bytes_per_image = 4 * image_size * image_size * 4
         self.max_cache = int(cache_gb * 1e9 / bytes_per_image)
@@ -120,7 +151,14 @@ class ImageStore:
         return img
 
     def get_batch(self, indices: list[int] | np.ndarray) -> np.ndarray:
-        """Load a batch of images by index. Uses LRU cache."""
+        """Load a batch of images by index. Uses LRU cache.
+
+        If input_channel_mask was set at construction time, it's applied
+        to the returned batch (broadcast over batch and spatial dims).
+        Cache stores unmasked images so mask changes don't require cache
+        invalidation (though we don't currently support mask changes
+        mid-training).
+        """
         batch = np.zeros((len(indices), self._n_channels,
                           self.image_size, self.image_size),
                          dtype=np.float32)
@@ -139,6 +177,8 @@ class ImageStore:
                     pass
             self._access_order.append(idx)
             batch[i] = self._cache[idx]
+        if self._input_channel_mask is not None:
+            batch = batch * self._input_channel_mask
         return batch
 
 
@@ -221,6 +261,65 @@ def sample_pairs(entries: list, n_pairs: int, min_gap: float = 0.5,
 
 
 
+def _apply_curriculum_defaults(args) -> None:
+    """Set sensible defaults for staged-training flags based on --curriculum-stage.
+
+    Stages 1 and 2 both train on ES (manifest-based). Stage 3 (personal data,
+    DB-based) is handled by finetune_cnn_vk.py.
+
+    Channel order is [H, S, L, A] (matches the deployed model's
+    normalization v3).
+    """
+    if args.curriculum_stage == 1:
+        # L+S only on full ES. H, A input-masked; their conv1 weights stay
+        # at random init since input × any-weight = zero gradient.
+        if args.input_channel_mask is None:
+            args.input_channel_mask = '0,1,1,0'
+        if args.channels_count is None or args.channels_count == 4:
+            args.channels_count = 4  # keep architecture at 4 channels
+        # No per-channel LR scaling needed in stage 1 (input mask suffices).
+    elif args.curriculum_stage == 2:
+        # +H on smooth-Q1 ES. A still input-masked. H gets warmup LR boost
+        # so its random-init weights find features before the loss landscape
+        # locks them out.
+        if args.input_channel_mask is None:
+            args.input_channel_mask = '1,1,1,0'
+        if args.per_channel_lr_mult_warmup is None:
+            args.per_channel_lr_mult_warmup = '3,1,1,0'
+        if args.per_channel_lr_mult_settle is None:
+            args.per_channel_lr_mult_settle = '1,1,1,0'
+        if args.warmup_epochs == 0:
+            args.warmup_epochs = 5
+        if args.es_where is None:
+            args.es_where = 'palette_mean_step <= 0.049'
+
+
+def _parse_csv_floats(s: str | None, expected_len: int,
+                      arg_name: str) -> np.ndarray | None:
+    """Parse a comma-separated float list. Returns None if input is None."""
+    if s is None:
+        return None
+    parts = [p.strip() for p in s.split(',')]
+    if len(parts) != expected_len:
+        raise SystemExit(
+            f'{arg_name}: expected {expected_len} values, got {len(parts)} '
+            f'({s!r})')
+    return np.array([float(p) for p in parts], dtype=np.float32)
+
+
+def _load_es_filter(db_path: Path, where_clause: str) -> set[tuple[int, int]]:
+    """Run SELECT generation, sheep_id WHERE <clause> against esheep.db."""
+    import sqlite3
+    con = sqlite3.connect(str(db_path))
+    try:
+        rows = con.execute(
+            f"SELECT generation, sheep_id FROM sheep WHERE {where_clause}"
+        ).fetchall()
+    finally:
+        con.close()
+    return {(g, s) for g, s in rows}
+
+
 def main():
     parser = argparse.ArgumentParser(description='Train CNN scorer on GPU (Vulkan)')
     parser.add_argument('--data', type=str, required=True)
@@ -248,7 +347,46 @@ def main():
                              'entirely. Use 3 for ES pretraining; 4 for personal.')
     parser.add_argument('--init-weights', type=str, default=None,
                         help='Load initial weights from .npy file (for resuming or fine-tuning)')
+
+    # --- Staged training (channel curriculum) flags ---
+    parser.add_argument('--curriculum-stage', type=int, default=None,
+                        choices=[1, 2],
+                        help='Convenience preset for staged training. Sets '
+                             'sensible defaults for input-channel-mask, '
+                             'per-channel LR multipliers, ES filter, and '
+                             'warmup-epochs. Individual flags below override. '
+                             'Stage 1: L+S only on full ES. Stage 2: +H on '
+                             'smooth-Q1 ES. Stage 3 (personal data) is '
+                             'handled by finetune_cnn_vk.py.')
+    parser.add_argument('--input-channel-mask', type=str, default=None,
+                        help='Comma-separated per-channel input multipliers, '
+                             'e.g. "0,1,1,0" zeros out H and A channels. '
+                             'Length must match --channels-count.')
+    parser.add_argument('--per-channel-lr-mult-warmup', type=str, default=None,
+                        help='Comma-separated per-input-channel LR multipliers '
+                             'for conv1 during the first --warmup-epochs '
+                             'epochs, e.g. "3,1,1,0".')
+    parser.add_argument('--per-channel-lr-mult-settle', type=str, default=None,
+                        help='Comma-separated per-input-channel LR multipliers '
+                             'for conv1 after warmup elapses, e.g. "1,1,1,0".')
+    parser.add_argument('--warmup-epochs', type=int, default=0,
+                        help='Number of epochs to use warmup LR multipliers '
+                             'before switching to settle.')
+    parser.add_argument('--es-where', type=str, default=None,
+                        help='SQL WHERE predicate against the esheep.db '
+                             'sheep table — only matching (gen, sheep_id) '
+                             'rows are kept in the manifest. E.g. '
+                             '"palette_mean_step <= 0.049" for smooth-Q1.')
+    parser.add_argument('--es-db', type=str,
+                        default=str(Path.home() / '.local/share/flame-sheep/esheep.db'),
+                        help='Path to the esheep.db for --es-where lookups.')
+
     args = parser.parse_args()
+
+    # Apply --curriculum-stage defaults BEFORE reading other flags so user-
+    # passed values still take precedence.
+    if args.curriculum_stage is not None:
+        _apply_curriculum_defaults(args)
 
     global LAYERS, MLP_HEAD
     # rgb mode always uses 4 channels (R, G, B, swept). channels_count
@@ -317,11 +455,39 @@ def main():
                  [f'{x:.4f}' for x in normalization[0]],
                  [f'{x:.4f}' for x in normalization[1]])
 
+    # --- Staged-training parsing (input mask + per-channel LR mults + ES filter) ---
+    input_mask = _parse_csv_floats(args.input_channel_mask,
+                                   args.channels_count,
+                                   '--input-channel-mask')
+    lr_mult_warmup = _parse_csv_floats(args.per_channel_lr_mult_warmup,
+                                       args.channels_count,
+                                       '--per-channel-lr-mult-warmup')
+    lr_mult_settle = _parse_csv_floats(args.per_channel_lr_mult_settle,
+                                       args.channels_count,
+                                       '--per-channel-lr-mult-settle')
+    es_filter: set[tuple[int, int]] | None = None
+    if args.es_where:
+        db_path = Path(args.es_db)
+        if not db_path.exists():
+            raise SystemExit(f'--es-db does not exist: {db_path}')
+        es_filter = _load_es_filter(db_path, args.es_where)
+        log.info('ES filter "%s": %d (gen, sheep_id) tuples',
+                 args.es_where, len(es_filter))
+    if input_mask is not None:
+        log.info('Input channel mask: %s', input_mask.tolist())
+    if lr_mult_warmup is not None:
+        log.info('Per-channel LR mult (warmup %d ep): %s',
+                 args.warmup_epochs, lr_mult_warmup.tolist())
+    if lr_mult_settle is not None:
+        log.info('Per-channel LR mult (settle): %s', lr_mult_settle.tolist())
+
     # Streaming image store (loads from disk on demand)
     store = ImageStore(data_dir / 'manifest.csv', data_dir, args.image_size,
                        cache_gb=args.cache_gb, channels=args.channels,
                        n_channels=args.channels_count,
-                       normalization=normalization)
+                       normalization=normalization,
+                       entries_filter=es_filter,
+                       input_channel_mask=input_mask)
     entries = store.entries
     log.info('Dataset: %d genomes, image cache: %.1f GB (%d images)',
              len(entries), args.cache_gb, store.max_cache)
@@ -367,7 +533,32 @@ def main():
     best_val_acc = 0.0
     patience = 0
 
+    # Stage-training per-channel LR multipliers on conv1 (model.layers[0]).
+    # Switches at epoch == args.warmup_epochs + 1 from warmup → settle. Both
+    # may be None — then this is a no-op.
+    conv1 = model.layers[0]
+    current_lr_mult: str = 'none'
+
+    def _set_lr_mult(mults: np.ndarray | None, phase: str) -> None:
+        nonlocal current_lr_mult
+        if mults is None or current_lr_mult == phase:
+            return
+        conv1.set_per_input_channel_lr_mult(mults)
+        log.info('Conv1 per-channel LR mult → %s: %s', phase, mults.tolist())
+        current_lr_mult = phase
+
+    # Apply initial (warmup if configured, else settle, else none)
+    if args.warmup_epochs > 0 and lr_mult_warmup is not None:
+        _set_lr_mult(lr_mult_warmup, 'warmup')
+    elif lr_mult_settle is not None:
+        _set_lr_mult(lr_mult_settle, 'settle')
+
     for epoch in range(1, args.epochs + 1):
+        # Switch warmup → settle at the boundary
+        if (args.warmup_epochs > 0 and epoch == args.warmup_epochs + 1
+                and lr_mult_settle is not None):
+            _set_lr_mult(lr_mult_settle, 'settle')
+
         t0 = time.time()
 
         # Sample training pairs from ALL generations except val

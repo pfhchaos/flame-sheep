@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from wallpaper_ml.vk_compute import VkCompute
 
 # Reuse training infrastructure from train_cnn_vk
-from train_cnn_vk import MODEL_CONFIGS, MLP_HIDDEN
+from train_cnn_vk import MODEL_CONFIGS, MLP_HIDDEN, _parse_csv_floats
 
 log = logging.getLogger(__name__)
 
@@ -425,6 +425,13 @@ def main():
                                     'flame_sheep/data/cnn_scorer_vk.npy'),
                         help='Base weights to fine-tune from')
     parser.add_argument('--epochs', type=int, default=30)
+    parser.add_argument('--max-patience', type=int, default=8,
+                        help='Early-stop after this many epochs without '
+                             'val_acc improvement (default 8). At low LR '
+                             '(1e-4 or 1e-5) per-epoch progress is small '
+                             'enough that noise can break short streaks — '
+                             'bump to 15-20 for proper fine-tuning LRs so '
+                             'slow real learning has time to show through.')
     parser.add_argument('--lr', type=float, default=0.001,
                         help='Learning rate')
     parser.add_argument('--batch-size', type=int, default=8)
@@ -466,6 +473,19 @@ def main():
                         help='Random seed for weight init (only used with --from-scratch)')
     parser.add_argument('--output', type=str, default=None,
                         help='Output weights path (default: cnn_scorer_personal_vk.npy)')
+
+    # --- Staged training (channel curriculum) — per-channel LR mult for conv1 ---
+    parser.add_argument('--per-channel-lr-mult-warmup', type=str, default=None,
+                        help='Comma-separated per-input-channel LR multipliers '
+                             'for conv1 during the first --warmup-epochs '
+                             'epochs, e.g. "1,1,1,3" boosts the A channel.')
+    parser.add_argument('--per-channel-lr-mult-settle', type=str, default=None,
+                        help='Comma-separated per-input-channel LR multipliers '
+                             'for conv1 after warmup elapses, e.g. "1,1,1,1".')
+    parser.add_argument('--warmup-epochs', type=int, default=0,
+                        help='Number of epochs to use warmup LR multipliers '
+                             'before switching to settle.')
+
     args = parser.parse_args()
 
     output = Path(args.output) if args.output else (
@@ -671,9 +691,38 @@ def main():
     best_acc = 0.0
     best_weights = None
     patience = 0
-    max_patience = 8
+    max_patience = args.max_patience
+
+    # Stage-3 (and general) per-channel LR mult support on conv1. When
+    # expanding 3→4 channels (A added), A's weights start at random init —
+    # give them a higher LR for the first `warmup_epochs` so they find
+    # features before the loss landscape locks them out.
+    conv1 = model.layers[0]
+    lr_mult_warmup = _parse_csv_floats(args.per_channel_lr_mult_warmup,
+                                       args.channels_count,
+                                       '--per-channel-lr-mult-warmup')
+    lr_mult_settle = _parse_csv_floats(args.per_channel_lr_mult_settle,
+                                       args.channels_count,
+                                       '--per-channel-lr-mult-settle')
+    current_lr_mult: list[str] = ['none']
+
+    def _set_lr_mult(mults: np.ndarray | None, phase: str) -> None:
+        if mults is None or current_lr_mult[0] == phase:
+            return
+        conv1.set_per_input_channel_lr_mult(mults)
+        log.info('Conv1 per-channel LR mult → %s: %s', phase, mults.tolist())
+        current_lr_mult[0] = phase
+
+    if args.warmup_epochs > 0 and lr_mult_warmup is not None:
+        _set_lr_mult(lr_mult_warmup, 'warmup')
+    elif lr_mult_settle is not None:
+        _set_lr_mult(lr_mult_settle, 'settle')
 
     for epoch in range(1, args.epochs + 1):
+        if (args.warmup_epochs > 0 and epoch == args.warmup_epochs + 1
+                and lr_mult_settle is not None):
+            _set_lr_mult(lr_mult_settle, 'settle')
+
         t0 = time.time()
 
         # Shuffle training pairs each epoch
