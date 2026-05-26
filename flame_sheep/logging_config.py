@@ -6,7 +6,7 @@ Sets up structured logging with:
   - Per-component loggers: flame_sheep.audio, flame_sheep.axes.genome, etc.
 
 Usage:
-    from flame_sheep.log import setup_logging
+    from flame_sheep.logging_config import setup_logging
     setup_logging(level='INFO')  # call once at startup
 
     # In any module:

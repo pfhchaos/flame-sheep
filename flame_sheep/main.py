@@ -90,7 +90,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    from .log import setup_logging
+    from .logging_config import setup_logging
     # Parse --log-level args: bare value = global, name=LEVEL = per-component
     global_level = 'INFO'
     component_levels: dict[str, str] = {}
