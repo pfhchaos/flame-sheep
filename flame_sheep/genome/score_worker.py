@@ -34,8 +34,8 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
                   cnn_normalization: tuple | None = None,
                   ) -> dict[str, float]:
     """Compute all metrics from stored blobs."""
-    from .image_scorer import score_from_image
-    from .experimental_metrics import score_all
+    from ..image_scorer import score_from_image
+    from ..experimental_metrics import score_all
 
     scores: dict[str, float] = {}
 
@@ -59,12 +59,12 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
             import torch
 
             if hist_static is not None and hist_swept is not None:
-                from .cnn_scorer import _prepare_input_domain
+                from ..cnn_scorer import _prepare_input_domain
                 tensor = _prepare_input_domain(hist_static, hist_swept,
                                                hist_first_hit,
                                                normalization=cnn_normalization)
             elif render_swept is not None:
-                from .cnn_scorer import _prepare_input
+                from ..cnn_scorer import _prepare_input
                 tensor = _prepare_input(render_static, render_swept,
                                         normalization=cnn_normalization)
             else:
@@ -78,7 +78,7 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
 
     # Histogram-based scoring (if blobs stored)
     if hist_static is not None:
-        from .genome import _score_from_histogram, _score_symmetry
+        from ..genome import _score_from_histogram, _score_symmetry
 
         raw = zlib.decompress(hist_static)
         n_pixels = render_size * render_size
@@ -103,13 +103,13 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
         scores.update(sym_scores)
 
         # Cluster scoring
-        from .cluster_scorer import score_from_clusters
+        from ..cluster_scorer import score_from_clusters
         cl_scores = score_from_clusters(hit_grid, color_grid)
         scores.update(cl_scores)
 
     # Transform-based clustering (if stored)
     if hist_static is not None and hist_transform is not None:
-        from .cluster_scorer import score_from_transform_hits
+        from ..cluster_scorer import score_from_transform_hits
         import struct as _struct
 
         tf_raw = zlib.decompress(hist_transform)
@@ -134,7 +134,7 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
 
 def _refresh_loop_fitness(conn: sqlite3.Connection, log: logging.Logger) -> None:
     """Recompute fitness for all loops after a scoring pass completes."""
-    from .storage import Library
+    from ..storage import Library
     try:
         lib = Library.__new__(Library)
         lib.conn = conn
@@ -158,12 +158,12 @@ def _rescore_cnn(conn, row, cnn_model, weights_hash, log,
 
     try:
         if hist_static is not None and hist_swept is not None:
-            from .cnn_scorer import _prepare_input_domain
+            from ..cnn_scorer import _prepare_input_domain
             tensor = _prepare_input_domain(hist_static, hist_swept,
                                            hist_first_hit,
                                            normalization=cnn_normalization)
         elif render_swept is not None:
-            from .cnn_scorer import _prepare_input
+            from ..cnn_scorer import _prepare_input
             tensor = _prepare_input(render_static, render_swept,
                                     normalization=cnn_normalization)
         else:
@@ -233,8 +233,8 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     except OSError:
         pass
 
-    from .gpu_render_worker import RENDER_VERSION
-    from .storage import _ensure_schema
+    from ..gpu_render_worker import RENDER_VERSION
+    from ..storage import _ensure_schema
 
     conn = sqlite3.connect(db_path)
     conn.execute('PRAGMA busy_timeout=30000')
@@ -246,7 +246,7 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     cnn_normalization = None  # (mean, std) tuple or None for legacy mode
     try:
         import hashlib
-        from .cnn_scorer import load_model, _default_weights_path
+        from ..cnn_scorer import load_model, _default_weights_path
         weights_path = _default_weights_path()
         if weights_path.exists():
             cnn_model = load_model()
@@ -268,8 +268,8 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     # whole machinery is meant to prevent.
     if cnn_model is not None:
         try:
-            from .cnn_scorer import load_cnn_weights_file
-            from .storage import NORMALIZATION_VERSION, Library
+            from ..cnn_scorer import load_cnn_weights_file
+            from ..storage import NORMALIZATION_VERSION, Library
             _, _wver = load_cnn_weights_file(str(weights_path))
             if _wver is None:
                 log.warning('CNN weights are legacy .npy — running without normalization. '
@@ -293,7 +293,7 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
             cnn_model = None
 
     # Config for multi-model detail tracking
-    from .config import cfg
+    from ..config import cfg
     store_cnn_detail = getattr(getattr(cfg, 'scoring', None), 'store_cnn_detail', False)
 
     was_scoring = False  # track when we transition from scoring → idle
@@ -365,12 +365,12 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                 # Speed isn't critical — idle-poll cadence is enough.
                 if cnn_weights_hash:
                     try:
-                        from .gen_advance import (
+                        from ..gen_advance import (
                             rescore_complete, all_active_fully_scored,
                             STATE_AWAITING_RESCORE, STATE_AWAITING_BREED,
                             STATE_AWAITING_SCORE_NEW, STATE_AWAITING_PRUNE,
                         )
-                        from .storage import Library
+                        from ..storage import Library
                         _lib = Library()
                         state = _lib.get_gen_advance_state()
                         if state == STATE_AWAITING_RESCORE and rescore_complete(

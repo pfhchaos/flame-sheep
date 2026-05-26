@@ -45,7 +45,7 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
     # Let wallpaper start up before competing for GPU
     time.sleep(10)
 
-    from .config import cfg
+    from ..config import cfg
 
     scoring_cfg = getattr(cfg, 'scoring', None)
     render_size = getattr(scoring_cfg, 'render_size', 512)
@@ -70,12 +70,12 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
         log.error(f'Failed to create EGL context: {e}')
         return
 
-    from .rendering import FlameRenderer, N_ITERS, LIVE_ITER_MIN, LIVE_ITER_MAX
-    from .storage import _genome_from_json, _ensure_schema
+    from ..rendering import FlameRenderer, N_ITERS, LIVE_ITER_MIN, LIVE_ITER_MAX
+    from ..storage import _genome_from_json, _ensure_schema
     from flame_sheep_audio import N_BINS
-    from .genome import _score_from_histogram
+    from ..genome import _score_from_histogram
 
-    from .rendering import GpuContext
+    from ..rendering import GpuContext
     renderer = FlameRenderer(GpuContext(ctx, render_size, render_size),
                               scoring=True, n_walkers=scoring_walkers)
 
@@ -95,7 +95,7 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
         else:         _rainbow[i] = [c, 0, x]
     _gray_palette = np.tile(
         np.linspace(0, 1, 256, dtype=np.float32), (3, 1)).T.copy()
-    from .scoring_channels import pack_histogram, pack_static_histogram
+    from ..scoring_channels import pack_histogram, pack_static_histogram
     log.info(f'GPU render worker started ({render_size}x{render_size}, '
              f'{scoring_walkers} walkers, sleep={render_sleep}s)')
 
@@ -241,7 +241,7 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
                 # pixels (H=1.0 on never-hit, A=1.0 on first_hit==255) are
                 # excluded — see NORMALIZATION_VERSION='v2' comment in
                 # storage.py.
-                from .scoring_channels import channel_stats_hit_only
+                from ..scoring_channels import channel_stats_hit_only
                 try:
                     chan_means, chan_stds = channel_stats_hit_only(
                         hit_counts, color_accs, swept_hits, first_hit)
@@ -343,7 +343,7 @@ def main():
                         datefmt='%H:%M:%S')
     logging.getLogger('PIL').setLevel(logging.WARNING)
 
-    from .storage import _db_path
+    from ..storage import _db_path
     stop = multiprocessing.Event()
     db = str(_db_path())
 

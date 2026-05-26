@@ -32,7 +32,7 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
     except OSError:
         pass
 
-    from .storage import _ensure_schema, _genome_from_json
+    from ..storage import _ensure_schema, _genome_from_json
 
     conn = sqlite3.connect(db_path)
     conn.execute('PRAGMA busy_timeout=30000')
@@ -47,7 +47,7 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
     # actual train+breed cycle is still manual; this is just the
     # nudge that says "you have enough new data, consider retraining."
     import time as _time
-    from .storage import Library
+    from ..storage import Library
     last_retrain_check = 0.0
     RETRAIN_CHECK_INTERVAL = 300.0  # seconds
     _lib_for_retrain = None  # lazy
@@ -73,13 +73,13 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
             # prune steps. Both can be heavy; do at most one per iteration
             # and let the next loop tick re-check state.
             try:
-                from .gen_advance import (
+                from ..gen_advance import (
                     bulk_breed, rank_prune, compute_breed_count,
                     measure_disagreement,
                     STATE_AWAITING_BREED, STATE_AWAITING_SCORE_NEW,
                     STATE_AWAITING_PRUNE, STATE_IDLE,
                 )
-                from .storage import Library
+                from ..storage import Library
                 if _lib_for_retrain is None:
                     _lib_for_retrain = Library()
                 gen_state = _lib_for_retrain.get_gen_advance_state()

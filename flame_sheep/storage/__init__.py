@@ -30,11 +30,10 @@ from .serialization import (
 )
 from .library import Library, score_loop
 
-# Motion field functions live in flame_sheep._motion_field_tmp until
-# Stage 4 (where they land in genome/motion_field.py). Re-export here
-# so existing `from flame_sheep.storage import compute_motion_field`
-# imports keep working.
-from .._motion_field_tmp import (
+# Motion field functions moved to flame_sheep.genome.motion_field in
+# Stage 4b. Re-export here so existing `from flame_sheep.storage import
+# compute_motion_field` imports keep working.
+from ..genome.motion_field import (
     MOTION_GRID,
     compute_motion_field,
     motion_field_coherence,

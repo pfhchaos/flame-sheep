@@ -22,7 +22,7 @@ from flame_sheep.variations import (
 )
 from flame_sheep.variations._cpu import _current_var_params
 import flame_sheep.variations._cpu as cpu_mod
-from flame_sheep.symmetry import symmetry_scores
+from flame_sheep.genome.symmetry import symmetry_scores
 
 # Add tests/ to path for shared fixtures
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tests'))

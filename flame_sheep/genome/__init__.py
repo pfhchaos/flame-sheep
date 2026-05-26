@@ -23,14 +23,14 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .variations import (
+from ..variations import (
     Variation, NUM_VARIATIONS, MAX_VAR_PARAMS, MAX_PARAMS_PER_VAR,
     SLOT_SIZE, PARAMETRIC_VARIATIONS, VAR_PARAMS_SPEC,
     random_var_params, apply_variation_cpu, apply_variations_cpu,
 )
 
 if TYPE_CHECKING:
-    from .rendering import FlameRenderer
+    from ..rendering import FlameRenderer
 
 # Re-export for backwards compatibility
 _PARAMETRIC_VARIATIONS = PARAMETRIC_VARIATIONS
@@ -405,7 +405,7 @@ class Genome:
             rng: numpy random generator
             scale: noise magnitude as fraction of parameter range (default 10%)
         """
-        from .variations._params import jitter_var_params
+        from ..variations._params import jitter_var_params
         import copy
         g = copy.deepcopy(self)
         for tr in g.transforms:
@@ -452,7 +452,7 @@ class Genome:
         d / (d + 1), where typical "good transition" distances are 0-1
         and structurally incompatible pairs saturate near 1.0.
         """
-        from .transitions import compute_transition_distance
+        from ..transitions import compute_transition_distance
 
         raw = compute_transition_distance(self, other)
         return float(raw / (raw + 1.0))
@@ -1004,7 +1004,7 @@ def _score_symmetry(hit_grid: np.ndarray) -> dict[str, float]:
     )
 
 
-    # _apply_variation_cpu is re-exported from .variations for backwards compat
+    # _apply_variation_cpu is re-exported from ..variations for backwards compat
 
 
 def _lerp_arr(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:

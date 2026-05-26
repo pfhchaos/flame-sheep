@@ -15,7 +15,7 @@ from flame_sheep.variations import (
     Variation, NUM_VARIATIONS, apply_variation_cpu,
 )
 import flame_sheep.variations._cpu as cpu_mod
-from flame_sheep.symmetry import symmetry_scores
+from flame_sheep.genome.symmetry import symmetry_scores
 
 from variation_fixtures import (
     GOLDEN_POINTS as TEST_POINTS,

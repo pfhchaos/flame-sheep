@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from flame_sheep.symmetry import (
+from flame_sheep.genome.symmetry import (
     symmetry_scores,
     _rotational_symmetry,
     _reflective_symmetry,

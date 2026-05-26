@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .genome import Genome
+from ..genome import Genome
 
 # Motion field resolution: 3x3 grid of 2D vectors
 MOTION_GRID = 3
@@ -44,7 +44,7 @@ def _grid_centroids(genome: Genome, grid: int, n_test: int,
 
     Returns shape (grid, grid, 2) — centroid (x, y) per cell.
     """
-    from .genome import _apply_variation_cpu
+    from ..genome import _apply_variation_cpu
 
     rng = np.random.default_rng()
     weights = np.array([tr.weight for tr in genome.transforms], dtype=np.float64)

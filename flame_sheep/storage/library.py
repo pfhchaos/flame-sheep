@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from ..genome import Genome
-from .._motion_field_tmp import (
+from ..genome.motion_field import (
     compute_motion_field,
     motion_field_coherence,
     motion_field_from_blob,

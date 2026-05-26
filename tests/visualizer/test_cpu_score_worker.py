@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from flame_sheep.cpu_score_worker import _score_genome
+from flame_sheep.genome.score_worker import _score_genome
 from flame_sheep.scoring_channels import pack_histogram, pack_static_histogram
 
 
