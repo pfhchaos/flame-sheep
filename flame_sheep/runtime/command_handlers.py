@@ -13,14 +13,14 @@ import sys
 import threading
 from typing import TYPE_CHECKING
 
-from .rendering import FlameRenderer
-from .ui.compare import CompareRenderer
+from ..rendering import FlameRenderer
+from ..ui.compare import CompareRenderer
 
 if TYPE_CHECKING:
     from .core import FlameSheepCore
-    from .storage import Library
+    from ..storage import Library
     from .orchestrator import Orchestrator
-    from .ui.compare import CompareMode
+    from ..ui.compare import CompareMode
 
 log = logging.getLogger(__name__)
 
@@ -172,7 +172,7 @@ class WallpaperCommands:
 
     def _handle_config(self, event) -> None:
         if event.args and event.args[0] == 'reload':
-            from .config import cfg
+            from ..config import cfg
             from flame_sheep_audio.config import cfg as audio_cfg
             cfg.reload()
             audio_cfg.reload()
@@ -186,7 +186,7 @@ class WallpaperCommands:
     # --- Compare mode ---
 
     def _handle_compare(self, event) -> None:
-        from .ui.compare import CompareMode
+        from ..ui.compare import CompareMode
         if self.comparing:
             return
         import time

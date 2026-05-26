@@ -15,15 +15,15 @@ import time
 import numpy as np
 import moderngl
 
-from .config import cfg
-from .genome import Genome
+from ..config import cfg
+from ..genome import Genome
 from .orchestrator import Orchestrator
 from .core import FlameSheepCore
-from .rendering import (
+from ..rendering import (
     _monitor_cfg, _get_output_layout, _ensure_singleton,
     FlameRenderer, GpuContext, Viewport,
 )
-from .screen_layout import PhysicalViewport
+from ..screen_layout import PhysicalViewport
 from .command_handlers import WallpaperCommands
 
 log = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     Wallpaper mode — one continuous flame fractal image across all monitors.
     """
     _ensure_singleton()
-    from .rendering import WallpaperSession
+    from ..rendering import WallpaperSession
 
     # --- discover outputs and sway layout ---
     output_names = WallpaperSession.list_outputs()
@@ -130,8 +130,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     _test_pattern = test_pattern
 
     # --- library + evolution state ---
-    from .storage import Library
-    from .loops import evolve_loops, compose_loops, compose_loops_graph, save_best_loops
+    from ..storage import Library
+    from ..loops import evolve_loops, compose_loops, compose_loops_graph, save_best_loops
     lib = Library()
 
     # Auto-seed library if empty
@@ -159,10 +159,10 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # --- background workers ---
     # GPU render worker is NOT started here — it competes for the GPU and
     # kills desktop performance. Run separately: python -m flame_sheep.gpu_render_worker
-    from .cpu_score_worker import BackgroundCpuScorer
-    from .transition_worker import BackgroundTransitionScorer
-    from .pruner_worker import BackgroundPruner
-    from .storage import _db_path
+    from ..cpu_score_worker import BackgroundCpuScorer
+    from ..transition_worker import BackgroundTransitionScorer
+    from ..pruner_worker import BackgroundPruner
+    from ..storage import _db_path
     db = str(_db_path())
     cpu_scorer = BackgroundCpuScorer(db_path=db)
     transition_scorer = BackgroundTransitionScorer(db_path=db)
@@ -186,7 +186,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # Feature logger (optional)
     feature_logger = None
     if log_features:
-        from .audio.feature_logger import AudioFeatureLogger
+        from ..audio.feature_logger import AudioFeatureLogger
         feature_logger = AudioFeatureLogger(orch, path=log_file or None)
 
     last_time = time.perf_counter()

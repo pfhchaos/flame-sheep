@@ -16,20 +16,20 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .config import cfg
-from .genome import Genome
+from ..config import cfg
+from ..genome import Genome
 from flame_sheep_audio import BeatEvent, AudioState
 from flame_sheep_audio.mode import Mode
 from .orchestrator import Orchestrator
-from .axes.zoom_axis import ZoomAxis
-from .axes.brightness_axis import BrightnessAxis
-from .axes.detail_axis import DetailAxis
-from .axes.genome_axis import GenomeAxis
-from .axes.palette_axis import PaletteAxis
+# axes/* imports are LAZY (moved into FlameSheepCore.__init__) to break the
+# cycle: runtime/__init__.py loads core.py at package init; if core.py loaded
+# axes/* at module level, axes/*.py would re-trigger runtime package load
+# (via `from flame_sheep.runtime.role_mapper import RoleMapper`) and Python
+# would see a partially-initialized runtime package.
 from .role_mapper import RoleMapper
 
 if TYPE_CHECKING:
-    from .storage import Library
+    from ..storage import Library
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,12 @@ class FlameSheepCore:
                  lib: Library | None = None,
                  clock: Callable[[], float] | None = None,
                  genome_factory: Callable[[], Genome] | None = None) -> None:
+        from ..axes.zoom_axis import ZoomAxis
+        from ..axes.brightness_axis import BrightnessAxis
+        from ..axes.detail_axis import DetailAxis
+        from ..axes.genome_axis import GenomeAxis
+        from ..axes.palette_axis import PaletteAxis
+
         self._orch = orchestrator
         self._consumer_id: str = orchestrator.register('wallpaper')
         self._clock: Callable[[], float] = clock or time.perf_counter

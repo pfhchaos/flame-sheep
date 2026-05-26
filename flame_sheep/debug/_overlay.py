@@ -12,7 +12,7 @@ import time
 
 import moderngl
 
-from flame_sheep.orchestrator import Orchestrator
+from flame_sheep.runtime import Orchestrator
 from flame_sheep.config import cfg
 from ._draw import SolidRenderer
 from ._text import TextRenderer

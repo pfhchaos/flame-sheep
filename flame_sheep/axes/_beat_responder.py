@@ -11,7 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from flame_sheep.config import cfg
-from flame_sheep.role_mapper import RoleMapper, BACKBEAT
+from flame_sheep.runtime.role_mapper import RoleMapper, BACKBEAT
 from flame_sheep_audio import BeatEvent
 
 if TYPE_CHECKING:

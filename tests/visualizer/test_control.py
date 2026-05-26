@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from flame_sheep.control import ControlPipe, ControlEvent
+from flame_sheep.runtime import ControlPipe, ControlEvent
 
 
 class TestParseLine:

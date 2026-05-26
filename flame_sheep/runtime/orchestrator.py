@@ -60,7 +60,7 @@ class Orchestrator:
             )
         else:
             try:
-                from .audio.client import AudioDaemonClient
+                from ..audio.client import AudioDaemonClient
                 self.audio = AudioDaemonClient()
                 self._using_daemon = True
                 log.info('using audio daemon')

@@ -9,10 +9,10 @@ log = logging.getLogger(__name__)
 
 from flame_sheep_audio import AudioState
 from flame_sheep.config import cfg
-from flame_sheep.role_mapper import RoleMapper, DOWNBEAT
+from flame_sheep.runtime.role_mapper import RoleMapper, DOWNBEAT
 
 if TYPE_CHECKING:
-    from flame_sheep.core import FlameSheepCore
+    from flame_sheep.runtime import FlameSheepCore
 
 
 class ZoomAxis:

@@ -4,7 +4,7 @@ Tests for RoleMapper: band-to-role routing, event translation.
 
 import pytest
 
-from flame_sheep.role_mapper import (
+from flame_sheep.runtime import (
     RoleMapper, DEFAULT_MAPPING,
     DOWNBEAT, BACKBEAT, SUBDIVISION, ENERGY, ALL_ROLES,
 )

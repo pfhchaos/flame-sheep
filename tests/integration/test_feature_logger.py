@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from flame_sheep.orchestrator import Orchestrator, TimestampedEvent
+from flame_sheep.runtime import Orchestrator, TimestampedEvent
 from flame_sheep.audio.feature_logger import AudioFeatureLogger
 from flame_sheep_audio._types import BeatEvent
 from viz_helpers import FakeClock

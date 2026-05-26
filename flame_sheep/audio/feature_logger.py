@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from flame_sheep_audio._types import AudioSnapshot, BandState
-from flame_sheep.orchestrator import Orchestrator, TimestampedEvent
+from flame_sheep.runtime import Orchestrator, TimestampedEvent
 
 log = logging.getLogger(__name__)
 

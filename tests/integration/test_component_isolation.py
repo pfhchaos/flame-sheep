@@ -21,7 +21,7 @@ from flame_sheep.axes.zoom_axis import ZoomAxis
 from flame_sheep.axes.brightness_axis import BrightnessAxis
 from flame_sheep.axes.detail_axis import DetailAxis
 from flame_sheep.axes.genome_axis import GenomeAxis
-from flame_sheep.role_mapper import RoleMapper
+from flame_sheep.runtime import RoleMapper
 from flame_sheep_audio.mode import ModeDetector, Mode
 
 from viz_helpers import trivial_genome

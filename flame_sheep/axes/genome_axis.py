@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from flame_sheep.config import cfg
-from flame_sheep.role_mapper import RoleMapper, DOWNBEAT, BACKBEAT
+from flame_sheep.runtime.role_mapper import RoleMapper, DOWNBEAT, BACKBEAT
 from flame_sheep.axes._morph_cycle import MorphCycle
 from flame_sheep.axes._beat_responder import BeatResponder, BeatAction
 from flame_sheep.axes._rotation_driver import RotationDriver
@@ -39,7 +39,7 @@ from flame_sheep.genome import Genome
 from flame_sheep.variations import Variation
 
 if TYPE_CHECKING:
-    from flame_sheep.core import FlameSheepCore
+    from flame_sheep.runtime import FlameSheepCore
     from flame_sheep.storage import Library
 
 

@@ -10,7 +10,7 @@ import pytest
 from flame_sheep_audio._types import BeatEvent, BandState, AudioState, _default_bands
 from flame_sheep.axes.palette_axis import PaletteAxis
 from flame_sheep.genome import _random_palette
-from flame_sheep.role_mapper import RoleMapper
+from flame_sheep.runtime import RoleMapper
 
 _default_role = RoleMapper()
 

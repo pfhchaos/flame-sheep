@@ -10,8 +10,8 @@ Default pattern: low=0.5s, mid=1.0s, high=0.25s (120 BPM, 4/4).
 import numpy as np
 import pytest
 
-from flame_sheep.core import FlameSheepCore
-from flame_sheep.orchestrator import Orchestrator
+from flame_sheep.runtime import FlameSheepCore
+from flame_sheep.runtime import Orchestrator
 from viz_helpers import FakeClock, trivial_genome
 
 

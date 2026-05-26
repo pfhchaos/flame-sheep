@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from flame_sheep_audio._types import BeatEvent, AudioSnapshot, BandState
-from flame_sheep.orchestrator import TimestampedEvent
+from flame_sheep.runtime import TimestampedEvent
 from flame_sheep.debug._timeline import TimelineBuffer, OnsetMark
 from flame_sheep.debug._panels import (
     HeaderPanel, TimelinePanel, SpectrumPanel, BandMetricsPanel,

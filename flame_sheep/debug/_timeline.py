@@ -6,7 +6,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
-from flame_sheep.orchestrator import TimestampedEvent
+from flame_sheep.runtime import TimestampedEvent
 
 
 @dataclass(slots=True)

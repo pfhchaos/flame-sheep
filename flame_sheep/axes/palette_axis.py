@@ -14,10 +14,10 @@ from flame_sheep_audio import AudioState, SAMPLE_RATE
 from flame_sheep_audio.response import MelCentroid, Delta
 from flame_sheep.genome import _lerp_arr
 from flame_sheep.config import cfg
-from flame_sheep.role_mapper import RoleMapper, SUBDIVISION
+from flame_sheep.runtime.role_mapper import RoleMapper, SUBDIVISION
 
 if TYPE_CHECKING:
-    from flame_sheep.core import FlameSheepCore
+    from flame_sheep.runtime import FlameSheepCore
     from flame_sheep.storage import Library
 
 

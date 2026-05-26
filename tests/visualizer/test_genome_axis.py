@@ -15,7 +15,7 @@ import pytest
 from flame_sheep.axes.genome_axis import GenomeAxis
 from flame_sheep.axes._morph_cycle import MorphState
 from flame_sheep.genome import Genome
-from flame_sheep.role_mapper import RoleMapper
+from flame_sheep.runtime import RoleMapper
 from flame_sheep.storage import Library
 from flame_sheep_audio import BeatEvent, AudioState
 from flame_sheep_audio._types import BandState
@@ -436,7 +436,7 @@ class TestForceSwap:
 
 class TestContribute:
     def test_contribute_produces_genome(self, axis):
-        from flame_sheep.core import FlameSheepCore
+        from flame_sheep.runtime import FlameSheepCore
         frame = FlameSheepCore.FrameState(
             genome=None, palette=None,
             spectrum=np.zeros(108, dtype=np.float32),
@@ -447,7 +447,7 @@ class TestContribute:
 
     def test_contribute_applies_rotation(self, axis):
         """Rotation phase should produce a different genome than no rotation."""
-        from flame_sheep.core import FlameSheepCore
+        from flame_sheep.runtime import FlameSheepCore
         # Get unrotated output
         axis._rotation.phase = 0.0
         frame0 = FlameSheepCore.FrameState(

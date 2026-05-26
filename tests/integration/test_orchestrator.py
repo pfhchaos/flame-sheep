@@ -4,7 +4,7 @@ Tests for the Orchestrator — event distribution, command dispatch, lifecycle.
 
 import pytest
 
-from flame_sheep.orchestrator import Orchestrator, TimestampedEvent
+from flame_sheep.runtime import Orchestrator, TimestampedEvent
 from flame_sheep_audio._types import BeatEvent
 from viz_helpers import FakeClock
 
@@ -100,7 +100,7 @@ class TestCommandDispatch:
         received = []
         orch.on_command('swap', lambda cmd: received.append(cmd))
         # Simulate a control pipe event by pushing directly
-        from flame_sheep.control import ControlEvent
+        from flame_sheep.runtime import ControlEvent
         orch.control._queue.put(ControlEvent(command='swap', args=[]))
         orch.tick()
         assert len(received) == 1
@@ -110,13 +110,13 @@ class TestCommandDispatch:
         calls = []
         orch.on_command('config', lambda cmd: calls.append('a'))
         orch.on_command('config', lambda cmd: calls.append('b'))
-        from flame_sheep.control import ControlEvent
+        from flame_sheep.runtime import ControlEvent
         orch.control._queue.put(ControlEvent(command='config', args=['reload']))
         orch.tick()
         assert calls == ['a', 'b']
 
     def test_unhandled_command_no_error(self, orch):
-        from flame_sheep.control import ControlEvent
+        from flame_sheep.runtime import ControlEvent
         orch.control._queue.put(ControlEvent(command='unknown_cmd', args=[]))
         orch.tick()  # should not raise
 
