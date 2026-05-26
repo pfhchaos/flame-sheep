@@ -160,7 +160,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # GPU render worker is NOT started here — it competes for the GPU and
     # kills desktop performance. Run separately: python -m flame_sheep.gpu_render_worker
     from ..cpu_score_worker import BackgroundCpuScorer
-    from ..transition_worker import BackgroundTransitionScorer
+    from ..transitions import BackgroundTransitionScorer
     from ..pruner_worker import BackgroundPruner
     from ..storage import _db_path
     db = str(_db_path())

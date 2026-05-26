@@ -452,7 +452,7 @@ class Genome:
         d / (d + 1), where typical "good transition" distances are 0-1
         and structurally incompatible pairs saturate near 1.0.
         """
-        from .transition import compute_transition_distance
+        from .transitions import compute_transition_distance
 
         raw = compute_transition_distance(self, other)
         return float(raw / (raw + 1.0))

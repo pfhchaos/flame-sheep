@@ -32,8 +32,8 @@ def _transition_main(db_path: str, stop_event: multiprocessing.synchronize.Event
     except OSError:
         pass
 
-    from .storage import _ensure_schema, _genome_from_json
-    from .transition import (
+    from ..storage import _ensure_schema, _genome_from_json
+    from . import (
         variation_signature, compute_transition_distance,
         signature_distance, CACHE_THRESHOLD, MAX_SIGNATURE_DISTANCE,
     )

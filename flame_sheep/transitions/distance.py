@@ -5,25 +5,24 @@ another. Used for loop composition (smooth internal transitions) and
 loop switching (pick the best entry point into a new loop).
 
 Two-level comparison:
-  1. Structural filter: variation signature distance (cheap bag comparison)
-  2. Parameter distance: permutation-matched transform comparison
+  1. Structural filter: variation signature distance (cheap bag comparison,
+     in transitions.signature)
+  2. Parameter distance: permutation-matched transform comparison (here)
 
 Lower distance = smoother transition.
 """
 
 from __future__ import annotations
 
-from collections import Counter
-
 import numpy as np
 
-from .genome import Genome, Transform, MAX_TRANSFORMS
-
-# Threshold for considering a variation "active" in a transform
-ACTIVE_THRESHOLD = 0.01
-
-# Maximum structural (signature) distance before skipping full comparison
-MAX_SIGNATURE_DISTANCE = 6
+from ..genome import Genome, Transform, MAX_TRANSFORMS
+from .signature import (
+    _active_variations,
+    variation_signature,
+    signature_distance,
+    MAX_SIGNATURE_DISTANCE,
+)
 
 # Penalty per unmatched transform
 UNMATCHED_PENALTY = 0.5
@@ -39,42 +38,6 @@ _CENTER_RANGE = 8.0       # center roughly in [-4, 4]
 
 # Maximum distance to cache in genome_transitions table
 CACHE_THRESHOLD = 2.0
-
-
-def _active_variations(transform: Transform) -> set[int]:
-    """Active variation indices for a single transform."""
-    return {int(i) for i in np.where(transform.variations > ACTIVE_THRESHOLD)[0]}
-
-
-def variation_signature(genome: Genome) -> str:
-    """Sorted bag of active variation indices across all transforms.
-
-    Example: transforms using [26], [26], [18,23] → "18,23,26,26"
-    Genomes with final_xform get "+F" suffix with the final xform's variations.
-    """
-    indices: list[int] = []
-    for tr in genome.transforms:
-        indices.extend(sorted(_active_variations(tr)))
-    indices.sort()
-    sig = ','.join(str(i) for i in indices)
-    if genome.final_xform is not None:
-        f_indices = sorted(_active_variations(genome.final_xform))
-        f_sig = ','.join(str(i) for i in f_indices)
-        sig = f'{sig}+F{f_sig}' if f_sig else f'{sig}+F'
-    return sig
-
-
-def signature_distance(sig_a: str, sig_b: str) -> int:
-    """Manhattan distance between two variation signature bags.
-
-    Counts how many variation slots differ between the two signatures.
-    """
-    if not sig_a and not sig_b:
-        return 0
-    bag_a = Counter(sig_a.split(',')) if sig_a else Counter()
-    bag_b = Counter(sig_b.split(',')) if sig_b else Counter()
-    all_keys = set(bag_a) | set(bag_b)
-    return sum(abs(bag_a.get(k, 0) - bag_b.get(k, 0)) for k in all_keys)
 
 
 def match_transforms(

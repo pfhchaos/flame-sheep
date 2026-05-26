@@ -4,16 +4,15 @@ import numpy as np
 import pytest
 
 from flame_sheep.genome import Genome, Transform, NUM_VARIATIONS
-from flame_sheep.transition import (
+from flame_sheep.transitions import (
     variation_signature,
     signature_distance,
     match_transforms,
     compute_transition_distance,
-    _active_variations,
-    _transform_distance,
-    _global_distance,
     FILTERED_DISTANCE,
 )
+from flame_sheep.transitions.signature import _active_variations
+from flame_sheep.transitions.distance import _transform_distance, _global_distance
 
 
 def _make_transform(active_vars: list[int], weight: float = 1.0,

@@ -183,7 +183,7 @@ class Library:
 
     def save_genome(self, genome: Genome, scores: dict[str, float] | None = None) -> int:
         """Store a genome, return its ID."""
-        from ..transition import variation_signature
+        from ..transitions import variation_signature
 
         params = _genome_to_json(genome)
         if scores is None:
