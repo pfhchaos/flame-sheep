@@ -10,7 +10,7 @@ import pytest
 
 from flame_sheep.genome import Genome
 from flame_sheep.storage import Library
-from flame_sheep.compare import CompareMode, PairState
+from flame_sheep.ui.compare import CompareMode, PairState
 
 
 @pytest.fixture

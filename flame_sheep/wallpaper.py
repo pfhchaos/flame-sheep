@@ -184,7 +184,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # Feature logger (optional)
     feature_logger = None
     if log_features:
-        from .logger import AudioFeatureLogger
+        from .audio.feature_logger import AudioFeatureLogger
         feature_logger = AudioFeatureLogger(orch, path=log_file or None)
 
     last_time = time.perf_counter()

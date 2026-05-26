@@ -21,8 +21,8 @@ log = logging.getLogger(__name__)
 def _run_variation_benchmark() -> None:
     """Benchmark variations and library genomes on the GPU."""
     import moderngl
-    from .genome import (Genome, Variation, NUM_VARIATIONS)
-    from .renderer import FlameRenderer, GpuContext, LIVE_ITER_MAX
+    from ..genome import (Genome, Variation, NUM_VARIATIONS)
+    from ..renderer import FlameRenderer, GpuContext, LIVE_ITER_MAX
 
     # Variation names for display
     var_names = {}
@@ -91,7 +91,7 @@ def _run_variation_benchmark() -> None:
     print(f'Budget at 60fps: {16.7:.1f} ms/frame')
 
     # --- Phase 2: Library genomes ---
-    from .storage import Library
+    from ..storage import Library
     lib = Library()
     n_genomes = lib.genome_count()
     if n_genomes > 0:

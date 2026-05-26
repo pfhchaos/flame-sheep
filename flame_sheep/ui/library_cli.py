@@ -16,9 +16,9 @@ log = logging.getLogger(__name__)
 
 def _run_library_commands(args: argparse.Namespace) -> None:
     """Handle --generate-genomes, --compose-loops, --evolve, --stats."""
-    from .genome import Genome
-    from .storage import Library
-    from .loops import save_best_loops, evolve_loops
+    from ..genome import Genome
+    from ..storage import Library
+    from ..loops import save_best_loops, evolve_loops
 
     lib = Library()
 

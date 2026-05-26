@@ -14,13 +14,13 @@ import threading
 from typing import TYPE_CHECKING
 
 from .renderer import FlameRenderer
-from .compare import CompareRenderer
+from .ui.compare import CompareRenderer
 
 if TYPE_CHECKING:
     from .core import FlameSheepCore
     from .storage import Library
     from .orchestrator import Orchestrator
-    from .compare import CompareMode
+    from .ui.compare import CompareMode
 
 log = logging.getLogger(__name__)
 
@@ -186,7 +186,7 @@ class WallpaperCommands:
     # --- Compare mode ---
 
     def _handle_compare(self, event) -> None:
-        from .compare import CompareMode
+        from .ui.compare import CompareMode
         if self.comparing:
             return
         import time

@@ -32,8 +32,8 @@ import sys
 
 from .config import cfg
 from flame_sheep_audio import DEFAULT_DEVICE
-from .benchmark import _run_variation_benchmark
-from .library_cli import _run_library_commands
+from .ui.benchmark import _run_variation_benchmark
+from .ui.library_cli import _run_library_commands
 from .wallpaper import _run_wallpaper
 
 
