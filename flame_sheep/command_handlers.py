@@ -13,7 +13,7 @@ import sys
 import threading
 from typing import TYPE_CHECKING
 
-from .renderer import FlameRenderer
+from .rendering import FlameRenderer
 from .ui.compare import CompareRenderer
 
 if TYPE_CHECKING:

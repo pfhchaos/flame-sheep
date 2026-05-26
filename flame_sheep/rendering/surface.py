@@ -13,7 +13,7 @@ import logging
 import os
 import time
 
-from .config import cfg
+from ..config import cfg
 
 log = logging.getLogger(__name__)
 

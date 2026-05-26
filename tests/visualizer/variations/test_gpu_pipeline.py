@@ -196,7 +196,7 @@ class TestFullPipelineRendering:
     """Test complete chaos game rendering produces expected pixel coverage."""
 
     def _render_genome(self, gpu_ctx, genome, n_frames=10):
-        from flame_sheep.renderer import FlameRenderer, GpuContext
+        from flame_sheep.rendering import FlameRenderer, GpuContext
         from flame_sheep_audio import N_BINS
 
         renderer = FlameRenderer(GpuContext(gpu_ctx, 256, 256))
@@ -311,7 +311,7 @@ class TestSheepRendering:
 
     def test_sheep_69369_cpu_vs_gpu_coverage(self, gpu_ctx):
         """Sheep 69369 should produce similar coverage on GPU as CPU."""
-        from flame_sheep.renderer import FlameRenderer, GpuContext
+        from flame_sheep.rendering import FlameRenderer, GpuContext
         from flame_sheep.variations._cpu import apply_variations_cpu
         from flame_sheep_audio import N_BINS
 

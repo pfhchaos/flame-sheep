@@ -50,8 +50,8 @@ def _cffi_to_void_p(cdata: Any) -> ctypes.c_void_p:
 
 
 from pywayland.protocol.wayland import WlCompositor, WlOutput, WlSeat
-from .protocol.wlr_layer_shell_unstable_v1.zwlr_layer_shell_v1 import ZwlrLayerShellV1
-from .protocol.wlr_layer_shell_unstable_v1.zwlr_layer_surface_v1 import ZwlrLayerSurfaceV1
+from ..protocol.wlr_layer_shell_unstable_v1.zwlr_layer_shell_v1 import ZwlrLayerShellV1
+from ..protocol.wlr_layer_shell_unstable_v1.zwlr_layer_surface_v1 import ZwlrLayerSurfaceV1
 
 # ---------------------------------------------------------------------------
 # EGL constants

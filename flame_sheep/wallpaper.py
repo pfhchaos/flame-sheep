@@ -19,8 +19,10 @@ from .config import cfg
 from .genome import Genome
 from .orchestrator import Orchestrator
 from .core import FlameSheepCore
-from .display import _monitor_cfg, _get_output_layout, _ensure_singleton
-from .renderer import FlameRenderer, GpuContext, Viewport
+from .rendering import (
+    _monitor_cfg, _get_output_layout, _ensure_singleton,
+    FlameRenderer, GpuContext, Viewport,
+)
 from .screen_layout import PhysicalViewport
 from .command_handlers import WallpaperCommands
 
@@ -35,7 +37,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     Wallpaper mode — one continuous flame fractal image across all monitors.
     """
     _ensure_singleton()
-    from .wayland_window import WallpaperSession
+    from .rendering import WallpaperSession
 
     # --- discover outputs and sway layout ---
     output_names = WallpaperSession.list_outputs()

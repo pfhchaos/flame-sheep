@@ -63,7 +63,7 @@ def main():
     log.info('Rendering %d genomes to %s', len(genome_ids), output_dir)
 
     # Create renderer
-    from flame_sheep.renderer import FlameRenderer, GpuContext, N_ITERS
+    from flame_sheep.rendering import FlameRenderer, GpuContext, N_ITERS
     import moderngl
     ctx = moderngl.create_context(standalone=True, backend='egl')
     renderer = FlameRenderer(GpuContext(ctx, args.size, args.size))

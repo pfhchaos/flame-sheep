@@ -30,7 +30,7 @@ from .variations import (
 )
 
 if TYPE_CHECKING:
-    from .renderer import FlameRenderer
+    from .rendering import FlameRenderer
 
 # Re-export for backwards compatibility
 _PARAMETRIC_VARIATIONS = PARAMETRIC_VARIATIONS

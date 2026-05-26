@@ -46,7 +46,7 @@ def create_renderer(size: int):
     ctx = moderngl.create_context(standalone=True, backend='egl')
     log.info('GPU: %s', ctx.info['GL_RENDERER'])
 
-    from flame_sheep.renderer import FlameRenderer, GpuContext
+    from flame_sheep.rendering import FlameRenderer, GpuContext
     renderer = FlameRenderer(GpuContext(ctx, size, size))
     return ctx, renderer
 
@@ -109,7 +109,7 @@ def render_genome(genome, renderer, ctx,
     """
     import io
     from PIL import Image
-    from flame_sheep.renderer import N_ITERS
+    from flame_sheep.rendering import N_ITERS
 
     gamma = getattr(genome, 'flam3_gamma', 4.0)
 

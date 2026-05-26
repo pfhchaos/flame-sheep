@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ..genome import Genome
-from ..renderer import FlameRenderer, GpuContext, Viewport
+from ..rendering import FlameRenderer, GpuContext, Viewport
 
 if TYPE_CHECKING:
     from ..storage import Library

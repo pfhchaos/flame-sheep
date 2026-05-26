@@ -70,12 +70,12 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
         log.error(f'Failed to create EGL context: {e}')
         return
 
-    from .renderer import FlameRenderer, N_ITERS, LIVE_ITER_MIN, LIVE_ITER_MAX
+    from .rendering import FlameRenderer, N_ITERS, LIVE_ITER_MIN, LIVE_ITER_MAX
     from .storage import _genome_from_json, _ensure_schema
     from flame_sheep_audio import N_BINS
     from .genome import _score_from_histogram
 
-    from .renderer import GpuContext
+    from .rendering import GpuContext
     renderer = FlameRenderer(GpuContext(ctx, render_size, render_size),
                               scoring=True, n_walkers=scoring_walkers)
 

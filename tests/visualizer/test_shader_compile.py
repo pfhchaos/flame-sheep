@@ -27,7 +27,7 @@ class TestFlameShaderCompile:
     """flame.comp must compile in all permutations."""
 
     def _compile_flame(self, gpu_ctx, scoring: bool):
-        from flame_sheep.renderer import SHADER_DIR, _resolve_includes
+        from flame_sheep.rendering import SHADER_DIR, _resolve_includes
         from flame_sheep.variations._symmetry_groups import generate_glsl
 
         src = (SHADER_DIR / 'flame.comp').read_text()
@@ -50,17 +50,17 @@ class TestSupportShaderCompile:
     """All support shaders must compile."""
 
     def test_clear(self, gpu_ctx):
-        from flame_sheep.renderer import SHADER_DIR
+        from flame_sheep.rendering import SHADER_DIR
         shader = gpu_ctx.compute_shader((SHADER_DIR / 'clear.comp').read_text())
         assert shader is not None
 
     def test_reduce_max(self, gpu_ctx):
-        from flame_sheep.renderer import SHADER_DIR
+        from flame_sheep.rendering import SHADER_DIR
         shader = gpu_ctx.compute_shader((SHADER_DIR / 'reduce_max.comp').read_text())
         assert shader is not None
 
     def test_tonemap(self, gpu_ctx):
-        from flame_sheep.renderer import SHADER_DIR
+        from flame_sheep.rendering import SHADER_DIR
         prog = gpu_ctx.program(
             vertex_shader=(SHADER_DIR / 'tonemap.vert').read_text(),
             fragment_shader=(SHADER_DIR / 'tonemap.frag').read_text(),

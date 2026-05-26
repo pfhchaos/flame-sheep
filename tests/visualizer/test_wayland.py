@@ -146,7 +146,7 @@ class TestSwayHeadless:
         old_display = os.environ.get('WAYLAND_DISPLAY')
         os.environ['WAYLAND_DISPLAY'] = wayland_display
         try:
-            from flame_sheep.display import _get_output_layout
+            from flame_sheep.rendering import _get_output_layout
             layout = _get_output_layout()
             assert len(layout) >= 1
             name = list(layout.keys())[0]
@@ -189,7 +189,7 @@ class TestSwayHeadless:
         old_display = os.environ.get('WAYLAND_DISPLAY')
         os.environ['WAYLAND_DISPLAY'] = wayland_display
         try:
-            from flame_sheep.wayland_window import WallpaperSession
+            from flame_sheep.rendering import WallpaperSession
             output_names = WallpaperSession.list_outputs()
             assert len(output_names) >= 1
             # Headless sway reports outputs as WL-N or HEADLESS-N
@@ -209,7 +209,7 @@ class TestSwayHeadless:
     def test_create_wallpaper_session(self, headless_sway):
         """Should be able to create a WallpaperSession, add a surface, and get configure."""
         def run():
-            from flame_sheep.wayland_window import WallpaperSession
+            from flame_sheep.rendering import WallpaperSession
             session = WallpaperSession()
             outputs = list(session._wl_outputs.keys())
             assert len(outputs) >= 1, 'No outputs in session'
@@ -247,7 +247,7 @@ class TestSwayHeadless:
     def test_frame_callback(self, headless_sway):
         """Frame callback should fire after swap on headless compositor."""
         def run():
-            from flame_sheep.wayland_window import WallpaperSession
+            from flame_sheep.rendering import WallpaperSession
             session = WallpaperSession()
             outputs = list(session._wl_outputs.keys())
             surf = session.add_output(outputs[0])
@@ -281,7 +281,7 @@ class TestSwayHeadless:
     def test_surface_lifecycle(self, headless_sway):
         """Surface should survive create → render → destroy cycle."""
         def run():
-            from flame_sheep.wayland_window import WallpaperSession
+            from flame_sheep.rendering import WallpaperSession
             session = WallpaperSession()
             outputs = list(session._wl_outputs.keys())
             surf = session.add_output(outputs[0])

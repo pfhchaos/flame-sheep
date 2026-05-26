@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .renderer import Viewport
+from .rendering import Viewport
 
 
 @dataclass(frozen=True)

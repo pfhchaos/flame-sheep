@@ -41,7 +41,7 @@ from .gpu_context import (
     _bind_default_framebuffer,
 )
 
-from .genome import Genome, MAX_TRANSFORMS, NUM_VARIATIONS, MAX_ACTIVE_VARS, SLOT_SIZE
+from ..genome import Genome, MAX_TRANSFORMS, NUM_VARIATIONS, MAX_ACTIVE_VARS, SLOT_SIZE
 
 
 # ---------------------------------------------------------------------------

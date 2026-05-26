@@ -105,7 +105,7 @@ def render_genome_gpu(genome, ctx, size: int = 2048, n_frames: int = 60,
 
     Caches the renderer to avoid recompiling shaders per genome.
     """
-    from ..renderer import FlameRenderer, GpuContext, Viewport, N_ITERS
+    from ..rendering import FlameRenderer, GpuContext, Viewport, N_ITERS
     import moderngl
 
     cache_key = (id(ctx), size)
