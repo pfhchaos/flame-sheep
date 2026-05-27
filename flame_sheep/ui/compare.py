@@ -74,11 +74,21 @@ class CompareMode:
 
     def __init__(self, lib: Library, score_fn=None,
                  votes_per_strategy: int = 5,
+                 skip_progress_weight: float = 0.5,
                  diversity_weight: float = 0.3,
                  candidate_pool: int = 40):
         """
         Args:
-            votes_per_strategy: rotate selection strategy every N votes
+            votes_per_strategy: rotation budget per strategy, measured
+                in "votes-equivalent." A real vote contributes 1.0; a
+                skip contributes `skip_progress_weight`. Strategy
+                rotates when accumulated progress reaches this value.
+            skip_progress_weight: how much a skip contributes to
+                strategy rotation, in vote-equivalents. Default 0.5 →
+                10 skips OR 5 votes triggers rotation. Rationale: a
+                skip is itself signal ("these aren't worth
+                distinguishing"); if a strategy keeps surfacing
+                skip-worthy pairs, rotate AWAY from it.
             diversity_weight: λ multiplier on within-pair signature
                 distance bonus. Larger = stronger preference for pairs
                 whose two genomes are structurally distinct from each
@@ -106,8 +116,9 @@ class CompareMode:
         # Strategy rotation
         self._strategies: list[tuple[str, Callable]] = []
         self._strategy_idx = 0
-        self._votes_in_strategy = 0
+        self._strategy_progress = 0.0  # accumulates 1.0 per vote, skip_progress_weight per skip
         self._votes_per_strategy = votes_per_strategy
+        self._skip_progress_weight = skip_progress_weight
         # Diversity re-rank parameters
         self._diversity_weight = diversity_weight
         self._candidate_pool = candidate_pool
@@ -401,9 +412,9 @@ class CompareMode:
             return self.pair
 
         # Rotate strategy if we've exhausted the current one's vote budget
-        if self._votes_in_strategy >= self._votes_per_strategy:
+        if self._strategy_progress >= self._votes_per_strategy:
             self._strategy_idx = (self._strategy_idx + 1) % len(self._strategies)
-            self._votes_in_strategy = 0
+            self._strategy_progress = 0.0
 
         # Try current strategy, fall back through subsequent ones if it
         # can't produce a fresh pair (e.g., all candidates compared)
@@ -432,7 +443,7 @@ class CompareMode:
         self._record(self.pair.left_id, self.pair.right_id)
         log.info(f'[compare] left #{self.pair.left_id} wins over '
                  f'#{self.pair.right_id}')
-        self._votes_in_strategy += 1
+        self._strategy_progress += 1.0
         self.pick_pair()
 
     def on_right_wins(self) -> None:
@@ -442,17 +453,21 @@ class CompareMode:
         self._record(self.pair.right_id, self.pair.left_id)
         log.info(f'[compare] right #{self.pair.right_id} wins over '
                  f'#{self.pair.left_id}')
-        self._votes_in_strategy += 1
+        self._strategy_progress += 1.0
         self.pick_pair()
 
     def on_skip(self) -> None:
         """Skip this pair — mark seen for the session (not persisted),
-        advance to next pair. Skips don't count toward strategy vote
-        budget — only real votes rotate strategies."""
+        advance to next pair. Skips contribute fractional progress
+        (`skip_progress_weight`, default 0.5) toward the strategy
+        rotation budget — "these aren't worth distinguishing" is itself
+        signal that the current strategy may be surfacing low-value
+        pairs and we should rotate away from it."""
         if self.pair.left_id is not None and self.pair.right_id is not None:
             pair_key = (min(self.pair.left_id, self.pair.right_id),
                         max(self.pair.left_id, self.pair.right_id))
             self._compared.add(pair_key)
+        self._strategy_progress += self._skip_progress_weight
         self.pick_pair()
 
     def _record(self, winner_id: int, loser_id: int) -> None:
