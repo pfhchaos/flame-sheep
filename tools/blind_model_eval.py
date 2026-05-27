@@ -181,6 +181,11 @@ def main():
         print(f'WARNING: --live requested but pipe missing at {args.pipe}')
         print('  falling back to PNG mode')
 
+    # Always create output dir — used for results JSON in both modes,
+    # and PNG files in PNG mode. Skipping this in live mode caused the
+    # incremental save + final-write to crash with FileNotFoundError.
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
     if live_mode:
         # In live mode, we don't need to pre-render — pairs are existence-
         # filtered against the DB (both genomes must have renders so the
@@ -197,7 +202,6 @@ def main():
         print(f'{len(valid_pairs)} valid pairs ready for live display')
     else:
         # PNG mode: extract render_static blobs to disk for image viewer use
-        args.output_dir.mkdir(parents=True, exist_ok=True)
         valid_pairs = []
         for n, (gid_a, gid_b) in enumerate(pairs, start=1):
             out_a = args.output_dir / f'pair_{n:02d}_a.png'
@@ -248,6 +252,31 @@ def main():
         except OSError:
             pass
 
+    # Incremental save: write the running results JSON after each vote so a
+    # crash or quit doesn't destroy the work already done.
+    log_path = args.output_dir / 'blind_eval_results.json'
+    pair_lookup_early = dict(valid_pairs)
+
+    def save_partial(votes_so_far: dict[int, str]) -> None:
+        out = {
+            'model_a': str(args.model_a), 'label_a': args.label_a,
+            'model_b': str(args.model_b), 'label_b': args.label_b,
+            'pairs': [
+                {
+                    'n': n,
+                    'gid_a': pair_lookup_early[n][0],
+                    'gid_b': pair_lookup_early[n][1],
+                    'user': user_choice,
+                    'score_a_for_a': scores_a.get(pair_lookup_early[n][0]),
+                    'score_a_for_b': scores_a.get(pair_lookup_early[n][1]),
+                    'score_b_for_a': scores_b.get(pair_lookup_early[n][0]),
+                    'score_b_for_b': scores_b.get(pair_lookup_early[n][1]),
+                }
+                for n, user_choice in votes_so_far.items()
+            ],
+        }
+        log_path.write_text(json.dumps(out, indent=2))
+
     votes: dict[int, str] = {}  # {pair_n: 'a' | 'b'}
     try:
         for n, (gid_a, gid_b) in valid_pairs:
@@ -256,11 +285,14 @@ def main():
                 # Start showing A; user can swap with 's'
                 current = 'a'
                 send_show(gid_a)
+                print(f'    → showing A (#{gid_a})')
             while True:
                 choice = input('    > ').strip().lower()
                 if live_mode and choice in ('s', 'swap'):
                     current = 'b' if current == 'a' else 'a'
-                    send_show(gid_b if current == 'b' else gid_a)
+                    new_gid = gid_b if current == 'b' else gid_a
+                    send_show(new_gid)
+                    print(f'    → showing {current.upper()} (#{new_gid})')
                     continue
                 if choice in ('a', 'b'):
                     break
@@ -279,6 +311,7 @@ def main():
             if choice == 'skip':
                 continue
             votes[n] = choice
+            save_partial(votes)  # persist after every vote — crash-safe
     finally:
         if live_mode:
             send_unshow()
