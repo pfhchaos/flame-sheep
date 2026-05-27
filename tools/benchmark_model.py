@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 def measure_inference(weights_path: str, n_runs: int = 1000) -> dict:
     """Measure CPU time and RSS for inference."""
     import torch
-    from flame_sheep.cnn_scorer import AestheticNetVk, load_vk_weights
+    from flame_sheep.genome.scoring.cnn_scorer import AestheticNetVk, load_vk_weights
 
     model = AestheticNetVk()
     load_vk_weights(model, weights_path)
@@ -67,7 +67,7 @@ def measure_es_accuracy(weights_path: str, data_dir: str,
                         channels: str = 'rgb') -> dict:
     """Measure cross-gen validation accuracy on Electric Sheep data."""
     import torch
-    from flame_sheep.cnn_scorer import AestheticNetVk, load_vk_weights
+    from flame_sheep.genome.scoring.cnn_scorer import AestheticNetVk, load_vk_weights
     from PIL import Image
 
     model = AestheticNetVk()
@@ -120,7 +120,7 @@ def measure_es_accuracy(weights_path: str, data_dir: str,
         img_dir = Path(data_dir)
 
         if channels == 'domain':
-            from flame_sheep.scoring_channels import normalize_channels, load_raw_histograms
+            from flame_sheep.genome.scoring.scoring_channels import normalize_channels, load_raw_histograms
             hist_name = static.replace('_static.png', '_hist.npz')
             hist_path = img_dir / hist_name
             if hist_path.exists():
@@ -169,7 +169,7 @@ def measure_personal_accuracy(weights_path: str,
     import torch
     import sqlite3
     import io
-    from flame_sheep.cnn_scorer import AestheticNetVk, load_vk_weights
+    from flame_sheep.genome.scoring.cnn_scorer import AestheticNetVk, load_vk_weights
     from PIL import Image
 
     model = AestheticNetVk()
@@ -213,7 +213,7 @@ def measure_personal_accuracy(weights_path: str,
             ).fetchone()
             if row is None or row[0] is None or row[1] is None:
                 return None
-            from flame_sheep.cnn_scorer import _prepare_input_domain
+            from flame_sheep.genome.scoring.cnn_scorer import _prepare_input_domain
             return _prepare_input_domain(row[0], row[1], row[2])
 
         row = db.execute(

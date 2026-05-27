@@ -469,4 +469,3 @@ def normalize_channels(
         combined = result
 
     return combined.transpose(2, 0, 1)  # (4, H, W)
-

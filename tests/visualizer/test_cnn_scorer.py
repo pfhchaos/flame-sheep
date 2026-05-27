@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from flame_sheep.cnn_scorer import (
+from flame_sheep.genome.scoring.cnn_scorer import (
     rgb_to_hsl,
     _build_4ch_hsl,
     _default_weights_path,
@@ -21,7 +21,7 @@ from flame_sheep.cnn_scorer import (
 
 # Guard torch-dependent tests
 torch = pytest.importorskip('torch')
-from flame_sheep.cnn_scorer import (
+from flame_sheep.genome.scoring.cnn_scorer import (
     AestheticNetVk,
     load_vk_weights,
     _prepare_input,

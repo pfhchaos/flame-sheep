@@ -69,7 +69,7 @@ def main():
     renderer = FlameRenderer(GpuContext(ctx, args.size, args.size))
 
     from flame_sheep_audio import N_BINS
-    from flame_sheep.scoring_channels import save_raw_histograms
+    from flame_sheep.genome.scoring.scoring_channels import save_raw_histograms
 
     LIVE_MAX_ITERS = 500  # match detail axis max
     n_dispatches = max(1, LIVE_MAX_ITERS // N_ITERS)

@@ -51,7 +51,7 @@ def render_genome(genome_id: int, conn, output_dir: Path,
 
     # Build domain-native channels from histograms
     if hist_static and hist_swept:
-        from flame_sheep.scoring_channels import (
+        from flame_sheep.genome.scoring.scoring_channels import (
             unpack_static_histogram, unpack_histogram, normalize_channels,
         )
 

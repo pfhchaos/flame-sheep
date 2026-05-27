@@ -394,7 +394,7 @@ def _migrate_channel_stats(conn: sqlite3.Connection) -> None:
     conn.commit()
 
     # Backfill: compute stats for every row with histograms.
-    from ..scoring_channels import (
+    from ..genome.scoring.scoring_channels import (
         unpack_static_histogram, unpack_histogram, normalize_channels,
     )
 
@@ -466,7 +466,7 @@ def _migrate_channel_stats_v2(conn: sqlite3.Connection) -> None:
     if row is not None:
         return
 
-    from ..scoring_channels import (
+    from ..genome.scoring.scoring_channels import (
         unpack_static_histogram, unpack_histogram, channel_stats_hit_only,
     )
 

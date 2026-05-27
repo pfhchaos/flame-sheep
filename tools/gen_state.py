@@ -39,7 +39,7 @@ from flame_sheep.gen_advance import (
     compute_breed_count, measure_disagreement,
     TARGET_POP_SIZE,
 )
-from flame_sheep.cnn_scorer import _default_weights_path
+from flame_sheep.genome.scoring.cnn_scorer import _default_weights_path
 
 
 def _weights_hash() -> str | None:

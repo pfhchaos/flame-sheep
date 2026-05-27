@@ -64,7 +64,7 @@ def _load_image_domain(hist_static: bytes, hist_swept: bytes,
     Without normalization, returns the raw channels at native sentinel
     encoding (1.0 = never hit) for inspection/visualization.
     """
-    from flame_sheep.scoring_channels import (
+    from flame_sheep.genome.scoring.scoring_channels import (
         unpack_static_histogram, unpack_histogram, build_cnn_input,
     )
     hits, colors = unpack_static_histogram(hist_static)
@@ -128,7 +128,7 @@ class DbImageStore:
                 row['render_static'], row['render_swept'], self.image_size)
             # RGB path: no sentinel concept, use legacy whole-image standardize.
             if self._normalization is not None:
-                from flame_sheep.scoring_channels import standardize_channels
+                from flame_sheep.genome.scoring.scoring_channels import standardize_channels
                 img = standardize_channels(img, *self._normalization)
 
         # LRU cache
@@ -498,7 +498,7 @@ def main():
     # Load base weights + normalization version stamp (None for legacy .npy).
     # --from-scratch skips this and Kaiming-inits the model after we know
     # the layer config (decided below from --model-size).
-    from flame_sheep.cnn_scorer import (
+    from flame_sheep.genome.scoring.cnn_scorer import (
         load_cnn_weights_file, save_cnn_weights_file,
     )
     base_weights = None
@@ -589,7 +589,7 @@ def main():
     # If base channels < target, expand conv1 with new input planes per
     # the chosen init strategy.
     if base_weights is not None and base_in_channels < args.channels_count:
-        from flame_sheep.cnn_scorer import expand_conv1_channels
+        from flame_sheep.genome.scoring.cnn_scorer import expand_conv1_channels
         log.info('Expanding conv1 channels: %d → %d (init=%s)',
                  base_in_channels, args.channels_count, args.new_channel_init)
         base_weights = expand_conv1_channels(

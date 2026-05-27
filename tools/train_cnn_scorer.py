@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from flame_sheep.cnn_scorer import AestheticNet, SheepDataset, PairSampler
+from flame_sheep.genome.scoring.cnn_scorer import AestheticNet, SheepDataset, PairSampler
 
 log = logging.getLogger(__name__)
 

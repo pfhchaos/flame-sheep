@@ -122,7 +122,7 @@ class ImageStore:
         sz = self.image_size
 
         if self._channels == 'domain':
-            from flame_sheep.scoring_channels import (
+            from flame_sheep.genome.scoring.scoring_channels import (
                 build_cnn_input, load_raw_histograms,
             )
             hist_name = static.replace('_static.png', '_hist.npz')
@@ -146,7 +146,7 @@ class ImageStore:
         img[:3] = np.array(s_img, dtype=np.float32).transpose(2, 0, 1) / 255.0
         img[3] = np.array(w_img, dtype=np.float32) / 255.0
         if self._normalization is not None:
-            from flame_sheep.scoring_channels import standardize_channels
+            from flame_sheep.genome.scoring.scoring_channels import standardize_channels
             img = standardize_channels(img, *self._normalization)
         return img
 
@@ -421,7 +421,7 @@ def main():
     # so the model always sees zero-mean / unit-variance regardless of
     # source. Features then transfer cleanly between pretrain and fine-tune.
     from flame_sheep.storage import NORMALIZATION_VERSION
-    from flame_sheep.scoring_channels import load_normalization_sidecar
+    from flame_sheep.genome.scoring.scoring_channels import load_normalization_sidecar
     normalization = load_normalization_sidecar(data_dir, NORMALIZATION_VERSION)
     norm_source = None
     if normalization is not None:
@@ -501,7 +501,7 @@ def main():
                               image_size=args.image_size, mlp_head=MLP_HEAD)
 
     if args.init_weights:
-        from flame_sheep.cnn_scorer import load_cnn_weights_file
+        from flame_sheep.genome.scoring.cnn_scorer import load_cnn_weights_file
         init_w, init_norm_version = load_cnn_weights_file(args.init_weights)
         if init_norm_version is not None and init_norm_version != NORMALIZATION_VERSION:
             raise RuntimeError(
@@ -658,7 +658,7 @@ def main():
             best_val_acc = val_acc
             patience = 0
             weights = model.save_weights()
-            from flame_sheep.cnn_scorer import save_cnn_weights_file
+            from flame_sheep.genome.scoring.cnn_scorer import save_cnn_weights_file
             save_cnn_weights_file(str(output_path), weights, NORMALIZATION_VERSION)
             log.info('  -> saved (best val_acc=%.3f)', best_val_acc)
         else:

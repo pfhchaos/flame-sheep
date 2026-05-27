@@ -79,7 +79,7 @@ def evaluate(stage_name: str, val_set_name: str, gpu, normalization) -> float:
 
     # Build model + load weights
     from wallpaper_ml import build_cnn_scorer
-    from flame_sheep.cnn_scorer import load_cnn_weights_file
+    from flame_sheep.genome.scoring.cnn_scorer import load_cnn_weights_file
 
     LAYERS = list(MODEL_CONFIGS['25k'])
     model = build_cnn_scorer(gpu, LAYERS, batch_size=BATCH_SIZE,
@@ -127,7 +127,7 @@ def evaluate(stage_name: str, val_set_name: str, gpu, normalization) -> float:
 def main():
     from wallpaper_ml.vk_compute import VkCompute
     from flame_sheep.storage import NORMALIZATION_VERSION
-    from flame_sheep.scoring_channels import load_normalization_sidecar
+    from flame_sheep.genome.scoring.scoring_channels import load_normalization_sidecar
 
     normalization = load_normalization_sidecar(DATA_DIR, NORMALIZATION_VERSION)
     print(f'Normalization {NORMALIZATION_VERSION}: '

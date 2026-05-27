@@ -11,7 +11,7 @@ import pytest
 from PIL import Image
 
 from flame_sheep.genome.score_worker import _score_genome
-from flame_sheep.scoring_channels import pack_histogram, pack_static_histogram
+from flame_sheep.genome.scoring.scoring_channels import pack_histogram, pack_static_histogram
 
 
 @pytest.fixture

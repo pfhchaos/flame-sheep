@@ -278,7 +278,7 @@ def main():
 
             # Save raw histogram data for domain-native training
             hist_path = output_dir / f'{prefix}_hist.npz'
-            from flame_sheep.scoring_channels import save_raw_histograms
+            from flame_sheep.genome.scoring.scoring_channels import save_raw_histograms
             save_raw_histograms(str(hist_path), *scoring_data)
 
             writer.writerow([gen, sid, rating,

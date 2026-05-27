@@ -5,7 +5,7 @@ Tests for cluster_scorer: color-index clustering and transform-based scoring.
 import numpy as np
 import pytest
 
-from flame_sheep.cluster_scorer import (
+from flame_sheep.genome.scoring.cluster_scorer import (
     _find_c_clusters,
     _sobel_magnitude,
     _cluster_symmetry,

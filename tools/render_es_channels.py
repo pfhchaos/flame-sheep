@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from flame_sheep.scoring_channels import normalize_channels
+from flame_sheep.genome.scoring.scoring_channels import normalize_channels
 
 
 def main():

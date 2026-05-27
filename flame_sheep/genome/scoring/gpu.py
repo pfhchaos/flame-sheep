@@ -48,7 +48,7 @@ def _swept_histogram(genome, renderer, n_steps: int = DEFAULT_SWEPT_STEPS):
     renderer.histogram_data().
     """
     import math
-    from .rendering import N_ITERS
+    from ...rendering import N_ITERS
     from flame_sheep_audio import N_BINS
 
     renderer.upload_genome(genome)
@@ -89,9 +89,9 @@ def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
     Returns:
         Dict of all score columns.
     """
-    from .genome import _score_from_histogram, _score_symmetry
+    from .. import _score_from_histogram, _score_symmetry
     from .cluster_scorer import score_from_clusters, score_from_transform_hits
-    from .rendering import N_ITERS
+    from ...rendering import N_ITERS
     from flame_sheep_audio import N_BINS
 
     # --- Pass 1: Static render (unchanged) ---
@@ -279,8 +279,8 @@ def main():
         datefmt='%H:%M:%S',
     )
 
-    from .storage import _genome_from_json, _ensure_schema
-    from .rendering import FlameRenderer, GpuContext
+    from ...storage import _genome_from_json, _ensure_schema
+    from ...rendering import FlameRenderer, GpuContext
 
     db = _db_path()
     conn = sqlite3.connect(str(db))

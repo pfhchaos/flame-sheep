@@ -37,8 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from wallpaper_ml.vk_compute import VkCompute
 from wallpaper_ml import build_cnn_scorer
-from flame_sheep.cnn_scorer import load_cnn_weights_file
-from flame_sheep.scoring_channels import SENTINEL_STANDARDIZED
+from flame_sheep.genome.scoring.cnn_scorer import load_cnn_weights_file
+from flame_sheep.genome.scoring.scoring_channels import SENTINEL_STANDARDIZED
 from flame_sheep.storage import Library, NORMALIZATION_VERSION
 from train_cnn_vk import MODEL_CONFIGS
 from finetune_cnn_vk import DbImageStore

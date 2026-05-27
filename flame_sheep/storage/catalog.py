@@ -245,7 +245,7 @@ def generate_catalog(
             continue
 
         # Score the rendered image and store in DB
-        from ..image_scorer import score_from_image
+        from ..genome.scoring.image_scorer import score_from_image
         img_scores = score_from_image(img)
         score_cols = ', '.join(f'{k}=?' for k in img_scores)
         lib.conn.execute(

@@ -30,7 +30,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from flame_sheep.cnn_scorer import load_cnn_weights_file
+from flame_sheep.genome.scoring.cnn_scorer import load_cnn_weights_file
 from flame_sheep.storage import Library, NORMALIZATION_VERSION
 from wallpaper_ml.vk_compute import VkCompute
 from wallpaper_ml import build_cnn_scorer

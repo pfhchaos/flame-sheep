@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from flame_sheep.scoring_channels import (
+from flame_sheep.genome.scoring.scoring_channels import (
     COLOR_SCALE,
     pack_histogram,
     pack_static_histogram,

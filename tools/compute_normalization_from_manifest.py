@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from flame_sheep.scoring_channels import (
+from flame_sheep.genome.scoring.scoring_channels import (
     load_raw_histograms, channel_stats_hit_only, save_normalization_sidecar,
 )
 from flame_sheep.storage import NORMALIZATION_VERSION

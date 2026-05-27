@@ -174,14 +174,14 @@ def _score_genome(params_json: str) -> dict[str, float]:
     scores.update(_score_symmetry(hit_grid))
 
     # Cluster-based scoring on color index
-    from flame_sheep.cluster_scorer import score_from_clusters
+    from flame_sheep.genome.scoring.cluster_scorer import score_from_clusters
     from flame_sheep.config import cfg
     store_detail = getattr(getattr(cfg, 'scoring', None), 'store_cluster_detail', False)
     cl_scores = score_from_clusters(hit_grid, color_grid, store_detail=store_detail)
     scores.update(cl_scores)
 
     # Transform-based clustering
-    from flame_sheep.cluster_scorer import score_from_transform_hits
+    from flame_sheep.genome.scoring.cluster_scorer import score_from_transform_hits
     tf_scores = score_from_transform_hits(hit_grid, transform_hits)
     scores.update(tf_scores)
 
