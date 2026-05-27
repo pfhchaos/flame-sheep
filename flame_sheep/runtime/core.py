@@ -172,11 +172,12 @@ class FlameSheepCore:
         self._palette_axis.contribute(frame)
         self._zoom_axis.contribute(frame)
 
-        # External pin override — force a specific genome on screen.
-        # Applied AFTER axis contributions so it wins regardless of what
-        # the swap/morph logic produced.
+        # External display pin overrides the palette here (genome pin is
+        # handled inside GenomeAxis.contribute so rotation + zoom pulse
+        # still apply). Palette pinning here ensures `show <gid>` shows
+        # the genome's own palette rather than whatever PaletteAxis was
+        # mid-transition to.
         if self._pinned_genome is not None:
-            frame.genome = self._pinned_genome
             frame.palette = self._pinned_genome.palette
 
         return frame
@@ -266,14 +267,20 @@ class FlameSheepCore:
         `pin_genome()` replaces it. `active_genome_db_id` returns the
         pinned db_id so likes / dislikes during a pin target the pinned
         genome (not whatever the axis would have shown).
+
+        Rotation phase keeps advancing (audio-reactive spin still works),
+        and ZoomAxis still applies zoom pulses to the pinned genome —
+        only the genome IDENTITY is locked, not all per-frame state.
         """
         self._pinned_genome = genome
         self._pinned_genome_db_id = db_id
+        self._genome_axis._pinned_genome = genome
 
     def clear_pin(self) -> None:
         """Release the external display pin — resume axis-driven swaps."""
         self._pinned_genome = None
         self._pinned_genome_db_id = None
+        self._genome_axis._pinned_genome = None
 
     def load_loop(self, loop_id: int) -> None:
         self._genome_axis.load_loop(loop_id)

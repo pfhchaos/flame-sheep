@@ -103,6 +103,15 @@ class GenomeAxis:
         # --- Centroid swap ---
         self._centroid = CentroidSwap()
 
+        # --- External display pin ---
+        # When set, contribute() bypasses morph/loop selection and uses
+        # this genome as both current and target. Rotation phase from
+        # _rotation.tick() still applies (audio-reactive rotation
+        # continues), and downstream axes (ZoomAxis, PaletteAxis) still
+        # contribute their effects normally — only the genome IDENTITY
+        # is locked. Cleared by FlameSheepCore.clear_pin().
+        self._pinned_genome: Genome | None = None
+
         # --- Rotation ---
         self._rotation = RotationDriver()
 
@@ -205,8 +214,18 @@ class GenomeAxis:
         self._rotation.tick(bpm, self._beat.break_damping)
 
     def contribute(self, frame: FlameSheepCore.FrameState) -> None:
-        """Write interpolated genome to frame. Same for all modes."""
-        frame.genome = self.current_genome.lerp(self.target_genome, self._morph.t)
+        """Write interpolated genome to frame. Same for all modes.
+
+        When pinned (via FlameSheepCore.pin_genome), uses the pinned
+        genome instead of the morph-interpolated current/target. Rotation
+        phase still applies so the wallpaper keeps spinning, and
+        downstream axes (ZoomAxis pulse, etc.) still get to mutate the
+        pinned genome's per-frame state.
+        """
+        if self._pinned_genome is not None:
+            frame.genome = self._pinned_genome
+        else:
+            frame.genome = self.current_genome.lerp(self.target_genome, self._morph.t)
         if self._rotation.phase != 0.0:
             frame.genome = frame.genome.rotated(self._rotation.phase)
 
