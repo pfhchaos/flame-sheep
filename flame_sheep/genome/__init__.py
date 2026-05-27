@@ -39,74 +39,8 @@ _apply_variation_cpu = apply_variation_cpu
 MAX_TRANSFORMS = 6
 MAX_ACTIVE_VARS = 8  # max active variations per transform (for GPU loop)
 
-
-@dataclass
-class Transform:
-    """One IFS function: affine transform + variation blend + color.
-
-    Full pipeline per transform:
-        pre_variations → affine → variations → post_affine
-
-    Pre-variations and post-affine are optional (None = identity/skip).
-    """
-    # Affine coefficients: x' = a*x + b*y + c, y' = d*x + e*y + f
-    affine: np.ndarray = field(default_factory=lambda: np.array([1,0,0,0,1,0], dtype=np.float32))
-    # Post-affine: applied after variations (None = identity)
-    post_affine: np.ndarray | None = None
-    # Variation weights — how much of each variation to blend
-    variations: np.ndarray = field(default_factory=lambda: np.zeros(NUM_VARIATIONS, dtype=np.float32))
-    # Pre-affine variation weights (None = no pre-variations)
-    pre_variations: np.ndarray | None = None
-    # Color index blended during chaos game
-    color: float = 0.0
-    # Color blend speed: color = speed * xform.color + (1-speed) * prev_color
-    color_speed: float = 0.5
-    # Probability weight for this transform being chosen
-    weight: float = 1.0
-    # Per-variation parameters (e.g. julian_power, splits_x)
-    var_params: dict[str, float] = field(default_factory=dict)
-
-    @classmethod
-    def random(cls, rng: np.random.Generator) -> 'Transform':
-        t = cls()
-        # Random affine — keep it contractive (det < 1) to ensure attractor exists
-        while True:
-            a, b, d, e = rng.uniform(-1, 1, 4)
-            M = np.array([[a, b], [d, e]])
-            # contractivity: all singular values must be < 1
-            # determinant < 1 is necessary but not sufficient (shear can still stretch)
-            if np.max(np.linalg.svd(M, compute_uv=False)) < 0.9:
-                break
-        c, f = rng.uniform(-1, 1, 2)
-        t.affine = np.array([a, b, c, d, e, f], dtype=np.float32)
-
-        # Pick 1-2 variations with random weights
-        n_vars = rng.integers(1, 3)
-        chosen = rng.choice(NUM_VARIATIONS, n_vars, replace=False)
-        weights = rng.uniform(0.3, 1.0, n_vars)
-        weights /= weights.sum()
-        t.variations[chosen] = weights
-
-        # Initialize params for parametric variations
-        for v in chosen:
-            params = random_var_params(int(v), rng)
-            t.var_params.update(params)
-
-        t.color = float(rng.uniform(0, 1))
-        t.color_speed = float(rng.uniform(0.0, 1.0))
-        t.weight = float(rng.uniform(0.5, 2.0))
-
-        # ~25% chance of post_affine (near-identity, contractive)
-        if rng.random() < 0.25:
-            while True:
-                pa = np.array([1, 0, 0, 0, 1, 0], dtype=np.float32)
-                pa += rng.uniform(-0.3, 0.3, 6).astype(np.float32)
-                M = np.array([[pa[0], pa[1]], [pa[3], pa[4]]])
-                if np.max(np.linalg.svd(M, compute_uv=False)) < 0.9:
-                    break
-            t.post_affine = pa
-
-        return t
+# Transform moved to genome/transform.py in Stage 4b.
+from .transform import Transform  # noqa: E402,F401
 
 
 @dataclass
@@ -851,173 +785,16 @@ class Genome:
         scores.update(_score_symmetry(hit_grid))
         return scores
 
-def _score_from_histogram(hit_grid: np.ndarray, color_grid: np.ndarray) -> dict[str, float]:
-    """
-    Compute aesthetic metrics from a hit-count histogram and color accumulator.
-
-    Shared by both CPU (64x64 coarse grid) and GPU (full-res) scorers.
-
-    Returns dict with keys:
-      coverage      -- fraction of pixels that got hit (0=collapsed, 1=fills frame)
-      entropy       -- normalized Shannon entropy of hit distribution (0=single point, 1=uniform)
-      color_entropy -- palette utilization (0=monochrome, 1=full range)
-      balance       -- how centered the attractor is (0=corner, 1=dead center)
-      complexity    -- multi-scale density variation (0=flat, 1=rich structure)
-    """
-    h, w = hit_grid.shape
-    total_hits = hit_grid.sum()
-
-    if total_hits == 0:
-        return dict(coverage=0.0, entropy=0.0, color_entropy=0.0,
-                    balance=0.0, complexity=0.0)
-
-    # -- coverage: fraction of cells with any hits
-    coverage = float(np.count_nonzero(hit_grid)) / (h * w)
-
-    # -- entropy: Shannon entropy of hit distribution, normalized to [0, 1]
-    p = hit_grid.ravel() / total_hits
-    p = p[p > 0]
-    max_entropy = np.log(h * w)
-    entropy = float(-np.sum(p * np.log(p)) / max_entropy) if max_entropy > 0 else 0.0
-
-    # -- color_entropy: how many palette colors are used
-    #    Quantize color indices to 32 bins and compute entropy over that
-    n_color_bins = 32
-    hit_mask = hit_grid > 0
-    if hit_mask.any():
-        avg_colors = color_grid[hit_mask]
-        avg_colors = np.clip(avg_colors, 0.0, 1.0)
-        color_bins = np.floor(avg_colors * (n_color_bins - 1)).astype(int)
-        color_hist = np.bincount(color_bins, minlength=n_color_bins).astype(np.float64)
-        color_total = color_hist.sum()
-        if color_total > 0:
-            cp = color_hist / color_total
-            cp = cp[cp > 0]
-            color_entropy = float(-np.sum(cp * np.log(cp)) / np.log(n_color_bins))
-        else:
-            color_entropy = 0.0
-    else:
-        color_entropy = 0.0
-
-    # -- balance: 1 - normalized distance of weighted centroid from center
-    ys, xs = np.mgrid[0:h, 0:w]
-    cx = float(np.sum(xs * hit_grid) / total_hits)
-    cy = float(np.sum(ys * hit_grid) / total_hits)
-    center_x, center_y = w / 2.0, h / 2.0
-    max_dist = np.sqrt(center_x**2 + center_y**2)
-    dist = np.sqrt((cx - center_x)**2 + (cy - center_y)**2)
-    balance = float(1.0 - dist / max_dist)
-
-    # -- complexity: how much density variation exists within the attractor
-    #    Compute coefficient of variation of log-density over *hit* cells only,
-    #    then repeat at coarser scales and average.
-    log_hits = np.log1p(hit_grid)
-    scales = []
-    current = log_hits
-    for _ in range(3):
-        if current.shape[0] < 4 or current.shape[1] < 4:
-            break
-        nonzero = current[current > 0]
-        if len(nonzero) > 1:
-            scales.append(float(nonzero.std() / nonzero.mean()))
-        # 2x downsample by averaging 2x2 blocks
-        ch = (current.shape[0] // 2) * 2
-        cw = (current.shape[1] // 2) * 2
-        current = current[:ch, :cw].reshape(current.shape[0] // 2, 2,
-                                            current.shape[1] // 2, 2).mean(axis=(1, 3))
-    complexity = float(np.mean(scales)) if scales else 0.0
-    # Normalize — CoV of ~1.5 in hit cells is high complexity
-    complexity = min(complexity / 1.5, 1.0)
-
-    # Centroid offset from grid center, normalized to [-1, 1]
-    centroid_offset_x = float((cx - center_x) / center_x) if center_x > 0 else 0.0
-    centroid_offset_y = float((cy - center_y) / center_y) if center_y > 0 else 0.0
-
-    # -- edge_sharpness: how crisp the filament structures are
-    #    Gradient magnitude of log-density, averaged over hit pixels.
-    #    Sharp filaments = high gradient, blobs = low gradient.
-    if log_hits.shape[0] >= 3 and log_hits.shape[1] >= 3:
-        # Sobel-like gradient via finite differences
-        gy = log_hits[2:, 1:-1] - log_hits[:-2, 1:-1]
-        gx = log_hits[1:-1, 2:] - log_hits[1:-1, :-2]
-        grad_mag = np.sqrt(gx**2 + gy**2)
-        # Average over non-zero gradient pixels
-        grad_nonzero = grad_mag[grad_mag > 0]
-        if len(grad_nonzero) > 0:
-            edge_sharpness = float(grad_nonzero.mean())
-            # Normalize — empirically, mean gradient ~1.5 is sharp
-            edge_sharpness = min(edge_sharpness / 1.5, 1.0)
-        else:
-            edge_sharpness = 0.0
-    else:
-        edge_sharpness = 0.0
-
-    # -- contour_coherence: do edges form continuous structures or noise?
-    #    Threshold the gradient to find edge pixels, then count connected
-    #    components. Few large components = structured, many small = noisy.
-    if log_hits.shape[0] >= 3 and log_hits.shape[1] >= 3 and edge_sharpness > 0:
-        from scipy.ndimage import label
-        edge_mask = grad_mag > (grad_nonzero.mean() * 0.5 if len(grad_nonzero) > 0 else 0)
-        labels, n_components = label(edge_mask)
-        if n_components > 0:
-            component_sizes = np.bincount(labels.ravel())[1:]  # skip background
-            # Ratio of largest component to total edge pixels
-            largest = component_sizes.max()
-            total_edge = component_sizes.sum()
-            # More coherent = largest component is bigger fraction
-            contour_coherence = float(largest / total_edge)
-        else:
-            contour_coherence = 0.0
-    else:
-        contour_coherence = 0.0
-
-    return dict(
-        coverage=coverage,
-        entropy=entropy,
-        color_entropy=color_entropy,
-        balance=balance,
-        complexity=complexity,
-        edge_sharpness=edge_sharpness,
-        contour_coherence=contour_coherence,
-        centroid_offset_x=centroid_offset_x,
-        centroid_offset_y=centroid_offset_y,
-    )
-
-
-def _score_symmetry(hit_grid: np.ndarray) -> dict[str, float]:
-    """Compute symmetry metrics from a hit-count histogram.
-
-    Separate from _score_from_histogram because symmetry detection
-    is tier 2 (moderate cost) — not run during fast genome generation,
-    only during GPU scoring or idle background passes.
-    """
-    from .symmetry import symmetry_scores
-    sym = symmetry_scores(hit_grid)
-    return dict(
-        symmetry_max=sym['symmetry_max'],
-        rotational=sym['rotational_best'],
-        reflective=sym['reflective_best'],
-        radial=sym['radial'],
-        periodic=sym['periodic'],
-        fractal_dim=sym['fractal_dim'],
-        self_similarity=sym['self_similarity'],
-    )
+# _score_from_histogram and _score_symmetry moved to genome/scoring/ in
+# Stage 4b. Re-export here so existing `from flame_sheep.genome import
+# _score_from_histogram` imports keep working.
+from .scoring import _score_from_histogram, _score_symmetry  # noqa: E402,F401
 
 
     # _apply_variation_cpu is re-exported from ..variations for backwards compat
 
 
-def _lerp_arr(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
-    return (a * (1 - t) + b * t).astype(a.dtype)
-
-
-def _random_palette(rng: np.random.Generator) -> np.ndarray:
-    """Generate a smooth random color palette by interpolating random control points."""
-    n_points = rng.integers(3, 7)
-    control  = rng.uniform(0, 1, (n_points, 3)).astype(np.float32)
-    palette  = np.zeros((256, 3), dtype=np.float32)
-    for i in range(256):
-        t        = i / 255.0 * (n_points - 1)
-        lo, hi   = int(t), min(int(t) + 1, n_points - 1)
-        palette[i] = _lerp_arr(control[lo], control[hi], t - lo)
-    return palette
+# _random_palette + _lerp_arr moved to flame_sheep.palette.generation in
+# Stage 4b. Re-export here so existing
+# `from flame_sheep.genome import _random_palette` imports keep working.
+from ..palette.generation import _random_palette, _lerp_arr  # noqa: E402,F401
