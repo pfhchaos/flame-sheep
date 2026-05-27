@@ -9,6 +9,7 @@ Runs as a daemon subprocess. Load-aware (nice 19, pauses on high load).
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import multiprocessing
@@ -23,6 +24,32 @@ from PIL import Image
 log = logging.getLogger(__name__)
 
 SCORE_VERSION = 8  # v8: + CNN aesthetic score
+
+
+def _compute_cnn_weights_hash(weights_bytes: bytes,
+                              normalization_version: str | None) -> str:
+    """Compute the cnn_weights_hash that tracks "have I already scored
+    this genome under the current model+pipeline?"
+
+    Includes BOTH the weights file content AND the normalization version
+    used at scoring time. A legacy .npy weights file (no normalization
+    metadata) tags as 'legacy_v0' so scores written without
+    standardization don't get falsely identified as equivalent to scores
+    written with v1+ standardization.
+
+    Why both? cnn_weights_hash drives the "skip rescore if already
+    scored under this hash" check in _rescore_cnn. Tracking just the
+    weights file misses input-pipeline changes (normalization stats,
+    standardization version, etc.) that change scores without changing
+    the model file. We learned this the hard way — 2026-05 had 3000
+    genomes with scores from a legacy-no-normalization run frozen
+    under what later became the v3-normalized weights hash, divergence
+    invisible until a manual side-by-side check.
+    """
+    tag = normalization_version or 'legacy_v0'
+    return hashlib.sha256(
+        weights_bytes + b'\x00norm:' + tag.encode()
+    ).hexdigest()[:16]
 
 
 def _score_genome(render_static: bytes, render_swept: bytes | None,
@@ -251,18 +278,20 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     conn.execute('PRAGMA busy_timeout=30000')
     _ensure_schema(conn)
 
-    # Load CNN model once (if weights available) + compute weights hash
+    # Load CNN model once (if weights available). The cnn_weights_hash
+    # is computed AFTER normalization is wired up below so it includes
+    # the normalization version — see _compute_cnn_weights_hash.
     cnn_model = None
     cnn_weights_hash = None
+    cnn_weights_bytes = None  # captured for hash computation later
     cnn_normalization = None  # (mean, std) tuple or None for legacy mode
     try:
-        import hashlib
         from ..genome.scoring.cnn_scorer import load_model, _default_weights_path
         weights_path = _default_weights_path()
         if weights_path.exists():
             cnn_model = load_model()
-            cnn_weights_hash = hashlib.sha256(weights_path.read_bytes()).hexdigest()[:16]
-            log.info('CNN scorer loaded from %s (hash=%s)', weights_path, cnn_weights_hash)
+            cnn_weights_bytes = weights_path.read_bytes()
+            log.info('CNN scorer loaded from %s', weights_path)
         else:
             log.warning('CNN weights not found at %s — CNN scoring disabled',
                         weights_path)
@@ -277,6 +306,7 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     # normalization_version tag, that tag must match what's in metadata or
     # we refuse — silent-garbage scores are exactly the failure mode this
     # whole machinery is meant to prevent.
+    cnn_norm_tag = None  # the version tag baked into the hash (None → 'legacy_v0')
     if cnn_model is not None:
         try:
             from ..genome.scoring.cnn_scorer import load_cnn_weights_file
@@ -285,6 +315,7 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
             if _wver is None:
                 log.warning('CNN weights are legacy .npy — running without normalization. '
                             'Retrain to v1 for proper input standardization.')
+                cnn_norm_tag = None  # 'legacy_v0' in hash
             elif _wver != NORMALIZATION_VERSION:
                 log.error('CNN weights normalization mismatch (%s vs %s) — '
                           'disabling CNN scoring to avoid silent garbage.',
@@ -299,9 +330,19 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                               'normalization stats. Run tools/compute_normalization.py. '
                               'Disabling CNN scoring.', _wver)
                     cnn_model = None
+                else:
+                    cnn_norm_tag = NORMALIZATION_VERSION
         except Exception:
             log.exception('Failed to wire normalization — disabling CNN scoring')
             cnn_model = None
+
+    # NOW compute the hash — captures both weights bytes AND normalization
+    # tag so future input-pipeline changes (e.g., normalization version bump)
+    # trigger a rescore even if the weights file is unchanged.
+    if cnn_model is not None and cnn_weights_bytes is not None:
+        cnn_weights_hash = _compute_cnn_weights_hash(cnn_weights_bytes, cnn_norm_tag)
+        log.info('CNN score hash: %s (norm=%s)',
+                 cnn_weights_hash, cnn_norm_tag or 'legacy_v0')
 
     # Config for multi-model detail tracking
     from ..config import cfg
@@ -385,8 +426,8 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                         current_mtime = weights_path.stat().st_mtime
                         if current_mtime != cnn_weights_mtime:
                             cnn_model = load_model()
-                            cnn_weights_hash = hashlib.sha256(
-                                weights_path.read_bytes()).hexdigest()[:16]
+                            cnn_weights_hash = _compute_cnn_weights_hash(
+                                weights_path.read_bytes(), cnn_norm_tag)
                             cnn_weights_mtime = current_mtime
                             log.info('CNN weights reloaded (hash=%s)', cnn_weights_hash)
                             was_scoring = True  # trigger rescore pass
