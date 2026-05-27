@@ -173,12 +173,22 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         transition_scorer.start()
         pruner.start()
 
+    # Watchdog timing state (mutable container so command handlers can
+    # pet the watchdog during slow operations like compare-mode init,
+    # which would otherwise block the render loop long enough to trip
+    # the 3s timeout).
+    _watchdog_last = [time.perf_counter()]
+
+    def _pet_watchdog() -> None:
+        _watchdog_last[0] = time.perf_counter()
+
     # --- Register command handlers on orchestrator ---
     from .command_handlers import WallpaperCommands
     commands = WallpaperCommands(
         core=core, lib=lib, orch=orch, renderer=renderer, ctx=ctx,
         viewports=viewports, surfaces=surfaces, first_surf=first_surf,
         canvas_ppmm=canvas_ppmm,
+        pet_watchdog=_pet_watchdog,
     )
     commands.register_all()
 
@@ -192,20 +202,26 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
     last_time = time.perf_counter()
     _frame = 0
-    _watchdog_last = time.perf_counter()
+    # _watchdog_last container already initialized before commands so the
+    # pet callback could be passed in. Bump it now so the watchdog grace
+    # period starts from "render loop about to begin," not "wallpaper
+    # started initializing."
+    _pet_watchdog()
 
     def _watchdog():
         """Background thread: force exit if render loop stops making progress.
 
         Grace period: first 15s after start allows slow shader compilation
         on large canvases (3+ monitors, Arc GPU). After that, 3s stall = exit.
+        Command handlers (e.g. _handle_compare) may pet the watchdog from
+        their own threads during long-running synchronous setup.
         """
         start = time.perf_counter()
         while not commands.quit_requested:
             time.sleep(2.0)
             elapsed = time.perf_counter() - start
             timeout = 15.0 if elapsed < 20.0 else 3.0
-            if time.perf_counter() - _watchdog_last > timeout:
+            if time.perf_counter() - _watchdog_last[0] > timeout:
                 log.error('[watchdog] render loop stalled, forcing exit')
                 os._exit(1)
 
@@ -215,7 +231,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     try:
         while not commands.quit_requested and not all(s.should_close for s in surfaces.values()):
             _frame += 1
-            _watchdog_last = time.perf_counter()
+            _pet_watchdog()
             orch.tick()
             if feature_logger:
                 feature_logger.tick()
@@ -227,7 +243,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                              'waiting for session to resume...')
                     while not commands.quit_requested and not orch.session.is_active():
                         time.sleep(0.5)
-                        _watchdog_last = time.perf_counter()
+                        _pet_watchdog()
                         orch.tick()
                     if not commands.quit_requested:
                         log.info('[render] session resumed, restarting wallpaper')
@@ -247,14 +263,14 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 if ready or all(s.should_close for s in surfaces.values()):
                     break
                 session.wait_for_events(timeout=0.016)
-                _watchdog_last = time.perf_counter()
+                _pet_watchdog()
                 # VT switch detection: no frame callbacks for 2s
                 if time.perf_counter() - _wait_start > 2.0:
                     log.info('[render] no frame callbacks — compositor suspended? '
                              'Pausing render loop.')
                     while not commands.quit_requested:
                         session.wait_for_events(timeout=0.5)
-                        _watchdog_last = time.perf_counter()
+                        _pet_watchdog()
                         orch.tick()
                         ready = {n: s for n, s in surfaces.items()
                                  if s._frame_pending and not s.should_close}
@@ -284,11 +300,11 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 log.debug(f'[perf] frame={_frame} fps={fps:.1f} dt={frame_time*1000:.1f}ms iters={frame.iterations}')
 
             frame = core.tick(frame_time)
-            _watchdog_last = time.perf_counter()
+            _pet_watchdog()
 
             # Skip ALL GL calls if GPU is paused (VT switch)
             if orch.session.gpu_paused:
-                _watchdog_last = time.perf_counter()
+                _pet_watchdog()
                 time.sleep(0.1)
                 continue
 
@@ -318,7 +334,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 renderer.dispatch_chaos_game(iterations=frame.iterations)
                 ctx.memory_barrier()
                 renderer.reduce_histogram_max()
-            _watchdog_last = time.perf_counter()
+            _pet_watchdog()
 
             # Tonemap pass — only swap surfaces the compositor is ready for
             for name, surf in ready.items():
@@ -336,7 +352,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                                            brightness=frame.brightness)
                 if not session.swap(surf):
                     break  # wayland connection lost
-                _watchdog_last = time.perf_counter()
+                _pet_watchdog()
 
     except Exception as e:
         log.error(f'[render] exception in render loop: {e}', exc_info=True)

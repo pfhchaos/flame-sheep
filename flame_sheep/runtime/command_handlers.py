@@ -17,6 +17,7 @@ from ..rendering import FlameRenderer
 from ..ui.compare import CompareRenderer
 
 if TYPE_CHECKING:
+    from typing import Callable
     from .core import FlameSheepCore
     from ..storage import Library
     from .orchestrator import Orchestrator
@@ -42,11 +43,17 @@ class WallpaperCommands:
                  viewports: dict,
                  surfaces: dict,
                  first_surf,
-                 canvas_ppmm: float):
+                 canvas_ppmm: float,
+                 pet_watchdog: 'Callable[[], None] | None' = None):
         self.core = core
         self.lib = lib
         self.orch = orch
         self.renderer = renderer
+        # Callback that bumps the render-loop watchdog. Used by handlers
+        # whose synchronous setup (compare-mode init) would otherwise
+        # block the render thread long enough to trip the watchdog.
+        # No-op fallback if not provided (tests, headless usage).
+        self._pet_watchdog = pet_watchdog or (lambda: None)
 
         # Quit signal — render loop reads this each iteration
         self.quit_requested = False
@@ -192,16 +199,36 @@ class WallpaperCommands:
         if self.comparing:
             return
         import time
-        _t0 = time.perf_counter()
-        self.compare.ensure_renderer(self.renderer)
-        _t1 = time.perf_counter()
-        log.info(f'[compare] renderer: {(_t1-_t0)*1000:.0f}ms')
-        self.compare_mode = CompareMode(self.lib)
-        _t2 = time.perf_counter()
-        log.info(f'[compare] CompareMode init: {(_t2-_t1)*1000:.0f}ms')
-        self.compare_mode.pick_pair()
-        _t3 = time.perf_counter()
-        log.info(f'[compare] pick_pair: {(_t3-_t2)*1000:.0f}ms')
+        import threading
+
+        # Compare-mode init blocks the render thread (shader compilation
+        # for the half-res renderer + DB read for multi-model scores +
+        # genome load for the first pair). On Arc the half-res renderer
+        # alone can be 2-5s; the full init can exceed the watchdog's 3s
+        # post-startup threshold. Pet the watchdog from a daemon thread
+        # for the duration of init so we don't get force-killed mid-setup.
+        # Long-term fix is the Vulkan transition (faster shader compile +
+        # async-friendly architecture).
+        _init_done = threading.Event()
+
+        def _keep_alive():
+            while not _init_done.is_set():
+                self._pet_watchdog()
+                _init_done.wait(timeout=1.0)
+        threading.Thread(target=_keep_alive, daemon=True).start()
+        try:
+            _t0 = time.perf_counter()
+            self.compare.ensure_renderer(self.renderer)
+            _t1 = time.perf_counter()
+            log.info(f'[compare] renderer: {(_t1-_t0)*1000:.0f}ms')
+            self.compare_mode = CompareMode(self.lib)
+            _t2 = time.perf_counter()
+            log.info(f'[compare] CompareMode init: {(_t2-_t1)*1000:.0f}ms')
+            self.compare_mode.pick_pair()
+            _t3 = time.perf_counter()
+            log.info(f'[compare] pick_pair: {(_t3-_t2)*1000:.0f}ms')
+        finally:
+            _init_done.set()
         self.comparing = True
         self.compare.needs_reset = True
         self.compare.reclaim_bindings()
