@@ -16,11 +16,12 @@ magnitude scales with each model's preference strength — so two confident
 opposite picks score MUCH higher than two uncertain picks that happen to
 differ.
 
-All strategies apply a DPP-style diversity re-rank against a recency
-buffer of recently-shown genome IDs. The penalty uses
-transitions.signature_distance (cheap bag comparison) as a proxy for
-structural similarity — prevents the strategies from clustering on a
-few visually similar failure modes.
+All strategies apply a within-pair diversity bonus using
+transitions.signature_distance (cheap bag comparison): pairs whose two
+genomes are graph-neighbors (low signature distance) carry less label
+information per vote — the user can't easily tell two near-clones apart,
+so we re-rank toward pairs whose members are structurally distinct from
+each other.
 
 CompareRenderer manages the visual split — lazy renderer creation at half
 resolution, offset-based dual chaos game dispatch, and split-screen
@@ -30,7 +31,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
@@ -74,20 +74,18 @@ class CompareMode:
 
     def __init__(self, lib: Library, score_fn=None,
                  votes_per_strategy: int = 5,
-                 recency_buffer: int = 16,
                  diversity_weight: float = 0.3,
                  candidate_pool: int = 40):
         """
         Args:
             votes_per_strategy: rotate selection strategy every N votes
-            recency_buffer: how many recently-shown genome IDs to keep
-                for the diversity penalty
-            diversity_weight: λ multiplier on signature-distance bonus.
-                Larger = more diversity, less strict adherence to
-                strategy's base score
+            diversity_weight: λ multiplier on within-pair signature
+                distance bonus. Larger = stronger preference for pairs
+                whose two genomes are structurally distinct from each
+                other (more label info per vote)
             candidate_pool: how many top candidates per strategy to
-                re-rank by diversity. Larger = more diversity choices,
-                higher per-pick cost
+                re-rank by within-pair diversity. Larger = more
+                diversity choices, higher per-pick cost
         """
         self.lib = lib
         self._score_fn = score_fn  # legacy callable: Genome -> float
@@ -110,8 +108,7 @@ class CompareMode:
         self._strategy_idx = 0
         self._votes_in_strategy = 0
         self._votes_per_strategy = votes_per_strategy
-        # DPP diversity
-        self._recent_gids: deque[int] = deque(maxlen=recency_buffer)
+        # Diversity re-rank parameters
         self._diversity_weight = diversity_weight
         self._candidate_pool = candidate_pool
         # Signature cache — avoid re-computing per pick_pair call
@@ -238,23 +235,17 @@ class CompareMode:
             self._signature_cache[gid] = sig
         return sig
 
-    def _diversity_bonus(self, gid_a: int, gid_b: int) -> float:
-        """Higher = more structurally distinct from recently-shown.
+    def _pair_diversity(self, gid_a: int, gid_b: int) -> float:
+        """Within-pair structural distance — bonus for pairs whose
+        two genomes use different variations (high signal per vote).
 
-        Sum of signature_distance from each of {a, b} to each recent gid.
-        Recency buffer cap (deque maxlen) prevents unbounded growth.
+        Pairs that are graph-neighbors (low signature distance) are
+        near-clones the user can barely tell apart; preferring distant
+        pairs surfaces comparisons where the user has a clear opinion.
         """
-        if not self._recent_gids:
-            return 0.0
         sig_a = self._signature(gid_a)
         sig_b = self._signature(gid_b)
-        total = 0
-        for r in self._recent_gids:
-            sig_r = self._signature(r)
-            total += signature_distance(sig_a, sig_r)
-            total += signature_distance(sig_b, sig_r)
-        # Normalize by 2 × |recent| so result is mean-per-recent
-        return total / (2.0 * len(self._recent_gids))
+        return float(signature_distance(sig_a, sig_b))
 
     def _set_pair(self, gid_a: int, gid_b: int) -> None:
         # Randomize left/right so display position doesn't bias the vote
@@ -294,19 +285,21 @@ class CompareMode:
                 break
         if not candidates:
             return None
-        # Smaller gap = higher base score (negate gap)
-        # base_z normalized so diversity_weight is comparable across strategies
+        # Normalize both terms to [0, 1] so diversity_weight is interpretable
+        # as "fraction of the final score the diversity term contributes."
         max_gap = max(c[0] for c in candidates) or 1.0
+        pair_divs = [self._pair_diversity(c[1], c[2]) for c in candidates]
+        max_div = max(pair_divs) or 1.0
         scored = []
-        for gap, ga, gb in candidates:
-            base = -gap / max_gap  # in [-1, 0]
-            div = self._diversity_bonus(ga, gb)
-            combined = base + self._diversity_weight * div
-            scored.append((combined, ga, gb, gap))
+        for (gap, ga, gb), div in zip(candidates, pair_divs):
+            base = 1.0 - (gap / max_gap)  # in [0, 1] — small gap = high base
+            div_norm = div / max_div       # in [0, 1]
+            combined = base + self._diversity_weight * div_norm
+            scored.append((combined, ga, gb, gap, div))
         scored.sort(key=lambda x: -x[0])
-        _, ga, gb, gap = scored[0]
+        _, ga, gb, gap, div = scored[0]
         log.info(f'[compare] uncertainty:{model} pair #{ga} vs #{gb} '
-                 f'gap={gap:.3f} diversity_bonus={self._diversity_bonus(ga, gb):.2f}')
+                 f'gap={gap:.3f} pair_diversity={div:.2f}')
         return ga, gb
 
     def _pick_disagreement(self, m1: str, m2: str) -> tuple[int, int] | None:
@@ -362,16 +355,18 @@ class CompareMode:
         if not candidates:
             return None
         max_score = max(c[0] for c in candidates) or 1.0
+        pair_divs = [self._pair_diversity(c[1], c[2]) for c in candidates]
+        max_div = max(pair_divs) or 1.0
         scored = []
-        for s, ga, gb in candidates:
-            base = s / max_score  # in (0, 1]
-            div = self._diversity_bonus(ga, gb)
-            combined = base + self._diversity_weight * div
-            scored.append((combined, ga, gb, s))
+        for (s, ga, gb), div in zip(candidates, pair_divs):
+            base = s / max_score          # in (0, 1]
+            div_norm = div / max_div       # in [0, 1]
+            combined = base + self._diversity_weight * div_norm
+            scored.append((combined, ga, gb, s, div))
         scored.sort(key=lambda x: -x[0])
-        _, ga, gb, s = scored[0]
+        _, ga, gb, s, div = scored[0]
         log.info(f'[compare] disagreement:{m1}:{m2} pair #{ga} vs #{gb} '
-                 f'score={s:.3f}')
+                 f'score={s:.3f} pair_diversity={div:.2f}')
         return ga, gb
 
     def _pick_random(self) -> tuple[int, int] | None:
@@ -425,9 +420,6 @@ class CompareMode:
                     log.info(f'[compare] strategy {self._strategies[self._strategy_idx][0]} '
                              f'exhausted, fell back to {name}')
                 self._set_pair(*pair)
-                # Update recency buffer with both shown genomes
-                self._recent_gids.append(pair[0])
-                self._recent_gids.append(pair[1])
                 return self.pair
 
         log.warning('[compare] all strategies exhausted — no fresh pairs')

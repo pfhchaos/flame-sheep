@@ -244,7 +244,7 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     except OSError:
         pass
 
-    from ..gpu_render_worker import RENDER_VERSION
+    from .render_worker import RENDER_VERSION
     from ..storage import _ensure_schema
 
     conn = sqlite3.connect(db_path)
