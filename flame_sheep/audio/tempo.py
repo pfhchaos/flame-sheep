@@ -300,7 +300,7 @@ class TempoTracker:
         When lost: drifts toward default (120).
         When saturated (fast content beyond MAX_BPM): uses MAX_BPM.
         """
-        from .config import cfg
+        from ..config import cfg
         if self._saturated:
             return float(cfg.tempo.max_bpm)
         default = cfg.tempo.default_bpm

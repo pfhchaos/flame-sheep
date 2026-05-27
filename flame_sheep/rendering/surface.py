@@ -57,7 +57,7 @@ def _get_output_layout() -> dict[str, dict]:
 
     # Try to bind xdg-output-manager for logical positions
     try:
-        from .protocol.xdg_output_unstable_v1.zxdg_output_manager_v1 import ZxdgOutputManagerV1
+        from ..protocol.xdg_output_unstable_v1.zxdg_output_manager_v1 import ZxdgOutputManagerV1
         _has_xdg_output = True
     except ImportError:
         _has_xdg_output = False

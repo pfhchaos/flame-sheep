@@ -34,7 +34,7 @@ def _run_library_commands(args: argparse.Namespace) -> None:
         print(f'Library now has {lib.genome_count()} genomes')
 
     if args.generate_palettes is not None:
-        from .genome import _random_palette
+        from ..genome import _random_palette
         n = args.generate_palettes
         print(f'Generating {n} palettes...')
         rng = np.random.default_rng()
@@ -45,7 +45,7 @@ def _run_library_commands(args: argparse.Namespace) -> None:
         print(f'Library now has {lib.palette_count()} palettes')
 
     if args.compose_loops is not None:
-        from .loops import compose_loops_graph
+        from ..loops import compose_loops_graph
         n = args.compose_loops
         print(f'Composing loops (target: {n}, length: {args.loop_length})...')
         candidates = compose_loops_graph(
@@ -76,7 +76,7 @@ def _run_library_commands(args: argparse.Namespace) -> None:
                 print(f'  #{lid}: fitness={scores["fitness"]:.3f}')
 
     if getattr(args, 'prune_loops', False):
-        from .loops import prune_loops
+        from ..loops import prune_loops
         before = lib.loop_count()
         n = prune_loops(lib)
         print(f'Pruned {n} loops ({before} -> {lib.loop_count()})')

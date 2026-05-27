@@ -91,7 +91,7 @@ class FlameRenderer:
         return self.gpu.canvas_h
 
     def _load_shaders(self, scoring: bool = False) -> None:
-        from .variations._symmetry_groups import generate_glsl
+        from ..variations._symmetry_groups import generate_glsl
 
         def _inject_symmetry(src: str) -> str:
             return src.replace('// {{SYMMETRY_GROUPS}}', generate_glsl())
