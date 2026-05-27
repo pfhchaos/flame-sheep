@@ -84,6 +84,8 @@ class WallpaperCommands:
         self.orch.on_command('right', self._handle_right)
         self.orch.on_command('skip', self._handle_skip)
         self.orch.on_command('wallpaper', self._handle_wallpaper)
+        self.orch.on_command('show', self._handle_show)
+        self.orch.on_command('unshow', self._handle_unshow)
 
     # --- Evolution ---
 
@@ -229,3 +231,38 @@ class WallpaperCommands:
             self.renderer.reset_walkers()
             self.core.needs_walker_reset = True
             log.info('[ctl] exited compare mode')
+
+    # --- External display pin ---
+
+    def _handle_show(self, event) -> None:
+        """Pin the wallpaper to a specific genome by DB id.
+
+        Usage: `show <gid>`
+        Used by validation / debug tools (blind_model_eval, whats_changed)
+        that need to control what's on screen, independent of audio swaps.
+        Clear with `unshow`.
+        """
+        if not event.args:
+            log.warning('[ctl] show: missing genome id')
+            return
+        if self.lib is None:
+            log.warning('[ctl] show: no library available')
+            return
+        try:
+            gid = int(event.args[0])
+        except ValueError:
+            log.warning(f'[ctl] show: invalid genome id: {event.args[0]!r}')
+            return
+        try:
+            genome = self.lib.load_genome(gid)
+        except Exception as e:
+            log.warning(f'[ctl] show: failed to load genome #{gid}: {e}')
+            return
+        self.core.pin_genome(genome, db_id=gid)
+        self.core.needs_walker_reset = True
+        log.info(f'[ctl] pinned genome #{gid}')
+
+    def _handle_unshow(self, event) -> None:
+        """Release the display pin — resume normal audio-driven swaps."""
+        self.core.clear_pin()
+        log.info('[ctl] cleared display pin')

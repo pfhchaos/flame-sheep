@@ -87,6 +87,15 @@ class FlameSheepCore:
         self._detail_axis = DetailAxis(role=self._role)
         self._pending_song_start = False
 
+        # External display pin (via `show <gid>` control-pipe command).
+        # When set, overrides whatever GenomeAxis selects — the wallpaper
+        # locks to this genome until `unshow` clears it. Used by debug /
+        # validation tools (blind_model_eval, whats_changed) that need to
+        # control which genome is on screen at any moment, independent of
+        # audio-driven swaps.
+        self._pinned_genome: 'Genome | None' = None
+        self._pinned_genome_db_id: int | None = None
+
     @dataclass
     class FrameState:
         """Per-frame output from tick() — three orthogonal axes + audio."""
@@ -163,6 +172,13 @@ class FlameSheepCore:
         self._palette_axis.contribute(frame)
         self._zoom_axis.contribute(frame)
 
+        # External pin override — force a specific genome on screen.
+        # Applied AFTER axis contributions so it wins regardless of what
+        # the swap/morph logic produced.
+        if self._pinned_genome is not None:
+            frame.genome = self._pinned_genome
+            frame.palette = self._pinned_genome.palette
+
         return frame
 
     # --- Backward-compat properties delegating to axes ---
@@ -230,6 +246,8 @@ class FlameSheepCore:
     @property
     def active_genome_db_id(self) -> int | None:
         """DB ID of the genome currently dominant on screen."""
+        if self._pinned_genome_db_id is not None:
+            return self._pinned_genome_db_id
         ga = self._genome_axis
         if ga.morph_t < 0.5:
             g = ga.current_genome
@@ -240,6 +258,22 @@ class FlameSheepCore:
     def force_genome_swap(self) -> None:
         """Immediately swap to a new genome — call when image looks degenerate."""
         self._genome_axis.force_swap()
+
+    def pin_genome(self, genome: 'Genome', db_id: int | None = None) -> None:
+        """Pin a specific genome on screen, overriding GenomeAxis swaps.
+
+        The pin persists until `clear_pin()` is called or another
+        `pin_genome()` replaces it. `active_genome_db_id` returns the
+        pinned db_id so likes / dislikes during a pin target the pinned
+        genome (not whatever the axis would have shown).
+        """
+        self._pinned_genome = genome
+        self._pinned_genome_db_id = db_id
+
+    def clear_pin(self) -> None:
+        """Release the external display pin — resume axis-driven swaps."""
+        self._pinned_genome = None
+        self._pinned_genome_db_id = None
 
     def load_loop(self, loop_id: int) -> None:
         self._genome_axis.load_loop(loop_id)
