@@ -15,6 +15,7 @@ import multiprocessing
 import os
 import sqlite3
 import zlib
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -32,6 +33,7 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
                   render_size: int = 512,
                   cnn_model=None,
                   cnn_normalization: tuple | None = None,
+                  aux_cnn_models: dict[str, object] | None = None,
                   ) -> dict[str, float]:
     """Compute all metrics from stored blobs."""
     from ..genome.scoring.image_scorer import score_from_image
@@ -73,6 +75,15 @@ def _score_genome(render_static: bytes, render_swept: bytes | None,
             if tensor is not None:
                 with torch.no_grad():
                     scores['cnn_score'] = cnn_model(tensor).item()
+                    # Auxiliary models — multi-model active-learning support.
+                    # Each gets stored under `_aux:<name>` so the caller can
+                    # split them into cnn_scores_detail without polluting
+                    # the score-column SET clause.
+                    for aux_name, aux_model in (aux_cnn_models or {}).items():
+                        try:
+                            scores[f'_aux:{aux_name}'] = aux_model(tensor).item()
+                        except Exception:
+                            pass  # one aux model failing doesn't kill others
         except Exception:
             pass  # non-fatal: other scores still valid
 
@@ -296,6 +307,30 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     from ..config import cfg
     store_cnn_detail = getattr(getattr(cfg, 'scoring', None), 'store_cnn_detail', False)
 
+    # Auxiliary CNN models for multi-model active learning. Each .npz in
+    # ~/.local/share/flame-sheep/aux_models/ gets loaded and scored alongside
+    # the primary on every genome. Filename basename (without .npz) is the
+    # name used as the cnn_scores_detail key. Drop a weights file (or
+    # symlink) into the dir to register; restart score_worker to pick up.
+    aux_cnn_models: dict[str, object] = {}
+    if cnn_model is not None:  # only meaningful if torch path is working
+        aux_dir = Path(os.path.expanduser(
+            '~/.local/share/flame-sheep/aux_models'))
+        if aux_dir.is_dir():
+            from ..genome.scoring.cnn_scorer import load_model as _load_aux
+            for aux_path in sorted(aux_dir.glob('*.npz')):
+                name = aux_path.stem
+                if name in aux_cnn_models:
+                    log.warning('aux model name collision: %s (skipping)', name)
+                    continue
+                try:
+                    aux_cnn_models[name] = _load_aux(aux_path)
+                    log.info('aux CNN model loaded: %s ← %s', name, aux_path)
+                except Exception:
+                    log.exception('failed to load aux model %s', aux_path)
+        if aux_cnn_models:
+            log.info('aux models active: %s', sorted(aux_cnn_models))
+
     was_scoring = False  # track when we transition from scoring → idle
 
     try:
@@ -412,7 +447,8 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                                        hist_swept=hist_swept,
                                        hist_first_hit=hist_first_hit,
                                        cnn_model=cnn_model,
-                                       cnn_normalization=cnn_normalization)
+                                       cnn_normalization=cnn_normalization,
+                                       aux_cnn_models=aux_cnn_models)
 
                 # Build SET clause dynamically from available scores
                 score_cols = [
@@ -451,16 +487,31 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
                 if 'cnn_score' in scores and cnn_weights_hash:
                     set_parts.append('cnn_weights_hash=?')
                     values.append(cnn_weights_hash)
-                    # Multi-model detail tracking
-                    if store_cnn_detail:
-                        import json
-                        existing = conn.execute(
-                            'SELECT cnn_scores_detail FROM genomes WHERE id=?', (gid,)
-                        ).fetchone()
-                        detail = json.loads(existing[0]) if existing and existing[0] else {}
+
+                # Aggregate cnn_scores_detail updates: optional legacy
+                # weights_hash entry (if store_cnn_detail config is on)
+                # PLUS named entries for every aux model that scored.
+                # Both go in a single read-modify-write of the JSON column.
+                aux_entries = {
+                    k[len('_aux:'):]: v
+                    for k, v in scores.items() if k.startswith('_aux:')
+                }
+                want_detail_update = aux_entries or (
+                    store_cnn_detail and 'cnn_score' in scores
+                    and cnn_weights_hash
+                )
+                if want_detail_update:
+                    import json
+                    existing = conn.execute(
+                        'SELECT cnn_scores_detail FROM genomes WHERE id=?',
+                        (gid,),
+                    ).fetchone()
+                    detail = json.loads(existing[0]) if existing and existing[0] else {}
+                    if store_cnn_detail and 'cnn_score' in scores and cnn_weights_hash:
                         detail[cnn_weights_hash] = scores['cnn_score']
-                        set_parts.append('cnn_scores_detail=?')
-                        values.append(json.dumps(detail))
+                    detail.update(aux_entries)
+                    set_parts.append('cnn_scores_detail=?')
+                    values.append(json.dumps(detail))
                 values.append(gid)
 
                 sql = f'UPDATE genomes SET {", ".join(set_parts)} WHERE id=?'
