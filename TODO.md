@@ -69,6 +69,16 @@ Both genomes dispatch through the same walker buffer (65536 walkers). The offset
 
 **Vulkan fix:** Separate descriptor sets with separate walker buffers per dispatch. No global binding points to conflict.
 
+### Compare renderer has a structural ~1.7-2x per-dispatch tax
+
+Measured via `FLAME_SHEEP_GPU_TIMING=1` on 2026-05-27: same genome (#1730), same walker count (65536), similar canvas (compare CMP_SCALE=1 = 4.15 MP per side ≈ main's 4.74 MP). Main per-dispatch = 18 ms; compare per-dispatch = 30 ms. Atomic-contention scaling accounts for ~15% (35 ms at 1 MP per side → 30 ms at 4 MP per side); the remaining ~1.7x is structural.
+
+Most plausible cause: two `FlameRenderer` instances share one moderngl GL context. Each instance has its own `compute_shader` Program. Mesa Xe's GL driver appears to handle multi-Program contexts worse than single-Program — likely state-cache thrashing on program switches. The cost is per-dispatch regardless of canvas/walkers/genome.
+
+Currently masked by quartering compare's walker count (compare per-dispatch ~9 ms, framerate acceptable at ~28 fps), but the work *is* unnecessary — a single-renderer compare with a dual histogram would halve compare's GPU work.
+
+**Vulkan fix:** Single pipeline + descriptor sets per dispatch. Compare-mode dual histogram becomes one pipeline used twice with different descriptor sets pointing at different histogram regions; no second pipeline/Program object in the context to cause cache thrash. Should eliminate the structural tax entirely. Combined with the walker reduction we already shipped, expect compare framerate ~50-60 fps.
+
 ### Side screen flicker in compare mode
 
 Side monitors show stale/flickering data during compare mode because the main renderer's histogram isn't being updated (compare renderer owns the dispatch). Currently ignored.
