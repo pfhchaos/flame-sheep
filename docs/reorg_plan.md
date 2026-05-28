@@ -4,6 +4,23 @@ The `flame_sheep/` package has grown organically from a wayland-wallpaper-runnin
 
 This is for the project author's own sensibilities — internal-satisfaction is the driver, not external review. So choices favor "where would I look for X" over "what would impress a reviewer."
 
+## Status (as of 2026-05-28)
+
+| Stage | Description | Status |
+|-------|-------------|--------|
+| 0 | FlameRenderer decomposition | **Partial** — GpuContext extracted (`rendering/gpu_context.py`); `renderer.py` at 808 lines, down from 1174 but still flame-specific monolith. Acceptable end-state if viz_authoring (Stage 9) isn't imminent. |
+| 1 | Extract `wallpaper_ml/` to standalone package | **Done** — package at `wallpaper_ml/src/wallpaper_ml/`; thin re-export shim at `flame_sheep/wallpaper_ml.py` for back-compat. |
+| 2 | Split `storage.py` + audio cross-package cleanup | **Done** — `storage/{library,schema,serialization,catalog,esheep_parser}.py`; `palette/scoring.py`; `audio/tempo.py`. |
+| 3 | Group siblings into packages (runtime/, rendering/, audio/, ui/, etc.) | **Done** — 3a/b/d/e committed during May 2026 reorg work. |
+| 4 | Object-organize genome / palette / transitions / loops | **Done** — 4a transitions/, 4b genome/ + workers + motion_field (1-4), 4c loops/ split + score_loop move. |
+| 5 | Tests mirror + docs sweep | **Done** — `tests/` mirrors source package layout (commits `6b48bbb`, `8120492`, `0217d42`); this status section is the docs sweep. |
+| 6 | Extract shared `load_aware.py` from workers | **Pending** |
+| 7 | Comm-pipe API polish (`debug/` uses only public names) | **Pending** |
+| 8 | Worker consolidation (`GpuWorker` / `CpuWorkerPool` / `ScheduledTask` + `LoadMonitor` pub/sub) | **Pending** — feeds the eventual GPU scheduler design (see `~/.claude/projects/-home-chaos/memory/project_gpu_scheduler_design.md`). |
+| 9 | `viz_authoring/` extraction | **Pending** — gated on 6+7+8. |
+
+The remainder of this document is the original planning text — kept as historical reference for *why* each stage was structured the way it was. Body uses future-tense ("will move X → Y"); read past tense for stages 0-5.
+
 ## Goals
 
 - **Organize by object, not by operation**: each domain object (genome, palette, loop, transition) owns its scoring, generation, evolution, etc. No top-level `scoring/` directory crossing object boundaries — `score_loop` lives in `loops/`, `score_palette` in `palette/`, etc.
