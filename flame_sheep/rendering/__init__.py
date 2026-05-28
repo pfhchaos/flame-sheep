@@ -20,6 +20,8 @@ from .gpu_context import (
     SHADER_DIR,
     Viewport,
     GpuContext,
+    GpuRingTimer,
+    GPU_TIMING_ENABLED,
     _resolve_includes,
     _bind_default_framebuffer,
 )
@@ -46,6 +48,8 @@ __all__ = [
     'SHADER_DIR',
     'Viewport',
     'GpuContext',
+    'GpuRingTimer',
+    'GPU_TIMING_ENABLED',
     '_resolve_includes',
     '_bind_default_framebuffer',
     # Flame-specific rendering

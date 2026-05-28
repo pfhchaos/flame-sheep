@@ -74,6 +74,11 @@ def main() -> None:
                         help='path for feature log (default: ~/.local/share/flame-sheep/features.jsonl)')
     parser.add_argument('--benchmark-variations', action='store_true',
                         help='benchmark each variation solo (GPU timing) and exit')
+    parser.add_argument('--bench-sample', choices=['random', 'top', 'stratified'],
+                        default='random',
+                        help='library-genome sampling mode for benchmark (default: random)')
+    parser.add_argument('--bench-n', type=int, default=50,
+                        help='number of library genomes to benchmark (default: 50)')
     parser.add_argument('--render-catalog', type=str, metavar='DIR', default=None,
                         help='generate genome catalog for evaluation (renders PNGs)')
     parser.add_argument('--catalog-count', type=int, default=50,
@@ -125,7 +130,8 @@ def main() -> None:
         return
 
     if args.benchmark_variations:
-        _run_variation_benchmark()
+        _run_variation_benchmark(sample_mode=args.bench_sample,
+                                 n_genomes=args.bench_n)
         return
 
     if args.render_catalog:

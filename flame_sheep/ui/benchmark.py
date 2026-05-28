@@ -5,7 +5,18 @@ phases:
   1. Per-variation: each variation solo with 3 transforms (isolates cost)
   2. Library genomes: actual genomes from the library (real-world cost)
 
-Outputs a cost table with budget classification (ok/HEAVY/COSTLY).
+Library-genome sampling mode is configurable via --bench-sample:
+  - random (default): uniform sample from the library — what you want
+    for measuring cost variance across the whole library.
+  - top: highest-rated genomes (the original behavior). Biased toward
+    well-formed genomes; tells you cost in the regime the wallpaper
+    actually plays from.
+  - stratified: equal-sized buckets across cnn_score percentiles, so
+    cost-vs-score correlation is visible.
+
+Outputs a cost table with budget classification (ok/HEAVY/COSTLY) plus
+distribution stats (min/median/p90/p99/max + per-quartile breakdown if
+stratified).
 """
 
 from __future__ import annotations
@@ -18,7 +29,8 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 
-def _run_variation_benchmark() -> None:
+def _run_variation_benchmark(sample_mode: str = 'random',
+                             n_genomes: int = 50) -> None:
     """Benchmark variations and library genomes on the GPU."""
     import moderngl
     from ..genome import (Genome, Variation, NUM_VARIATIONS)
@@ -93,12 +105,17 @@ def _run_variation_benchmark() -> None:
     # --- Phase 2: Library genomes ---
     from ..storage import Library
     lib = Library()
-    n_genomes = lib.genome_count()
-    if n_genomes > 0:
-        print(f'\n=== Library Genome Benchmark ({min(n_genomes, 50)} genomes) ===\n')
-        top = lib.top_genomes(n=50)
+    if lib.genome_count() > 0:
+        if sample_mode == 'top':
+            sample = lib.top_genomes(n=n_genomes)
+        elif sample_mode == 'stratified':
+            sample = lib.stratified_genomes(n=n_genomes)
+        else:
+            sample = lib.random_genomes(n=n_genomes)
+        print(f'\n=== Library Genome Benchmark '
+              f'({len(sample)} genomes, sample={sample_mode}) ===\n')
         genome_results = []
-        for gid, _score in top:
+        for gid, meta in sample:
             g = lib.load_genome(gid)
             ms = _bench_genome(g)
             # Identify dominant variations
@@ -109,12 +126,13 @@ def _run_variation_benchmark() -> None:
                 for j, w in enumerate(tr.variations):
                     if w > 0.1:
                         dom_vars.append(var_names.get(j, f'v{j}'))
-            genome_results.append((gid, ms, dom_vars))
+            genome_results.append((gid, ms, dom_vars, meta.get('cnn_score')))
 
-        print(f'{"id":>5}  {"ms/frame":>9}  {"fps":>5}  {"budget":<8}  variations')
-        print('-' * 70)
+        print(f'{"id":>5}  {"score":>6}  {"ms/frame":>9}  {"fps":>5}  '
+              f'{"budget":<8}  variations')
+        print('-' * 80)
 
-        for gid, ms, dom_vars in sorted(genome_results, key=lambda r: -r[1]):
+        for gid, ms, dom_vars, score in sorted(genome_results, key=lambda r: -r[1]):
             fps = 1000 / ms if ms > 0 else 999
             if ms > 16.7:
                 budget = 'COSTLY'
@@ -123,14 +141,28 @@ def _run_variation_benchmark() -> None:
             else:
                 budget = 'ok'
             vars_str = ', '.join(sorted(set(dom_vars)))[:40]
-            print(f'{gid:5d}  {ms:9.3f}  {fps:5.1f}  {budget:<8}  {vars_str}')
+            score_str = f'{score:6.3f}' if score is not None else '   n/a'
+            print(f'{gid:5d}  {score_str}  {ms:9.3f}  {fps:5.1f}  '
+                  f'{budget:<8}  {vars_str}')
 
-        avg = np.mean([r[1] for r in genome_results])
-        worst = max(r[1] for r in genome_results)
-        best = min(r[1] for r in genome_results)
-        costly = sum(1 for r in genome_results if r[1] > 16.7)
-        print(f'\nAvg: {avg:.1f}ms  Best: {best:.1f}ms  Worst: {worst:.1f}ms')
-        print(f'{costly}/{len(genome_results)} genomes over 60fps budget (16.7ms)')
+        # Distribution: tells us at a glance whether cost varies enough
+        # to warrant cost-aware iteration budgeting in compare-mode.
+        msec = np.array([r[1] for r in genome_results])
+        p = np.percentile(msec, [50, 90, 99])
+        print(f'\nmin={msec.min():.1f}ms  median={p[0]:.1f}ms  '
+              f'p90={p[1]:.1f}ms  p99={p[2]:.1f}ms  max={msec.max():.1f}ms  '
+              f'spread={msec.max()/max(msec.min(), 0.01):.1f}x')
+        costly = sum(1 for v in msec if v > 16.7)
+        print(f'{costly}/{len(msec)} genomes over 60fps budget (16.7ms)')
+
+        # Cost-vs-score correlation (only meaningful if we have scores)
+        scored = [(r[1], r[3]) for r in genome_results if r[3] is not None]
+        if len(scored) >= 8:
+            ms_arr = np.array([s[0] for s in scored])
+            sc_arr = np.array([s[1] for s in scored])
+            r = float(np.corrcoef(ms_arr, sc_arr)[0, 1])
+            print(f'Cost vs cnn_score correlation: r={r:+.3f} '
+                  f'(positive = expensive genomes score higher)')
 
     lib.close()
     ctx.release()

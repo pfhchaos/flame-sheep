@@ -578,6 +578,64 @@ class Library:
             for r in rows
         ]
 
+    def random_genomes(self, n: int = 50,
+                       min_coverage: float = 0.01) -> list[tuple[int, dict]]:
+        """Return N uniformly-random genomes (sqlite's RANDOM())."""
+        rows = self.conn.execute(
+            '''SELECT id, coverage, entropy, color_entropy, balance, complexity,
+                      cnn_score
+               FROM genomes
+               WHERE coverage >= ? AND COALESCE(archived, 0) = 0
+               ORDER BY RANDOM()
+               LIMIT ?''',
+            (min_coverage, n),
+        ).fetchall()
+        return [
+            (r[0], dict(coverage=r[1], entropy=r[2], color_entropy=r[3],
+                        balance=r[4], complexity=r[5], cnn_score=r[6]))
+            for r in rows
+        ]
+
+    def stratified_genomes(self, n: int = 40, buckets: int = 4,
+                           min_coverage: float = 0.01) -> list[tuple[int, dict]]:
+        """Return ~n genomes stratified across cnn_score percentiles.
+
+        Splits genomes with non-null cnn_score into `buckets` equal-sized
+        score percentile bins and samples n//buckets from each (random
+        within bin). Yields a sample that spans the score distribution
+        rather than concentrating at the top — useful for measuring
+        whether some property (cost, variation set, ...) correlates with
+        score.
+        """
+        per = max(1, n // buckets)
+        # Pull all scored genomes ordered by cnn_score, then bucket.
+        rows = self.conn.execute(
+            '''SELECT id, coverage, entropy, color_entropy, balance, complexity,
+                      cnn_score
+               FROM genomes
+               WHERE coverage >= ? AND COALESCE(archived, 0) = 0
+                 AND cnn_score IS NOT NULL
+               ORDER BY cnn_score ASC''',
+            (min_coverage,),
+        ).fetchall()
+        if not rows:
+            return []
+        import random as _random
+        bucket_size = max(1, len(rows) // buckets)
+        out = []
+        for b in range(buckets):
+            start = b * bucket_size
+            end = start + bucket_size if b < buckets - 1 else len(rows)
+            chunk = rows[start:end]
+            if chunk:
+                pick = _random.sample(chunk, min(per, len(chunk)))
+                out.extend(pick)
+        return [
+            (r[0], dict(coverage=r[1], entropy=r[2], color_entropy=r[3],
+                        balance=r[4], complexity=r[5], cnn_score=r[6]))
+            for r in out
+        ]
+
     def genome_count(self) -> int:
         return self.conn.execute('SELECT COUNT(*) FROM genomes').fetchone()[0]
 

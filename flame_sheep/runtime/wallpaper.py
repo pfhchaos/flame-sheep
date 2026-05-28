@@ -21,7 +21,7 @@ from .orchestrator import Orchestrator
 from .core import FlameSheepCore
 from ..rendering import (
     _monitor_cfg, _get_output_layout, _ensure_singleton,
-    FlameRenderer, GpuContext, Viewport,
+    FlameRenderer, GpuContext, GpuRingTimer, Viewport,
 )
 from ..screen_layout import PhysicalViewport
 from .command_handlers import WallpaperCommands
@@ -218,6 +218,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     def _main_accum(stage: str, dt: float) -> None:
         _main_perf_accum[stage] = _main_perf_accum.get(stage, 0.0) + dt
 
+    _main_gpu_chaos_timer: GpuRingTimer | None = None
+
     def _watchdog():
         """Background thread: force exit if render loop stops making progress.
 
@@ -339,7 +341,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
             if commands.comparing and commands.compare_mode:
                 commands.compare.dispatch(
                     commands.compare_mode.pair, frame,
-                    rotation_phase=core._genome_axis._rotation.phase)
+                    rotation_phase=core._genome_axis._rotation.phase,
+                    override_genome=core._pinned_genome)
 
             elif not _test_pattern:
                 # --- Normal mode: single chaos game ---
@@ -359,8 +362,12 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 renderer.clear_histogram(decay=0.3)
                 _main_accum('clear_hist', time.perf_counter() - _ts)
                 _ts = time.perf_counter()
-                renderer.dispatch_chaos_game(iterations=frame.iterations)
+                if _main_gpu_chaos_timer is None:
+                    _main_gpu_chaos_timer = GpuRingTimer(ctx, logger=log)
+                with _main_gpu_chaos_timer:
+                    renderer.dispatch_chaos_game(iterations=frame.iterations)
                 _main_accum('chaos_game', time.perf_counter() - _ts)
+                _main_accum('gpu_chaos', _main_gpu_chaos_timer.last_ns / 1e9)
                 _ts = time.perf_counter()
                 ctx.memory_barrier()
                 _main_accum('barrier', time.perf_counter() - _ts)

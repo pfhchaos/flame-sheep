@@ -19,13 +19,56 @@ GL primitives goes through GpuContext methods.
 from __future__ import annotations
 
 import ctypes
+import os
+import time as _time
 from pathlib import Path
 
 import moderngl
 import numpy as np
 
+GPU_TIMING_ENABLED = os.environ.get('FLAME_SHEEP_GPU_TIMING') == '1'
+
 
 SHADER_DIR = Path(__file__).parent / 'shaders'
+
+
+class GpuRingTimer:
+    """Synchronous GPU-time measurement via glFinish + wall-clock.
+
+    Gated on FLAME_SHEEP_GPU_TIMING=1. When the env var is unset (the
+    default), this is a no-op context manager — call sites don't need
+    to branch. Enabling it makes every wrapped dispatch serialize on
+    glFinish, inflating frame time significantly; only use for
+    diagnosing per-stage GPU cost.
+
+    Why glFinish + wall-clock: GL_TIME_ELAPSED queries are unreliable
+    on Mesa Xe / Intel Arc — most reads return 0 with no error. The
+    ring-buffered async approach this class is named after didn't
+    survive contact with the driver.
+    """
+    __slots__ = ('_ctx', 'last_ns', '_t')
+
+    def __init__(self, ctx: moderngl.Context, logger=None):
+        # None when timing is disabled — __enter__/__exit__ short-circuit.
+        self._ctx = ctx if GPU_TIMING_ENABLED else None
+        self.last_ns = 0
+        self._t = 0.0
+
+    def __enter__(self):
+        if self._ctx is None:
+            return self
+        # Wait for any prior GPU work to complete so we time only the work
+        # inside this block, not work that was already in flight.
+        self._ctx.finish()
+        self._t = _time.perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        if self._ctx is None:
+            return
+        # Wait for the GPU work in this block to complete before timing.
+        self._ctx.finish()
+        self.last_ns = int((_time.perf_counter() - self._t) * 1e9)
 
 
 # glBindFramebuffer(GL_FRAMEBUFFER, 0) to return to the windowing system's

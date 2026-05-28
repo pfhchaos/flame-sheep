@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Callable
 import numpy as np
 
 from ..genome import Genome
-from ..rendering import FlameRenderer, GpuContext, Viewport
+from ..rendering import FlameRenderer, GpuContext, GpuRingTimer, N_WALKERS, Viewport
 from ..transitions import variation_signature, signature_distance
 
 if TYPE_CHECKING:
@@ -500,6 +500,16 @@ class CompareRenderer:
     """
 
     CMP_SCALE = 2  # half-resolution renderer
+    # Compare's per-side canvas is ~22% of main's full canvas (with
+    # CMP_SCALE=2). At full N_WALKERS that's ~4.5x main's walker density
+    # per pixel — much denser than the wallpaper render the compare-vote
+    # data is supposed to represent. Quartering brings walker-density
+    # roughly to main's level, which is what we want for vote-data
+    # fidelity: compare-render should look like the wallpaper-render.
+    # Chaos-game GPU work scales linearly with walker count, so this is
+    # also ~4x faster than default — at #1730 it drops compare per-
+    # dispatch from ~35ms to ~9ms (measured).
+    CMP_WALKERS = N_WALKERS // 4
     PERF_LOG_INTERVAL = 60  # frames between per-stage timing summaries
 
     def __init__(self, ctx, viewports: dict, surfaces: dict, first_surf,
@@ -519,6 +529,13 @@ class CompareRenderer:
         # quarter-resolution renderer.
         self._perf_frames = 0
         self._perf_accum: dict[str, float] = {}
+
+        # GPU timer queries for chaos_game dispatches (L and R). swap-time
+        # measurements mix vsync wait with actual GPU work; these give the
+        # real GPU-side cost so we can tell whether the per-dispatch slowdown
+        # vs main mode is genuine GPU work or driver-overhead-shaped.
+        self._gpu_timer_L = None
+        self._gpu_timer_R = None
 
     def _accum(self, stage: str, dt: float) -> None:
         self._perf_accum[stage] = self._perf_accum.get(stage, 0.0) + dt
@@ -556,12 +573,15 @@ class CompareRenderer:
         center_surf = self.surfaces.get(center_name, self.first_surf)
         cmp_w = center_surf.width // 2 // self.CMP_SCALE
         cmp_h = center_surf.height // self.CMP_SCALE
-        self.renderer = FlameRenderer(GpuContext(self.ctx, cmp_w, cmp_h,
-                                                  ppmm=self.canvas_ppmm / self.CMP_SCALE))
+        self.renderer = FlameRenderer(
+            GpuContext(self.ctx, cmp_w, cmp_h,
+                       ppmm=self.canvas_ppmm / self.CMP_SCALE),
+            n_walkers=self.CMP_WALKERS)
         self.renderer.blur_radius = 0.0
         # Restore main renderer's bindings after our pipeline creation
         main_renderer.bind_buffers()
-        log.info(f'[compare] created renderer at {cmp_w}x{cmp_h}')
+        log.info(f'[compare] created renderer at {cmp_w}x{cmp_h} '
+                 f'with {self.CMP_WALKERS} walkers')
 
     def reclaim_bindings(self) -> None:
         """Re-bind compare renderer's SSBOs after main renderer's bindings
@@ -574,9 +594,17 @@ class CompareRenderer:
         self.renderer.histogram_buf.write(
             np.zeros(n_px * 2, dtype=np.uint32).tobytes())
 
-    def dispatch(self, pair: PairState, frame, rotation_phase: float) -> None:
+    def dispatch(self, pair: PairState, frame, rotation_phase: float,
+                 override_genome=None) -> None:
         """Run chaos game for left + right genomes into offset halves of
-        the dual histogram."""
+        the dual histogram.
+
+        override_genome: if set, BOTH sides render this genome instead of
+            pair.left / pair.right. Used as a positive control for perf
+            diagnosis — pinning the same genome to main and to both
+            compare sides isolates per-dispatch overhead from
+            per-genome-complexity cost.
+        """
         if self.renderer is None or pair.left is None or pair.right is None:
             return
         import time
@@ -584,8 +612,12 @@ class CompareRenderer:
         rot = rotation_phase
 
         t0 = time.perf_counter()
-        left_g = pair.left.rotated(rot) if rot != 0.0 else pair.left
-        right_g = pair.right.rotated(rot) if rot != 0.0 else pair.right
+        if override_genome is not None:
+            base = override_genome
+            left_g = right_g = base.rotated(rot) if rot != 0.0 else base
+        else:
+            left_g = pair.left.rotated(rot) if rot != 0.0 else pair.left
+            right_g = pair.right.rotated(rot) if rot != 0.0 else pair.right
         n_px = cr.canvas_w * cr.canvas_h
         self._accum('cpu_rotate', time.perf_counter() - t0)
 
@@ -600,6 +632,15 @@ class CompareRenderer:
             cr.reset_walkers()
             self.needs_reset = False
 
+        # One clear over the entire dual histogram (hits_L | hits_R |
+        # colors_L | colors_R). Old code called clear twice with shifted
+        # offsets, which silently corrupted colors_L on the second pass
+        # (offset=n_px, size=2*n_px clobbers [n_px..3*n_px), i.e. hits_R
+        # AND colors_L). Single clear is also half the shader work.
+        t = time.perf_counter()
+        cr.clear_histogram(decay=0.3)
+        self._accum('clear_hist', time.perf_counter() - t)
+
         # Left genome: offset=0
         t = time.perf_counter()
         cr.set_histogram_offset(0)
@@ -613,17 +654,19 @@ class CompareRenderer:
         t = time.perf_counter()
         cr.upload_palette(frame.palette)
         self._accum('upload_palette', time.perf_counter() - t)
+        if self._gpu_timer_L is None:
+            self._gpu_timer_L = GpuRingTimer(self.ctx, logger=log)
         t = time.perf_counter()
-        cr.clear_histogram(decay=0.3)
-        self._accum('clear_hist', time.perf_counter() - t)
-        t = time.perf_counter()
-        cr.dispatch_chaos_game(iterations=frame.iterations)
+        with self._gpu_timer_L:
+            cr.dispatch_chaos_game(iterations=frame.iterations)
         self._accum('chaos_game', time.perf_counter() - t)
-        t = time.perf_counter()
-        self.ctx.memory_barrier()
-        self._accum('barrier', time.perf_counter() - t)
+        self._accum('gpu_chaos_L', self._gpu_timer_L.last_ns / 1e9)
 
-        # Right genome: offset=n_pixels
+        # Right genome: offset=n_pixels. Left and right write to
+        # disjoint regions of the histogram (hits_L vs hits_R, colors_L
+        # vs colors_R) — no write-after-write dependency, so no barrier
+        # needed between them. Single barrier at the end fences both
+        # dispatches against the subsequent tonemap pass.
         t = time.perf_counter()
         cr.set_histogram_offset(n_px)
         self._accum('set_offset', time.perf_counter() - t)
@@ -633,12 +676,13 @@ class CompareRenderer:
         t = time.perf_counter()
         cr.upload_palette(frame.palette)
         self._accum('upload_palette', time.perf_counter() - t)
+        if self._gpu_timer_R is None:
+            self._gpu_timer_R = GpuRingTimer(self.ctx, logger=log)
         t = time.perf_counter()
-        cr.clear_histogram(decay=0.3)
-        self._accum('clear_hist', time.perf_counter() - t)
-        t = time.perf_counter()
-        cr.dispatch_chaos_game(iterations=frame.iterations)
+        with self._gpu_timer_R:
+            cr.dispatch_chaos_game(iterations=frame.iterations)
         self._accum('chaos_game', time.perf_counter() - t)
+        self._accum('gpu_chaos_R', self._gpu_timer_R.last_ns / 1e9)
         t = time.perf_counter()
         self.ctx.memory_barrier()
         self._accum('barrier', time.perf_counter() - t)

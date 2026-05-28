@@ -333,10 +333,19 @@ class FlameRenderer:
         """Clear or decay the histogram.
 
         decay: 0.0 = full clear, 0.9 = keep 90% of previous frame's hits.
+
+        Clears the entire allocated histogram in one dispatch. In single
+        mode the buffer holds [hits | colors] = 2*n_px uint32s; in dual
+        mode (compare) it holds [hits_L | hits_R | colors_L | colors_R]
+        = 4*n_px uint32s. Caller-set u_hist_offset is ignored — we always
+        clear from index 0 across the full buffer.
         """
         self._decay = decay
-        size = self.canvas_w * self.canvas_h * 2
+        n_px = self.canvas_w * self.canvas_h
+        is_dual = self.histogram_buf.size >= n_px * 4 * 4
+        size = n_px * 4 if is_dual else n_px * 2
         self.clear_shader['u_size'] = size
+        self.clear_shader['u_hist_offset'] = 0
         self.clear_shader['u_decay_num'] = int(decay * 256)
         groups = (size + 63) // 64
         self.clear_shader.run(group_x=groups)
