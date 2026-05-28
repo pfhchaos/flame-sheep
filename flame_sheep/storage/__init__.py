@@ -28,7 +28,7 @@ from .serialization import (
     _transform_from_dict,
     _transform_to_dict,
 )
-from .library import Library, score_loop
+from .library import Library
 
 # Motion field functions moved to flame_sheep.genome.motion_field in
 # Stage 4b. Re-export here so existing `from flame_sheep.storage import
@@ -44,6 +44,17 @@ from ..genome.motion_field import (
 # score_palette moved to flame_sheep.palette.scoring. Re-export for
 # backward compatibility with any consumer that still expects it here.
 from ..palette.scoring import score_palette
+
+
+# score_loop moved to flame_sheep.loops.scoring in Stage 4c. We re-export
+# here, BUT use a lazy attribute access to avoid the import cycle —
+# loops.compose imports `..storage`, so we can't have storage's __init__
+# eagerly import from loops at module load time.
+def __getattr__(name):
+    if name == 'score_loop':
+        from ..loops.scoring import score_loop
+        return score_loop
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
 __all__ = [
     'Library',
