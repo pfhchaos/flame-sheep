@@ -45,7 +45,7 @@ from variation_fixtures import (
 # Override inline copies with shared fixtures
 BASE_POINTS = _BASE_POINTS
 
-SHADER_DIR = Path(__file__).resolve().parent.parent.parent.parent / 'flame_sheep' / 'shaders'
+SHADER_DIR = Path(__file__).resolve().parent.parent.parent / 'flame_sheep' / 'rendering' / 'shaders'
 
 # ---------------------------------------------------------------------------
 # Base test points — good spread of quadrants, magnitudes, near-origin/unit circle

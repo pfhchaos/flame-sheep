@@ -22,7 +22,7 @@ from variation_fixtures import (
     TEST_AFFINE, AFFINE_VARIATIONS, RANDOM_VARIATIONS, PARAM_FIXTURES,
 )
 
-GOLDEN_DIR = Path(__file__).resolve().parent.parent.parent / 'golden'
+GOLDEN_DIR = Path(__file__).resolve().parent.parent / 'golden'
 
 # Legacy — inline copies removed, now imported from variation_fixtures
 _UNUSED_TEST_POINTS = [

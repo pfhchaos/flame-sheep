@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-_PROJECT = Path(__file__).resolve().parents[1]
+_PROJECT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT))
 sys.path.insert(0, str(_PROJECT / 'flame_sheep_audio' / 'src'))
 
