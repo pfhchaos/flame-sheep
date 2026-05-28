@@ -309,6 +309,15 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 fps = 1.0 / frame_time if frame_time > 0 else 0
                 log.debug(f'[perf] frame={_frame} fps={fps:.1f} dt={frame_time*1000:.1f}ms iters={frame.iterations}')
 
+            # Attribute total per-frame wall clock to whichever mode is active
+            # so we can see (frame_total − measured CPU stages) = GPU sync +
+            # other unmeasured time. GPU-bound mode shows large `swap` and
+            # large `frame_total` with small `chaos_game`.
+            if commands.comparing and commands.compare_mode:
+                commands.compare._accum('frame_total', frame_time)
+            else:
+                _main_accum('frame_total', frame_time)
+
             frame = core.tick(frame_time)
             _pet_watchdog()
 
@@ -362,12 +371,24 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 _main_perf_frames += 1
                 if _main_perf_frames >= MAIN_PERF_INTERVAL:
                     n = _main_perf_frames
+                    # Headline metrics: frame budget, GPU-sync wait,
+                    # measured CPU. The "other" gap is unmeasured time
+                    # (compositor / make_current / ready-wait / etc.)
+                    frame_total = _main_perf_accum.pop('frame_total', 0.0) / n * 1000
+                    swap = _main_perf_accum.pop('swap', 0.0) / n * 1000
+                    cpu_stages = sum(_main_perf_accum.values()) / n * 1000
+                    other = max(0, frame_total - swap - cpu_stages)
                     parts = sorted(_main_perf_accum.items(),
                                    key=lambda kv: -kv[1])
                     s = '  '.join(f'{k}={v / n * 1000:.2f}ms'
                                   for k, v in parts)
-                    total = sum(_main_perf_accum.values()) / n * 1000
-                    log.info(f'[main perf {n} frames]  total={total:.2f}ms/frame  {s}')
+                    log.info(
+                        f'[main perf {n} frames]  '
+                        f'frame_total={frame_total:.2f}ms  '
+                        f'swap={swap:.2f}ms  '
+                        f'cpu={cpu_stages:.2f}ms  '
+                        f'other={other:.2f}ms  ({s})'
+                    )
                     _main_perf_frames = 0
                     _main_perf_accum.clear()
             _pet_watchdog()
@@ -386,8 +407,14 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 else:
                     renderer.render_tonemap(viewports[name], surf.width, surf.height,
                                            brightness=frame.brightness)
+                _swap_ts = time.perf_counter()
                 if not session.swap(surf):
                     break  # wayland connection lost
+                _swap_dt = time.perf_counter() - _swap_ts
+                if commands.comparing and commands.compare_mode:
+                    commands.compare._accum('swap', _swap_dt)
+                else:
+                    _main_accum('swap', _swap_dt)
                 _pet_watchdog()
 
     except Exception as e:

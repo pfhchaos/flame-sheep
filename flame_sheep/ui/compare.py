@@ -528,12 +528,23 @@ class CompareRenderer:
         if self._perf_frames < self.PERF_LOG_INTERVAL:
             return
         n = self._perf_frames
-        # Compact per-stage line: mean ms/frame, sorted by cost
+        # Headline metrics: frame budget, GPU-sync wait, measured CPU.
+        # frame_total + swap are populated by the render-loop closure;
+        # everything else is per-stage CPU work measured here.
+        frame_total = self._perf_accum.pop('frame_total', 0.0) / n * 1000
+        swap = self._perf_accum.pop('swap', 0.0) / n * 1000
+        cpu_stages = sum(self._perf_accum.values()) / n * 1000
+        other = max(0, frame_total - swap - cpu_stages)
         parts = sorted(self._perf_accum.items(),
                        key=lambda kv: -kv[1])
         s = '  '.join(f'{k}={v / n * 1000:.2f}ms' for k, v in parts)
-        total = sum(self._perf_accum.values()) / n * 1000
-        log.info(f'[compare perf {n} frames]  total={total:.2f}ms/frame  {s}')
+        log.info(
+            f'[compare perf {n} frames]  '
+            f'frame_total={frame_total:.2f}ms  '
+            f'swap={swap:.2f}ms  '
+            f'cpu={cpu_stages:.2f}ms  '
+            f'other={other:.2f}ms  ({s})'
+        )
         self._perf_frames = 0
         self._perf_accum.clear()
 
