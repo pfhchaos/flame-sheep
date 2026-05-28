@@ -208,6 +208,16 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # started initializing."
     _pet_watchdog()
 
+    # Main-mode per-stage timing — counterpart to CompareRenderer's
+    # internal perf accumulator. Lets us compare per-stage cost between
+    # the two modes directly.
+    MAIN_PERF_INTERVAL = 60
+    _main_perf_frames = 0
+    _main_perf_accum: dict[str, float] = {}
+
+    def _main_accum(stage: str, dt: float) -> None:
+        _main_perf_accum[stage] = _main_perf_accum.get(stage, 0.0) + dt
+
     def _watchdog():
         """Background thread: force exit if render loop stops making progress.
 
@@ -324,16 +334,42 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
 
             elif not _test_pattern:
                 # --- Normal mode: single chaos game ---
+                _ts = time.perf_counter()
                 renderer.upload_audio(frame.spectrum)
+                _main_accum('upload_audio', time.perf_counter() - _ts)
+                _ts = time.perf_counter()
                 renderer.upload_genome(frame.genome)
+                _main_accum('upload_genome', time.perf_counter() - _ts)
+                _ts = time.perf_counter()
                 renderer.upload_palette(frame.palette)
+                _main_accum('upload_palette', time.perf_counter() - _ts)
                 if core.needs_walker_reset:
                     renderer.reset_walkers()
                     core.needs_walker_reset = False
+                _ts = time.perf_counter()
                 renderer.clear_histogram(decay=0.3)
+                _main_accum('clear_hist', time.perf_counter() - _ts)
+                _ts = time.perf_counter()
                 renderer.dispatch_chaos_game(iterations=frame.iterations)
+                _main_accum('chaos_game', time.perf_counter() - _ts)
+                _ts = time.perf_counter()
                 ctx.memory_barrier()
+                _main_accum('barrier', time.perf_counter() - _ts)
+                _ts = time.perf_counter()
                 renderer.reduce_histogram_max()
+                _main_accum('reduce_max', time.perf_counter() - _ts)
+
+                _main_perf_frames += 1
+                if _main_perf_frames >= MAIN_PERF_INTERVAL:
+                    n = _main_perf_frames
+                    parts = sorted(_main_perf_accum.items(),
+                                   key=lambda kv: -kv[1])
+                    s = '  '.join(f'{k}={v / n * 1000:.2f}ms'
+                                  for k, v in parts)
+                    total = sum(_main_perf_accum.values()) / n * 1000
+                    log.info(f'[main perf {n} frames]  total={total:.2f}ms/frame  {s}')
+                    _main_perf_frames = 0
+                    _main_perf_accum.clear()
             _pet_watchdog()
 
             # Tonemap pass — only swap surfaces the compositor is ready for

@@ -500,6 +500,7 @@ class CompareRenderer:
     """
 
     CMP_SCALE = 2  # half-resolution renderer
+    PERF_LOG_INTERVAL = 60  # frames between per-stage timing summaries
 
     def __init__(self, ctx, viewports: dict, surfaces: dict, first_surf,
                  canvas_ppmm: float):
@@ -511,6 +512,30 @@ class CompareRenderer:
         self.renderer: FlameRenderer | None = None
         self.surf_name: str | None = None  # output we render compare on
         self.needs_reset = False
+
+        # Per-stage frame timing — accumulated then logged + reset every
+        # PERF_LOG_INTERVAL frames. Investigating why compare-mode
+        # framerate is significantly worse than main mode despite the
+        # quarter-resolution renderer.
+        self._perf_frames = 0
+        self._perf_accum: dict[str, float] = {}
+
+    def _accum(self, stage: str, dt: float) -> None:
+        self._perf_accum[stage] = self._perf_accum.get(stage, 0.0) + dt
+
+    def _maybe_log_perf(self) -> None:
+        self._perf_frames += 1
+        if self._perf_frames < self.PERF_LOG_INTERVAL:
+            return
+        n = self._perf_frames
+        # Compact per-stage line: mean ms/frame, sorted by cost
+        parts = sorted(self._perf_accum.items(),
+                       key=lambda kv: -kv[1])
+        s = '  '.join(f'{k}={v / n * 1000:.2f}ms' for k, v in parts)
+        total = sum(self._perf_accum.values()) / n * 1000
+        log.info(f'[compare perf {n} frames]  total={total:.2f}ms/frame  {s}')
+        self._perf_frames = 0
+        self._perf_accum.clear()
 
     def ensure_renderer(self, main_renderer: FlameRenderer) -> None:
         """Create the compare renderer the first time it's needed."""
@@ -543,11 +568,15 @@ class CompareRenderer:
         the dual histogram."""
         if self.renderer is None or pair.left is None or pair.right is None:
             return
+        import time
         cr = self.renderer
         rot = rotation_phase
+
+        t0 = time.perf_counter()
         left_g = pair.left.rotated(rot) if rot != 0.0 else pair.left
         right_g = pair.right.rotated(rot) if rot != 0.0 else pair.right
         n_px = cr.canvas_w * cr.canvas_h
+        self._accum('cpu_rotate', time.perf_counter() - t0)
 
         # Cache which output surface gets the compare view (largest viewport)
         if self.surf_name is None:
@@ -561,41 +590,83 @@ class CompareRenderer:
             self.needs_reset = False
 
         # Left genome: offset=0
+        t = time.perf_counter()
         cr.set_histogram_offset(0)
+        self._accum('set_offset', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.upload_audio(frame.spectrum)
+        self._accum('upload_audio', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.upload_genome(left_g)
+        self._accum('upload_genome', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.upload_palette(frame.palette)
+        self._accum('upload_palette', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.clear_histogram(decay=0.3)
+        self._accum('clear_hist', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.dispatch_chaos_game(iterations=frame.iterations)
+        self._accum('chaos_game', time.perf_counter() - t)
+        t = time.perf_counter()
         self.ctx.memory_barrier()
+        self._accum('barrier', time.perf_counter() - t)
 
         # Right genome: offset=n_pixels
+        t = time.perf_counter()
         cr.set_histogram_offset(n_px)
+        self._accum('set_offset', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.upload_genome(right_g)
+        self._accum('upload_genome', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.upload_palette(frame.palette)
+        self._accum('upload_palette', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.clear_histogram(decay=0.3)
+        self._accum('clear_hist', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.dispatch_chaos_game(iterations=frame.iterations)
+        self._accum('chaos_game', time.perf_counter() - t)
+        t = time.perf_counter()
         self.ctx.memory_barrier()
+        self._accum('barrier', time.perf_counter() - t)
 
     def tonemap_surface(self, surf, frame) -> None:
         """Tonemap the dual histogram into a split-screen view on `surf`."""
         if self.renderer is None:
             return
+        import time
         cr = self.renderer
         half_w = surf.width // 2
         n_px = cr.canvas_w * cr.canvas_h
         cr_vp = Viewport(0, 0, cr.canvas_w, cr.canvas_h)
 
         # Left half: offset=0
+        t = time.perf_counter()
         cr.set_histogram_offset(0)
+        self._accum('set_offset', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.reduce_histogram_max()
+        self._accum('reduce_max', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.render_tonemap(cr_vp, surf.width, surf.height,
                          brightness=frame.brightness,
                          screen_rect=(0, 0, half_w, surf.height))
+        self._accum('tonemap', time.perf_counter() - t)
 
         # Right half: offset=n_pixels
+        t = time.perf_counter()
         cr.set_histogram_offset(n_px)
+        self._accum('set_offset', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.reduce_histogram_max()
+        self._accum('reduce_max', time.perf_counter() - t)
+        t = time.perf_counter()
         cr.render_tonemap(cr_vp, surf.width, surf.height,
                          brightness=frame.brightness,
                          screen_rect=(half_w, 0, surf.width - half_w, surf.height))
+        self._accum('tonemap', time.perf_counter() - t)
+
+        # Log + reset every PERF_LOG_INTERVAL frames
+        self._maybe_log_perf()
