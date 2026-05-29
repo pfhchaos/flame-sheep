@@ -65,7 +65,7 @@ class Orchestrator:
                 self._using_daemon = True
                 log.info('using audio daemon')
             except Exception:
-                from flame_sheep_audio._cqt_engine import CqtEngine
+                from flame_sheep_audio import CqtEngine
                 engine = CqtEngine()
                 log.info('spectrum engine: CQT (rt-cqt SlidingCqt)')
                 self.audio = AudioProcessor(device=audio_device, spectrum_engine=engine)

@@ -20,7 +20,7 @@ import mmap
 
 import numpy as np
 
-from flame_sheep_audio._types import AudioSnapshot
+from flame_sheep_audio import AudioSnapshot
 from flame_sheep_audio.shm_layout import (
     SHM_NAME, ShmLayout, ShmReader, compute_layout,
 )
@@ -91,7 +91,7 @@ class AudioDaemonClient:
             pass  # dbus signals are optional backup
 
         # Expose band config for orchestrator.band_config property
-        from flame_sheep_audio._band_config import default_band_config
+        from flame_sheep_audio import default_band_config
         self._band_config = default_band_config()
 
         # Derive bin frequencies from engine type + bin count
@@ -99,13 +99,13 @@ class AudioDaemonClient:
         # FFT: linear spacing 0..24000Hz
         if n_bins == 108:  # CQT default
             try:
-                from flame_sheep_audio._cqt_engine import CqtEngine
+                from flame_sheep_audio import CqtEngine
                 engine = CqtEngine()
                 self._bin_freqs = engine.bin_centers
             except ImportError:
                 self._bin_freqs = np.linspace(20, 20000, n_bins).astype(np.float32)
         else:
-            from flame_sheep_audio._constants import FREQS
+            from flame_sheep_audio import FREQS
             self._bin_freqs = FREQS[:n_bins] if len(FREQS) >= n_bins else np.linspace(20, 20000, n_bins).astype(np.float32)
 
         log.info('Connected to audio daemon (shm=%s, %d bins, %d bands)',
@@ -130,7 +130,7 @@ class AudioDaemonClient:
         snap = self._reader.read_snapshot()
 
         # Inject any song_start events from dbus
-        from flame_sheep_audio._types import BeatEvent
+        from flame_sheep_audio import BeatEvent
         for title, artist in self._pending_song_starts:
             snap.events.append(BeatEvent(kind='song_start', energy=0.0))
         self._pending_song_starts.clear()

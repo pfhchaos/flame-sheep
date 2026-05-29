@@ -79,7 +79,7 @@ def _collect_fine_hop(pcm_mono: np.ndarray, adaptive: bool = False,
                       sharpness: bool = True,
                       ) -> list[float]:
     """512-hop path using push_hop for finer temporal resolution."""
-    from flame_sheep_audio._cqt_engine import CqtEngine
+    from flame_sheep_audio import CqtEngine
     from flame_sheep_audio.beat_detector import FluxBeatDetector
     from flame_sheep_audio.energy import EnergyAnalyzer
     from flame_sheep_audio.stability import MagnitudeStability

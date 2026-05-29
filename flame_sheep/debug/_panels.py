@@ -9,12 +9,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from flame_sheep_audio._types import AudioSnapshot, BandState
-from flame_sheep_audio._constants import FREQS
+from flame_sheep_audio import AudioSnapshot, BandState, FREQS
 from ._timeline import TimelineBuffer
 
 if TYPE_CHECKING:
-    from flame_sheep_audio._band_config import BandConfig
+    from flame_sheep_audio import BandConfig
     from ._draw import SolidRenderer
     from ._text import TextRenderer
 

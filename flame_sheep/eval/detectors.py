@@ -67,9 +67,7 @@ class CurrentSystemDetector(BeatDetector):
         # Import inside __init__ so the package path tweak above is in
         # effect by the time we actually use the imports.
         from flame_sheep_audio.beat_detector import PercentileBeatDetector
-        from flame_sheep_audio._constants import (
-            SAMPLE_RATE, HOP_SIZE, FFT_SIZE,
-        )
+        from flame_sheep_audio import SAMPLE_RATE, HOP_SIZE, FFT_SIZE
         self._SAMPLE_RATE = SAMPLE_RATE
         self._HOP_SIZE = HOP_SIZE
         self._FFT_SIZE = FFT_SIZE
@@ -89,7 +87,7 @@ class CurrentSystemDetector(BeatDetector):
 
     def _make_engine(self):
         # Same single-engine choice as the live daemon: CQT.
-        from flame_sheep_audio._cqt_engine import CqtEngine
+        from flame_sheep_audio import CqtEngine
         return CqtEngine()
 
     def detect(self, audio: np.ndarray, sr: int) -> np.ndarray:

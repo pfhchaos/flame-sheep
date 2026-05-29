@@ -22,8 +22,7 @@ import numpy as np
 
 sys.path.insert(0, '.')
 
-from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE
-from flame_sheep_audio._cqt_engine import CqtEngine
+from flame_sheep_audio import SAMPLE_RATE, FFT_SIZE, HOP_SIZE, CqtEngine
 from flame_sheep_audio.beat_detector import FluxBeatDetector
 from flame_sheep_audio.energy import EnergyAnalyzer
 from flame_sheep_audio.stability import MagnitudeStability
@@ -89,7 +88,7 @@ def estimate_bpm_pipeline(mix_audio: np.ndarray, orig_sr: int) -> float:
     tracker = AutocorrelationTempoTracker(hop_duration=hop_dur)
 
     from flame_sheep_audio.hpss import ComplexSpectralDiffTransform
-    from flame_sheep_audio._bands import A_WEIGHTS, a_weight_curve
+    from flame_sheep_audio import A_WEIGHTS, a_weight_curve
     csd = ComplexSpectralDiffTransform()
 
     now = 0.0

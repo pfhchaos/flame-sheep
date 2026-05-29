@@ -62,7 +62,7 @@ def main():
     sys.path.insert(0, str(project / 'flame_sheep_audio' / 'src'))
     sys.path.insert(0, str(project))
 
-    from flame_sheep_audio._cqt_engine import CqtEngine
+    from flame_sheep_audio import CqtEngine
 
     # 1. Pick source audio.
     if args.source:

@@ -20,10 +20,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from flame_sheep_audio._types import BeatEvent, BandState
+from flame_sheep_audio import BeatEvent, BandState
 
 if TYPE_CHECKING:
-    from flame_sheep_audio._types import AudioState
+    from flame_sheep_audio import AudioState
 
 log = logging.getLogger(__name__)
 
