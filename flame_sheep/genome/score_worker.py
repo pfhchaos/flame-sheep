@@ -257,6 +257,36 @@ def _rescore_cnn(conn, row, cnn_model, weights_hash, log,
             pass
 
 
+def _discover_aux_models(aux_dir: Path,
+                          load_fn,
+                          log: logging.Logger) -> dict[str, object]:
+    """Scan `aux_dir` for *.npz and load each via `load_fn`.
+
+    Returns a dict mapping `filename.stem` → loaded model. Side effects:
+    INFO log per successful load, WARNING on stem collision (first
+    wins, second skipped), EXCEPTION log on load failure (skipped,
+    discovery continues). Missing dir → empty dict, no error.
+
+    Extracted from `_score_main` to make discovery testable without
+    spinning up the whole worker subprocess. `load_fn` is injected
+    rather than hardcoded so tests can pass a sentinel-returning fake.
+    """
+    found: dict[str, object] = {}
+    if not aux_dir.is_dir():
+        return found
+    for aux_path in sorted(aux_dir.glob('*.npz')):
+        name = aux_path.stem
+        if name in found:
+            log.warning('aux model name collision: %s (skipping)', name)
+            continue
+        try:
+            found[name] = load_fn(aux_path)
+            log.info('aux CNN model loaded: %s ← %s', name, aux_path)
+        except Exception:
+            log.exception('failed to load aux model %s', aux_path)
+    return found
+
+
 def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
     """Entry point for the CPU score subprocess."""
     log, conn = init_worker_subprocess('flame_sheep.cpu_score_worker',
@@ -340,20 +370,10 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     # symlink) into the dir to register; restart score_worker to pick up.
     aux_cnn_models: dict[str, object] = {}
     if cnn_model is not None:  # only meaningful if torch path is working
+        from ..genome.scoring.cnn_scorer import load_model as _load_aux
         aux_dir = Path(os.path.expanduser(
             '~/.local/share/flame-sheep/aux_models'))
-        if aux_dir.is_dir():
-            from ..genome.scoring.cnn_scorer import load_model as _load_aux
-            for aux_path in sorted(aux_dir.glob('*.npz')):
-                name = aux_path.stem
-                if name in aux_cnn_models:
-                    log.warning('aux model name collision: %s (skipping)', name)
-                    continue
-                try:
-                    aux_cnn_models[name] = _load_aux(aux_path)
-                    log.info('aux CNN model loaded: %s ← %s', name, aux_path)
-                except Exception:
-                    log.exception('failed to load aux model %s', aux_path)
+        aux_cnn_models = _discover_aux_models(aux_dir, _load_aux, log)
         if aux_cnn_models:
             log.info('aux models active: %s', sorted(aux_cnn_models))
 

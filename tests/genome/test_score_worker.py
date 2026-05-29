@@ -217,3 +217,117 @@ class TestComputeCnnWeightsHash:
         hashes = [_compute_cnn_weights_hash(weights, v)
                   for v in ['v1', 'v2', 'v3', 'legacy_v0']]
         assert len(set(hashes)) == 4, 'each normalization version should produce a distinct hash'
+
+
+# ============================================================================
+# _discover_aux_models — scans aux_models/ dir, loads each .npz via the
+# injected load_fn, returns {stem: model} dict. Tests use a fake load_fn
+# returning sentinel strings so we don't need real CNN weights.
+# ============================================================================
+
+class TestDiscoverAuxModels:
+    """Aux-model discovery for multi-model active learning. The
+    score_worker scans ~/.local/share/flame-sheep/aux_models/ on
+    startup; each .npz file becomes a named aux model whose scores
+    populate the cnn_scores_detail JSON for the compare-mode
+    multi-strategy active-learning framework."""
+
+    @pytest.fixture
+    def log(self):
+        import logging
+        return logging.getLogger('test_discover_aux_models')
+
+    def test_missing_dir_returns_empty(self, tmp_path, log):
+        """Common case: user hasn't set up aux models yet."""
+        from flame_sheep.genome.score_worker import _discover_aux_models
+        missing = tmp_path / 'nonexistent'
+        result = _discover_aux_models(missing, lambda p: 'fake', log)
+        assert result == {}
+
+    def test_empty_dir_returns_empty(self, tmp_path, log):
+        from flame_sheep.genome.score_worker import _discover_aux_models
+        result = _discover_aux_models(tmp_path, lambda p: 'fake', log)
+        assert result == {}
+
+    def test_discovers_all_npz_files(self, tmp_path, log):
+        from flame_sheep.genome.score_worker import _discover_aux_models
+        # Stage three .npz files
+        for name in ('alpha', 'beta', 'gamma'):
+            (tmp_path / f'{name}.npz').write_bytes(b'fake')
+        # Plus a non-.npz file that should be ignored
+        (tmp_path / 'readme.txt').write_text('not a model')
+
+        # load_fn returns the path's stem as the "model" sentinel
+        result = _discover_aux_models(tmp_path, lambda p: p.stem, log)
+        assert set(result.keys()) == {'alpha', 'beta', 'gamma'}
+        assert result['alpha'] == 'alpha'
+        assert result['beta'] == 'beta'
+
+    def test_load_failure_skips_and_continues(self, tmp_path, log):
+        """A single broken model file shouldn't kill discovery —
+        other files still load."""
+        from flame_sheep.genome.score_worker import _discover_aux_models
+        (tmp_path / 'good.npz').write_bytes(b'fake')
+        (tmp_path / 'broken.npz').write_bytes(b'fake')
+        (tmp_path / 'also_good.npz').write_bytes(b'fake')
+
+        def flaky_load(path):
+            if path.stem == 'broken':
+                raise RuntimeError('bad weights')
+            return path.stem
+
+        result = _discover_aux_models(tmp_path, flaky_load, log)
+        assert set(result.keys()) == {'good', 'also_good'}
+        # Broken is omitted; not in dict
+        assert 'broken' not in result
+
+    def test_symlinks_resolve(self, tmp_path, log):
+        """Common deployment pattern: aux_models/curriculum.npz is a
+        symlink to a checkpoint dir elsewhere on disk. The discovery
+        should treat the symlink as a normal .npz file (stem = the
+        symlink's name, not the target's)."""
+        from flame_sheep.genome.score_worker import _discover_aux_models
+        # Create a real file and a symlink pointing at it
+        target = tmp_path / 'actual_model.npz'
+        target.write_bytes(b'fake weights')
+        link = tmp_path / 'aliased.npz'
+        link.symlink_to(target)
+
+        result = _discover_aux_models(tmp_path, lambda p: p.name, log)
+        # Both the real file AND the symlink should be discovered as
+        # independent models (the user might want both names available)
+        assert 'actual_model' in result
+        assert 'aliased' in result
+
+    def test_dotfiles_are_loaded(self, tmp_path, log):
+        """Documents actual behavior: `.glob('*.npz')` MATCHES hidden
+        files starting with '.'. A `.foo.npz` will get loaded as an
+        aux model named '.foo'. If this becomes undesirable (e.g. it
+        picks up editor backups) the discovery function would need
+        an explicit not-startswith('.') filter."""
+        from flame_sheep.genome.score_worker import _discover_aux_models
+        (tmp_path / 'visible.npz').write_bytes(b'fake')
+        (tmp_path / '.hidden.npz').write_bytes(b'fake')
+
+        result = _discover_aux_models(tmp_path, lambda p: p.stem, log)
+        assert 'visible' in result
+        # CURRENT BEHAVIOR: dotfiles ARE loaded.
+        assert '.hidden' in result
+
+    def test_load_fn_receives_path(self, tmp_path, log):
+        """Sanity: load_fn gets the full Path, not just the name."""
+        from flame_sheep.genome.score_worker import _discover_aux_models
+        (tmp_path / 'thing.npz').write_bytes(b'fake')
+        seen_paths = []
+
+        def capture_load(p):
+            seen_paths.append(p)
+            return 'fake'
+
+        _discover_aux_models(tmp_path, capture_load, log)
+        assert len(seen_paths) == 1
+        assert seen_paths[0] == tmp_path / 'thing.npz'
+        # And the path is absolute (or at least the function received
+        # a Path, not a string)
+        from pathlib import Path
+        assert isinstance(seen_paths[0], Path)
