@@ -22,6 +22,7 @@ import numpy as np
 from PIL import Image
 
 from ..load_aware import sleep_if_loaded
+from ..worker_bootstrap import init_worker_subprocess
 
 log = logging.getLogger(__name__)
 
@@ -258,27 +259,9 @@ def _rescore_cnn(conn, row, cnn_model, weights_hash, log,
 
 def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
     """Entry point for the CPU score subprocess."""
-    # Clear inherited handlers from fork (parent's setup_logging adds to named loggers)
-    for name in ('flame_sheep', 'flame_sheep_audio', None):
-        logger = logging.getLogger(name)
-        logger.handlers.clear()
-    logging.basicConfig(level=logging.INFO,
-                        format='%(asctime)s %(name)s %(levelname)s %(message)s',
-                        datefmt='%H:%M:%S')
-    logging.getLogger('PIL').setLevel(logging.WARNING)
-    log = logging.getLogger('flame_sheep.cpu_score_worker')
-
-    try:
-        os.nice(19)
-    except OSError:
-        pass
-
+    log, conn = init_worker_subprocess('flame_sheep.cpu_score_worker',
+                                        db_path, silence_pil=True)
     from .render_worker import RENDER_VERSION
-    from ..storage import _ensure_schema
-
-    conn = sqlite3.connect(db_path)
-    conn.execute('PRAGMA busy_timeout=30000')
-    _ensure_schema(conn)
 
     # Load CNN model once (if weights available). The cnn_weights_hash
     # is computed AFTER normalization is wired up below so it includes

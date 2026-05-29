@@ -12,37 +12,21 @@ from __future__ import annotations
 import json
 import logging
 import multiprocessing
-import os
-import sqlite3
 
 from ..load_aware import sleep_if_loaded
+from ..worker_bootstrap import init_worker_subprocess
 
 log = logging.getLogger(__name__)
 
 
 def _transition_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
     """Entry point for the transition score subprocess."""
-    for name in ('flame_sheep', 'flame_sheep_audio', None):
-        logging.getLogger(name).handlers.clear()
-    logging.basicConfig(level=logging.INFO,
-                        format='%(asctime)s %(name)s %(levelname)s %(message)s',
-                        datefmt='%H:%M:%S')
-    log = logging.getLogger('flame_sheep.transition_worker')
-
-    try:
-        os.nice(19)
-    except OSError:
-        pass
-
-    from ..storage import _ensure_schema, _genome_from_json
+    log, conn = init_worker_subprocess('flame_sheep.transition_worker', db_path)
+    from ..storage import _genome_from_json
     from . import (
         variation_signature, compute_transition_distance,
         signature_distance, CACHE_THRESHOLD, MAX_SIGNATURE_DISTANCE,
     )
-
-    conn = sqlite3.connect(db_path)
-    conn.execute('PRAGMA busy_timeout=30000')
-    _ensure_schema(conn)
 
     try:
         while not stop_event.is_set():

@@ -3,7 +3,7 @@
 Only implements variations that can blow up or produce large excursions.
 Safe/bounded variations fall through to linear (identity * w).
 
-Used by Genome.is_viable() and BackgroundScorer for CPU chaos game.
+Used by Genome.is_viable() and the loops/evolve.py refine_loop CPU chaos game.
 """
 from __future__ import annotations
 

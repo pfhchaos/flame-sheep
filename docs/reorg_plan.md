@@ -16,7 +16,8 @@ This is for the project author's own sensibilities — internal-satisfaction is 
 | 5 | Tests mirror + docs sweep | **Done** — `tests/` mirrors source package layout (commits `6b48bbb`, `8120492`, `0217d42`); this status section is the docs sweep. |
 | 6 | Extract shared `load_aware.py` from workers | **Done** (commit `ede7ffd`) — 5 workers migrated; `LOAD_THRESHOLD`/`LOAD_CHECK_INTERVAL` centralized; `IDLE_CHECK_INTERVAL` kept per-worker (principled differences). |
 | 7 | Comm-pipe API polish (`debug/` uses only public names) | **Done** — all production code (`flame_sheep/`) and `tools/` import only from `flame_sheep_audio` public surface. `a_weight_curve` promoted to public. Tests retain underscore reaches by design (they test internals). |
-| 8 | Worker consolidation (`GpuWorker` / `CpuWorkerPool` / `ScheduledTask` + `LoadMonitor` pub/sub) | **Pending** — feeds the eventual GPU scheduler design (see `~/.claude/projects/-home-chaos/memory/project_gpu_scheduler_design.md`). |
+| 8a | Worker subprocess-bootstrap dedup (logging/nice/DB) | **Done** — new `flame_sheep/worker_bootstrap.py` `init_worker_subprocess()` helper; pruner / score / transitions migrated. Render worker keeps bespoke bootstrap because of its 10-second GPU-yield sleep interleaving with bootstrap steps. Dead `BackgroundScorer` deleted. |
+| 8b | Full worker patterns (`GpuWorker` / `CpuWorkerPool` / `ScheduledTask`) + `LoadMonitor` pub/sub | **Pending** — bundled with Vulkan transition since GPU-aware scheduling needs Vulkan primitives. Feeds the GPU scheduler design (see `~/.claude/projects/-home-chaos/memory/project_gpu_scheduler_design.md`). |
 | 9 | `viz_authoring/` extraction | **Pending** — gated on 6+7+8. |
 
 The remainder of this document is the original planning text — kept as historical reference for *why* each stage was structured the way it was. Body uses future-tense ("will move X → Y"); read past tense for stages 0-5.

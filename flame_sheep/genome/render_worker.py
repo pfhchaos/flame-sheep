@@ -30,7 +30,15 @@ COLOR_SCALE = 1_000_000.0
 
 
 def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
-    """Entry point for the GPU render subprocess."""
+    """Entry point for the GPU render subprocess.
+
+    NOTE: doesn't use `worker_bootstrap.init_worker_subprocess` because
+    this worker interleaves bootstrap with a 10s sleep that yields the
+    GPU to the wallpaper. Logging+nice setup happens pre-sleep so the
+    user sees a "started" message immediately; SQLite connection
+    happens post-sleep after the GPU is claimed. The helper assumes
+    all bootstrap steps happen contiguously, which doesn't fit.
+    """
     for name in ('flame_sheep', 'flame_sheep_audio', None):
         logging.getLogger(name).handlers.clear()
     logging.basicConfig(level=logging.INFO,
