@@ -310,10 +310,16 @@ def soft_cross_entropy(logits: np.ndarray, targets: np.ndarray) -> tuple:
 
 
 def save_checkpoint(path: Path, weights: np.ndarray, next_epoch: int,
-                    best_val_loss: float) -> None:
+                    best_val_loss: float,
+                    *,
+                    input_size: int | None = None,
+                    proj_size: int | None = None,
+                    hidden_size: int | None = None,
+                    n_classes: int | None = None) -> None:
     """Save weights + training metadata in .npz format.
 
-    Layout: {weights, next_epoch, best_val_loss}.
+    Layout: {weights, next_epoch, best_val_loss,
+             input_size?, proj_size?, hidden_size?, n_classes?}.
 
     `next_epoch` semantically means "first epoch to do on resume" — so an
     end-of-epoch save (just finished epoch N) stores next_epoch=N+1, but
@@ -323,12 +329,25 @@ def save_checkpoint(path: Path, weights: np.ndarray, next_epoch: int,
     remaining data with the saved (mid-epoch-improved) weights, rather
     than skipping ahead.
 
+    Architecture dims (input_size, proj_size, hidden_size, n_classes)
+    are optional but should always be passed by new callers — they let
+    BeatRNNDetector reconstruct the model without hardcoded constants.
+    Legacy files (pre-dim-serialization) have these omitted; the
+    runtime falls back to a known-sizes lookup table.
+
     Atomic write via tmp + rename so partial writes don't corrupt a
     good checkpoint.
     """
     tmp = path.with_suffix(path.suffix + '.tmp')
+    extras = {}
+    for name, value in (('input_size', input_size),
+                        ('proj_size', proj_size),
+                        ('hidden_size', hidden_size),
+                        ('n_classes', n_classes)):
+        if value is not None:
+            extras[name] = int(value)
     np.savez(tmp, weights=weights, next_epoch=next_epoch,
-             best_val_loss=best_val_loss)
+             best_val_loss=best_val_loss, **extras)
     # numpy adds .npz if path didn't have one — pick whichever landed.
     actual_tmp = tmp if tmp.exists() else tmp.with_suffix(tmp.suffix + '.npz')
     actual_dst = path if path.suffix == '.npz' else path.with_suffix('.npz')

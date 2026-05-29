@@ -647,7 +647,11 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
             if val_loss < best_val_state[0]:
                 best_val_state[0] = val_loss
                 save_checkpoint(save_path, model.save_weights(),
-                                epoch_num, val_loss)
+                                epoch_num, val_loss,
+                                input_size=linear_in.in_features,
+                                proj_size=linear_in.out_features,
+                                hidden_size=gru.hidden_size,
+                                n_classes=linear_out.out_features)
                 print(f"    [mid-epoch] -> saved best (val_loss={val_loss:.4f})")
             last_val_time = time.monotonic()
 
@@ -839,14 +843,20 @@ def main():
               f'{f1_label}={val_f1:.3f}')
         print(format_continuous_metrics(val_metrics))
 
+        # Architecture dims serialized into the checkpoint so the
+        # runtime can reconstruct the model without hardcoded constants.
+        ckpt_dims = dict(
+            input_size=216, proj_size=args.proj_size,
+            hidden_size=args.hidden, n_classes=args.n_classes,
+        )
         if val_loss < best_val_state[0]:
             best_val_state[0] = val_loss
             save_checkpoint(args.output, model.save_weights(),
-                            epoch + 1, val_loss)
+                            epoch + 1, val_loss, **ckpt_dims)
             print(f'  -> saved best weights (val_loss={val_loss:.4f})')
         else:
             save_checkpoint(args.output, model.save_weights(),
-                            epoch + 1, best_val_state[0])
+                            epoch + 1, best_val_state[0], **ckpt_dims)
 
         print()
 
