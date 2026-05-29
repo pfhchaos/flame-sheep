@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from wallpaper_ml.vk_compute import VkCompute
 from wallpaper_ml import (
     build_beat_crnn, VkGRU, bce_loss_dispatch, bce_loss_multich_dispatch,
+    ChannelSpec, CorpusSchema, load_schema, SCHEMA_FILENAME,
 )
 # Reuse infrastructure that doesn't change between 3-class and continuous modes.
 from train_beat_rnn import (
@@ -44,32 +45,38 @@ from train_beat_rnn import (
 )
 
 
+# Schema for the hierarchical 3-head retrain. Used by both this trainer
+# (when --n-classes 3 and the data dir is packed format) AND by
+# tools/pack_corpus.py to know what columns to lay out at pack time.
+# Keep this constant in sync with the trainer's expectations.
+BEAT_RNN_3HEAD_SCHEMA = CorpusSchema(channels=[
+    ChannelSpec('spectrum',    'spectrum',    108),
+    ChannelSpec('diff',        'diff',        108),
+    ChannelSpec('labels_hier', 'labels_hier', 3),
+])
+
+
 def materialize_batch_continuous(batch_spec, dataset, chunk_len: int,
                                   cache: LazyFileCache,
                                   target_col: int = 216,
                                   n_classes: int = 1,
-                                  label_key: str = 'beat_score'):
+                                  label_key: str = 'beat_score',
+                                  schema: CorpusSchema | None = None):
     """Build a continuous-target batch.
 
     inputs: (B, T, 216) — spectrum + diff
     targets: (B, T) for n_classes=1, or (B, T, n_classes) for n_classes>1
-
-    Packed format conventions (see tools/pack_beat_labels.py):
-    - 217-col packed: col 216 = beat_score (legacy v1 single-channel)
-    - 218-col packed: col 216 = downbeat, col 217 = non-downbeat beat
-      (current; both target columns coexist so two models can train
-       from the same packed corpus, one per column).
 
     Single-channel (n_classes=1):
         `target_col` selects which column the BCE loss targets. Default 216
         works for both v1 (beat_score) and v2 downbeat training.
 
     Multi-channel (n_classes=3, label_key='labels_hier'):
-        Reads `labels_hier` [T, 3] from the .npz directly (hierarchical
-        sigmoid targets: downbeat / any-beat / any-onset). Packed format
-        not yet supported for this mode — falls back to per-file .npz
-        load. Slower but works against the existing label files
-        regenerated with the 3-channel madmom-augmented label pipeline.
+        If the corpus is packed with a schema (schema != None), reads the
+        named `label_key` channel directly from the packed columns —
+        fast (memmap view, no decompression). Otherwise reads the
+        `labels_hier` field from the source .npz — slower fallback that
+        works against unpacked corpora.
     """
     batch_inputs = []
     batch_targets = []
@@ -78,34 +85,55 @@ def materialize_batch_continuous(batch_spec, dataset, chunk_len: int,
         entry = cache.get(path)
         end = start + chunk_len
 
+        packed = isinstance(entry, np.memmap) or (
+            isinstance(entry, np.ndarray) and entry.ndim == 2)
+
         if n_classes > 1:
-            # Multi-channel path: read labels_hier directly from .npz.
-            # Packed multi-channel format not yet defined; using .npz
-            # keeps the trainer working against today's regenerated
-            # label files. Repack support is a follow-up optimization.
-            if isinstance(entry, np.memmap) or (
-                    isinstance(entry, np.ndarray) and entry.ndim == 2):
+            if packed and schema is not None:
+                # Schema-aware packed path — view slicing, no copies.
+                chunk = entry[start:end]
+                spec_slice = chunk[:, schema.column_range('spectrum')]
+                diff_slice = chunk[:, schema.column_range('diff')]
+                target_slice = chunk[:, schema.column_range(label_key)]
+                if target_slice.shape[1] != n_classes:
+                    raise RuntimeError(
+                        f'{path.name}: schema channel {label_key!r} has '
+                        f'{target_slice.shape[1]} cols, n_classes={n_classes}')
+                inp = np.concatenate([spec_slice, diff_slice], axis=1)
+                batch_inputs.append(inp)
+                batch_targets.append(target_slice)
+            elif packed:
                 raise RuntimeError(
-                    f'{path.name}: n_classes>1 requires .npz with '
-                    f'{label_key!r} field; packed .npy not supported yet.')
-            if label_key not in entry:
-                raise RuntimeError(
-                    f'{path.name} has no {label_key!r} key — regenerate '
-                    f'labels with tools/generate_beat_labels.py to add '
-                    f'hierarchical 3-channel targets.')
-            spec, diff = entry['spectrum'], entry['diff']
-            labels_hier = entry[label_key]
-            if labels_hier.shape[1] != n_classes:
-                raise RuntimeError(
-                    f'{path.name}: {label_key} has {labels_hier.shape[1]} '
-                    f'channels, n_classes={n_classes}')
-            inp = np.concatenate([spec[start:end], diff[start:end]], axis=1)
-            batch_inputs.append(inp)
-            batch_targets.append(labels_hier[start:end])
-        elif isinstance(entry, np.memmap) or (
-                isinstance(entry, np.ndarray) and entry.ndim == 2
-                and entry.shape[1] in (217, 218)):
-            # Packed mmap format. View slicing is free.
+                    f'{path.name}: n_classes>1 against packed format '
+                    f'requires schema; either repack with tools/'
+                    f'pack_corpus.py --schema beat_rnn_3head or use '
+                    f'the unpacked .npz corpus.')
+            else:
+                # Unpacked .npz fallback.
+                if label_key not in entry:
+                    raise RuntimeError(
+                        f'{path.name} has no {label_key!r} key — '
+                        f'regenerate labels with '
+                        f'tools/generate_beat_labels.py to add '
+                        f'hierarchical 3-channel targets.')
+                spec, diff = entry['spectrum'], entry['diff']
+                labels_hier = entry[label_key]
+                if labels_hier.shape[1] != n_classes:
+                    raise RuntimeError(
+                        f'{path.name}: {label_key} has '
+                        f'{labels_hier.shape[1]} channels, '
+                        f'n_classes={n_classes}')
+                inp = np.concatenate(
+                    [spec[start:end], diff[start:end]], axis=1)
+                batch_inputs.append(inp)
+                batch_targets.append(labels_hier[start:end])
+        elif packed and entry.shape[1] >= 217:
+            # Packed mmap format. View slicing is free. Includes both
+            # legacy formats (217/218 cols) and the new schema-driven
+            # packs (≥219). target_col-based slicing still works for
+            # single-channel validation against multi-head packs since
+            # col 216 = downbeat in both the legacy 218 layout and the
+            # current 3-head schema (where labels_hier starts at 216).
             if target_col >= entry.shape[1]:
                 raise ValueError(
                     f'{path.name}: target_col={target_col} out of range '
@@ -143,7 +171,8 @@ class ContinuousPrepPipeline:
     def __init__(self, batches, dataset, chunk_len: int,
                  cache: LazyFileCache, max_queue: int = 2,
                  n_workers: int = 8, target_col: int = 216,
-                 n_classes: int = 1, label_key: str = 'beat_score'):
+                 n_classes: int = 1, label_key: str = 'beat_score',
+                 schema: CorpusSchema | None = None):
         import queue, threading
         from concurrent.futures import ThreadPoolExecutor
         self.batches = batches
@@ -153,6 +182,7 @@ class ContinuousPrepPipeline:
         self.target_col = target_col
         self.n_classes = n_classes
         self.label_key = label_key
+        self.schema = schema
         self.queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._stop = threading.Event()
         # n_workers threads decompress .npz files in parallel during
@@ -176,7 +206,8 @@ class ContinuousPrepPipeline:
             inputs, targets = materialize_batch_continuous(
                 batch_spec, self.dataset, self.chunk_len, self.cache,
                 target_col=self.target_col,
-                n_classes=self.n_classes, label_key=self.label_key)
+                n_classes=self.n_classes, label_key=self.label_key,
+                schema=self.schema)
             inputs_TBF = np.ascontiguousarray(inputs.transpose(1, 0, 2))
             if self.n_classes > 1:
                 # (B, T, C) → (T, B, C). Per-timestep slice in train loop
@@ -368,7 +399,8 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
                            prep_workers: int = 8,
                            target_col: int = 216,
                            n_classes: int = 1,
-                           label_key: str = 'beat_score'):
+                           label_key: str = 'beat_score',
+                           schema: CorpusSchema | None = None):
     """Train one epoch in continuous mode (single output channel, BCE)."""
     losses = []
     mid_epoch_val_active = (val_batches and val_data is not None
@@ -381,7 +413,8 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
     prep = ContinuousPrepPipeline(batches, dataset, chunk_len, cache,
                                    max_queue=2, n_workers=prep_workers,
                                    target_col=target_col,
-                                   n_classes=n_classes, label_key=label_key)
+                                   n_classes=n_classes, label_key=label_key,
+                                   schema=schema)
     n_batches = len(batches)
 
     prep_iter = iter(prep)
@@ -598,6 +631,15 @@ def main():
 
     file_cache = LazyFileCache(max_files=args.file_cache_size)
 
+    # If the data dir is packed and has a schema manifest, load it and
+    # pass to the prep pipeline so n_classes>1 can slice from packed
+    # columns instead of re-opening source .npz files.
+    schema = None
+    if (args.data_dir / SCHEMA_FILENAME).exists():
+        schema = load_schema(args.data_dir)
+        print(f'Loaded packed-corpus schema: '
+              f'{schema.total_columns} cols, channels={schema.names()}')
+
     best_val_state = [best_val_loss]
     for epoch in range(start_epoch, args.epochs):
         print(f'Epoch {epoch+1}/{args.epochs}')
@@ -621,6 +663,7 @@ def main():
             target_col=args.target_col,
             n_classes=args.n_classes,
             label_key=args.label_key,
+            schema=schema,
         )
         # Validation: for now uses col 0 of multi-head output for the
         # F1 metric (downbeat detection — the most-imbalanced head and

@@ -14,7 +14,7 @@ This is for the project author's own sensibilities — internal-satisfaction is 
 | 3 | Group siblings into packages (runtime/, rendering/, audio/, ui/, etc.) | **Done** — 3a/b/d/e committed during May 2026 reorg work. |
 | 4 | Object-organize genome / palette / transitions / loops | **Done** — 4a transitions/, 4b genome/ + workers + motion_field (1-4), 4c loops/ split + score_loop move. |
 | 5 | Tests mirror + docs sweep | **Done** — `tests/` mirrors source package layout (commits `6b48bbb`, `8120492`, `0217d42`); this status section is the docs sweep. |
-| 6 | Extract shared `load_aware.py` from workers | **Pending** |
+| 6 | Extract shared `load_aware.py` from workers | **Done** (commit `ede7ffd`) — 5 workers migrated; `LOAD_THRESHOLD`/`LOAD_CHECK_INTERVAL` centralized; `IDLE_CHECK_INTERVAL` kept per-worker (principled differences). |
 | 7 | Comm-pipe API polish (`debug/` uses only public names) | **Pending** |
 | 8 | Worker consolidation (`GpuWorker` / `CpuWorkerPool` / `ScheduledTask` + `LoadMonitor` pub/sub) | **Pending** — feeds the eventual GPU scheduler design (see `~/.claude/projects/-home-chaos/memory/project_gpu_scheduler_design.md`). |
 | 9 | `viz_authoring/` extraction | **Pending** — gated on 6+7+8. |
