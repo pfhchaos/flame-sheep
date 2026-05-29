@@ -315,11 +315,20 @@ def save_checkpoint(path: Path, weights: np.ndarray, next_epoch: int,
                     input_size: int | None = None,
                     proj_size: int | None = None,
                     hidden_size: int | None = None,
-                    n_classes: int | None = None) -> None:
+                    n_classes: int | None = None,
+                    architecture: str | None = None,
+                    n_gru_layers: int | None = None) -> None:
     """Save weights + training metadata in .npz format.
 
     Layout: {weights, next_epoch, best_val_loss,
-             input_size?, proj_size?, hidden_size?, n_classes?}.
+             input_size?, proj_size?, hidden_size?, n_classes?,
+             architecture?, n_gru_layers?}.
+
+    `architecture` is 'single' for the legacy 1-GRU + N-head linear
+    layout (default if omitted) or 'multidepth' for the stacked-GRU,
+    one-head-per-layer variant. `n_gru_layers` is the stack depth (1
+    for single, ≥2 for multidepth). Both are required when loading a
+    multidepth file — single-arch files load fine without them.
 
     `next_epoch` semantically means "first epoch to do on resume" — so an
     end-of-epoch save (just finished epoch N) stores next_epoch=N+1, but
@@ -343,9 +352,14 @@ def save_checkpoint(path: Path, weights: np.ndarray, next_epoch: int,
     for name, value in (('input_size', input_size),
                         ('proj_size', proj_size),
                         ('hidden_size', hidden_size),
-                        ('n_classes', n_classes)):
+                        ('n_classes', n_classes),
+                        ('n_gru_layers', n_gru_layers)):
         if value is not None:
             extras[name] = int(value)
+    if architecture is not None:
+        # np.savez stores strings as 0-d unicode arrays — caller reads
+        # via str(obj['architecture']).
+        extras['architecture'] = np.array(architecture)
     np.savez(tmp, weights=weights, next_epoch=next_epoch,
              best_val_loss=best_val_loss, **extras)
     # numpy adds .npz if path didn't have one — pick whichever landed.

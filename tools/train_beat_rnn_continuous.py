@@ -35,7 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from wallpaper_ml.vk_compute import VkCompute
 from wallpaper_ml import (
-    build_beat_crnn, VkGRU, bce_loss_dispatch, bce_loss_multich_dispatch,
+    build_beat_crnn, build_beat_crnn_multidepth, MultiDepthBeatRNN,
+    VkGRU, bce_loss_dispatch, bce_loss_multich_dispatch,
     ChannelSpec, CorpusSchema, load_schema, SCHEMA_FILENAME,
 )
 # Reuse infrastructure that doesn't change between 3-class and continuous modes.
@@ -322,6 +323,21 @@ DEFAULT_HEAD_THRESHOLDS_3HEAD = {
 HEAD_NAMES_3HEAD = {0: 'downbeat', 1: 'any-beat', 2: 'any-onset'}
 
 
+# Multi-depth: head index (= GRU layer depth, 0=shallow → 2=deep) →
+# labels_hier column. Match each head to the task whose temporal
+# context need fits its depth:
+#   head 0 (shallow GRU) ← col 2 = any-onset  (local, fast cue)
+#   head 1 (medium GRU)  ← col 1 = any-beat   (periodicity)
+#   head 2 (deep GRU)    ← col 0 = downbeat   (longer-memory meter cue)
+MULTIDEPTH_HEAD_TO_LABEL_COL = {0: 2, 1: 1, 2: 0}
+MULTIDEPTH_HEAD_NAMES = {0: 'onset', 1: 'beat', 2: 'downbeat'}
+# Per-head thresholds for the multi-depth model. Inherits the same
+# rationale as the 3-head DEFAULT_HEAD_THRESHOLDS_3HEAD: downbeat
+# probabilities top out lower than the others so they need a smaller
+# threshold. Map back by head index (depth), not label index.
+MULTIDEPTH_HEAD_THRESHOLDS = {0: 0.30, 1: 0.30, 2: 0.15}
+
+
 def _f1_for_head(probs: np.ndarray, targets: np.ndarray,
                  pred_threshold: float, label_threshold: float) -> dict:
     """Peak-pick predicted probs + labels for one head, compute F1@70ms.
@@ -519,11 +535,20 @@ def validate_continuous(model, gpu, batches, chunk_len: int, in_buf,
     return avg_loss, headline_f1, metrics
 
 
-def format_continuous_metrics(m: dict) -> str:
+def format_continuous_metrics(m: dict,
+                              head_names: dict[int, str] | None = None) -> str:
     """Pretty-print validation metrics. For multi-head (n_classes>1) the
     per-head breakdown shows where each head actually lands so you can
     spot patterns like "downbeat F1 collapses because the threshold is
-    wrong for that head's output range."""
+    wrong for that head's output range".
+
+    head_names overrides the head-index→label mapping for the per-head
+    rows. Default is HEAD_NAMES_3HEAD (single-arch labels_hier columns:
+    downbeat/any-beat/any-onset). Multi-depth callers pass
+    MULTIDEPTH_HEAD_NAMES (depth-ordered: onset/beat/downbeat).
+    """
+    if head_names is None:
+        head_names = HEAD_NAMES_3HEAD
     lines = [
         f'  F1={m["f1"]:.3f}  precision={m["precision"]:.3f}  '
         f'recall={m["recall"]:.3f}  '
@@ -532,7 +557,7 @@ def format_continuous_metrics(m: dict) -> str:
     ]
     if 'per_head' in m:
         for c, h in m['per_head'].items():
-            name = HEAD_NAMES_3HEAD.get(c, f'head{c}')
+            name = head_names.get(c, f'head{c}')
             lines.append(
                 f'    [{name:<10}] F1={h["f1"]:.3f}  '
                 f'P={h["precision"]:.3f}  R={h["recall"]:.3f}  '
@@ -658,6 +683,247 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
     return np.mean(losses) if losses else 0.0
 
 
+def validate_multidepth(model: MultiDepthBeatRNN, gpu, batches,
+                        chunk_len: int, input_seq_buf,
+                        per_head_logits_host,
+                        dataset, cache: LazyFileCache,
+                        max_batches: int | None = None,
+                        schema: 'CorpusSchema | None' = None,
+                        head_thresholds: dict[int, float] | None = None
+                        ) -> tuple[float, float, dict]:
+    """Validate the multi-depth model — per-head F1 + summed BCE loss.
+
+    Multi-depth always operates on labels_hier (3 channels). One forward
+    pass per chunk via forward_multidepth (seq mode); per-head BCE on
+    the CPU side mirroring validate_continuous's reporting math.
+
+    Returns (avg_loss, headline_f1, metrics_dict) with the same shape as
+    validate_continuous's multi-head return so format_continuous_metrics
+    works unchanged. headline_f1 is the BEAT head (depth=1) — the
+    most v1-comparable signal.
+    """
+    if max_batches is not None and max_batches < len(batches):
+        import random
+        batches = random.sample(batches, max_batches)
+    if head_thresholds is None:
+        head_thresholds = MULTIDEPTH_HEAD_THRESHOLDS
+
+    BT_full = model.batch_size * chunk_len
+
+    losses = []
+    per_head_tp = [0] * model.n_gru_layers
+    per_head_fp = [0] * model.n_gru_layers
+    per_head_fn = [0] * model.n_gru_layers
+    per_head_pred = [0] * model.n_gru_layers
+    per_head_true = [0] * model.n_gru_layers
+
+    for batch_spec in batches:
+        inputs, targets = materialize_batch_continuous(
+            batch_spec, dataset, chunk_len, cache,
+            n_classes=3, label_key='labels_hier', schema=schema)
+        B = inputs.shape[0]
+        T = inputs.shape[1]
+        BT = B * T
+
+        # (B, T, F) → (T, B, F) — matches train-time layout, lets the
+        # model's pre-allocated seq buffers be re-used directly.
+        inputs_TBF = np.ascontiguousarray(inputs.transpose(1, 0, 2))
+        # (B, T, 3) → numpy reshape per-head; (T, B, C) layout matches
+        # the (B*T,) flat-batch order the head logits download in.
+        targets_TBC = np.ascontiguousarray(targets.transpose(1, 0, 2))
+
+        gpu.upload(input_seq_buf, inputs_TBF.ravel())
+        model.reset_hidden()
+        head_outs = model.forward_multidepth(input_seq_buf, B=B, T=T)
+
+        # (B, T) per head — same axes as targets_TBC[:, :, head_label_col]
+        # after transpose-back.
+        per_head_probs_BT = []
+        for head_idx, head_buf in enumerate(head_outs):
+            # head logits are (B*T, 1) flat — matches (T, B, 1) ravel.
+            logits_flat = gpu.download(head_buf, np.float32, BT)
+            logits_TB = logits_flat.reshape(T, B)
+            logits_BT = logits_TB.transpose(1, 0)
+
+            label_col = MULTIDEPTH_HEAD_TO_LABEL_COL[head_idx]
+            tgt_BT = targets[:, :, label_col]  # (B, T)
+
+            abs_z = np.abs(logits_BT)
+            max_z = np.maximum(logits_BT, 0.0)
+            loss = max_z - logits_BT * tgt_BT + np.log1p(np.exp(-abs_z))
+            losses.append(float(loss.mean()))
+
+            probs_BT = 1.0 / (1.0 + np.exp(-logits_BT))
+            per_head_probs_BT.append(probs_BT)
+
+        # Per-head F1@70ms.
+        for head_idx in range(model.n_gru_layers):
+            thr = head_thresholds.get(head_idx, 0.3)
+            label_col = MULTIDEPTH_HEAD_TO_LABEL_COL[head_idx]
+            m = _f1_for_head(per_head_probs_BT[head_idx],
+                              targets[:, :, label_col],
+                              pred_threshold=thr,
+                              label_threshold=thr)
+            per_head_tp[head_idx] += m['tp']
+            per_head_fp[head_idx] += m['fp']
+            per_head_fn[head_idx] += m['fn']
+            per_head_pred[head_idx] += m['n_pred']
+            per_head_true[head_idx] += m['n_true']
+
+    avg_loss = float(np.mean(losses)) if losses else 0.0
+
+    # Re-use the multi-head metrics-dict shape so format_continuous_metrics
+    # works without a branch. Head names come from MULTIDEPTH_HEAD_NAMES
+    # rather than HEAD_NAMES_3HEAD — caller is responsible for swapping
+    # the lookup before printing (done in main()).
+    per_head = {}
+    headline_f1 = 0.0
+    for head_idx in range(model.n_gru_layers):
+        tp, fp, fn = (per_head_tp[head_idx], per_head_fp[head_idx],
+                      per_head_fn[head_idx])
+        prec = tp / (tp + fp) if (tp + fp) else 0.0
+        rec = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+        per_head[head_idx] = {
+            'tp': tp, 'fp': fp, 'fn': fn,
+            'precision': prec, 'recall': rec, 'f1': f1,
+            'n_pred': per_head_pred[head_idx],
+            'n_true': per_head_true[head_idx],
+        }
+        if MULTIDEPTH_HEAD_NAMES.get(head_idx) == 'beat':
+            headline_f1 = f1
+
+    agg_tp = sum(per_head_tp)
+    agg_fp = sum(per_head_fp)
+    agg_fn = sum(per_head_fn)
+    agg_prec = agg_tp / (agg_tp + agg_fp) if (agg_tp + agg_fp) else 0.0
+    agg_rec = agg_tp / (agg_tp + agg_fn) if (agg_tp + agg_fn) else 0.0
+    agg_f1 = 2 * agg_prec * agg_rec / (agg_prec + agg_rec) if (agg_prec + agg_rec) else 0.0
+    metrics = {
+        'tp': agg_tp, 'fp': agg_fp, 'fn': agg_fn,
+        'precision': agg_prec, 'recall': agg_rec, 'f1': agg_f1,
+        'n_pred': sum(per_head_pred), 'n_true': sum(per_head_true),
+        'per_head': per_head,
+    }
+    return avg_loss, headline_f1, metrics
+
+
+def train_epoch_multidepth(model: MultiDepthBeatRNN, gpu, batches,
+                           lr: float, chunk_len: int,
+                           dataset, cache,
+                           input_seq_buf,
+                           per_head_target_bufs: list,
+                           per_head_loss_bufs: list,
+                           per_head_grad_bufs: list,
+                           val_batches=None, val_data=None,
+                           val_interval: float = 0.0,
+                           val_sample_size: int = 50,
+                           best_val_state=None,
+                           save_path: Path | None = None,
+                           epoch_num: int = 0,
+                           prep_workers: int = 8,
+                           schema: CorpusSchema | None = None,
+                           ckpt_dims: dict | None = None):
+    """Train one epoch of the multi-depth model.
+
+    Per batch:
+      1. forward_multidepth → list of (B*T, 1) head logits
+      2. per head: bce_loss_dispatch against the head's label-column slice
+      3. backward_multidepth(head_grads, B, T) — routes gradients through
+         the stack (sum where head + upstream-GRU meet)
+      4. sgd_step
+
+    Mirrors train_epoch_continuous's mid-epoch validation behavior.
+    """
+    losses = []  # per-batch summed-over-heads loss for the train printout
+    mid_epoch_val_active = (val_batches and val_data is not None
+                            and val_interval > 0 and best_val_state is not None
+                            and save_path is not None)
+    last_val_time = time.monotonic()
+
+    # n_classes=3 prep pipeline: targets_TB is (T, B, 3) with cols
+    # 0=downbeat, 1=beat, 2=onset (labels_hier convention).
+    prep = ContinuousPrepPipeline(batches, dataset, chunk_len, cache,
+                                   max_queue=2, n_workers=prep_workers,
+                                   n_classes=3, label_key='labels_hier',
+                                   schema=schema)
+    n_batches = len(batches)
+
+    prep_iter = iter(prep)
+    for batch_idx in range(n_batches):
+        try:
+            inputs_TBF, targets_TBC = next(prep_iter)
+        except StopIteration:
+            break
+
+        B_actual = inputs_TBF.shape[1]
+        T = inputs_TBF.shape[0]
+        BT = B_actual * T
+
+        model.zero_grad()
+        model.reset_hidden()
+        for lb, gb in zip(per_head_loss_bufs, per_head_grad_bufs):
+            gpu.zero_buffer(lb)
+            gpu.zero_buffer(gb)
+
+        gpu.upload(input_seq_buf, inputs_TBF.ravel())
+        # Per-head target uploads. targets_TBC is (T, B, 3); we slice each
+        # head's label column and upload as flat (T*B,) which matches the
+        # (B*T,) flat-batch order the head logits use.
+        for head_idx in range(model.n_gru_layers):
+            label_col = MULTIDEPTH_HEAD_TO_LABEL_COL[head_idx]
+            tgt_TB = np.ascontiguousarray(targets_TBC[:, :, label_col])
+            gpu.upload(per_head_target_bufs[head_idx], tgt_TB.ravel())
+
+        head_outs = model.forward_multidepth(input_seq_buf, B=B_actual, T=T)
+
+        # Per-head BCE — single-channel shader, three dispatches.
+        for head_idx, head_buf in enumerate(head_outs):
+            bce_loss_dispatch(
+                gpu, head_buf, per_head_target_bufs[head_idx],
+                per_head_grad_bufs[head_idx],
+                per_head_loss_bufs[head_idx],
+                batch_size=BT, target_offset_floats=0, t_inv=1.0,
+            )
+
+        # Summed loss across heads — comparable across batches and to
+        # the multi-head n_classes=3 training-mode loss printout.
+        batch_loss = 0.0
+        for lb in per_head_loss_bufs:
+            batch_loss += float(gpu.download(lb, np.float32, BT).mean())
+        losses.append(batch_loss)
+
+        model.backward_multidepth(per_head_grad_bufs, B=B_actual, T=T)
+        model.sgd_step(lr)
+
+        if (batch_idx + 1) % 10 == 0:
+            print(f"    batch {batch_idx+1}/{n_batches} "
+                  f"loss(sum-heads)={batch_loss:.4f}")
+
+        if mid_epoch_val_active and (time.monotonic() - last_val_time) >= val_interval:
+            elapsed_min = (time.monotonic() - last_val_time) / 60.0
+            val_loss, val_f1, val_metrics = validate_multidepth(
+                model, gpu, val_batches, chunk_len, input_seq_buf,
+                None,  # per_head_logits_host unused
+                val_data, cache, max_batches=val_sample_size,
+                schema=schema)
+            print(f"    [mid-epoch +{elapsed_min:.1f}min] "
+                  f"batch {batch_idx+1}/{n_batches}  "
+                  f"val_loss={val_loss:.4f}  F1[beat]={val_f1:.3f}  "
+                  f"(sampled {val_sample_size}/{len(val_batches)} val batches)")
+            print(format_continuous_metrics(
+                val_metrics, head_names=MULTIDEPTH_HEAD_NAMES))
+            if val_loss < best_val_state[0]:
+                best_val_state[0] = val_loss
+                ckpt_kwargs = dict(ckpt_dims) if ckpt_dims else {}
+                save_checkpoint(save_path, model.save_weights(),
+                                epoch_num, val_loss, **ckpt_kwargs)
+                print(f"    [mid-epoch] -> saved best (val_loss={val_loss:.4f})")
+            last_val_time = time.monotonic()
+
+    return np.mean(losses) if losses else 0.0
+
+
 def main():
     sys.stdout.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(
@@ -710,7 +976,35 @@ def main():
     parser.add_argument('--prep-workers', type=int, default=8,
                         help='Threads decompressing .npz files in parallel '
                              'inside the prep pipeline (default 8).')
+    parser.add_argument('--architecture', type=str, default='single',
+                        choices=['single', 'multidepth'],
+                        help='Model architecture. "single" (default) = '
+                             'one GRU with an N-head linear output (works '
+                             'for both n_classes=1 v1 and n_classes=3 v3 '
+                             'hierarchical layouts). "multidepth" = '
+                             'stacked GRU, one head per layer; implies '
+                             'n_classes=3 and labels_hier targets.')
+    parser.add_argument('--n-gru-layers', type=int, default=3,
+                        help='Stack depth for --architecture multidepth '
+                             '(default 3, one per head). Ignored for '
+                             '--architecture single.')
     args = parser.parse_args()
+
+    if args.architecture == 'multidepth':
+        if args.n_classes != 3:
+            print(f'NOTE: --architecture multidepth implies n_classes=3 '
+                  f'(was {args.n_classes}). Overriding.', file=sys.stderr)
+            args.n_classes = 3
+        if args.label_key != 'labels_hier':
+            print(f'NOTE: --architecture multidepth requires '
+                  f'--label-key labels_hier (was {args.label_key!r}). '
+                  f'Overriding.', file=sys.stderr)
+            args.label_key = 'labels_hier'
+        if args.proj_size < 48:
+            print(f'NOTE: --architecture multidepth typically uses '
+                  f'proj_size>=48 (was {args.proj_size}). Continuing — '
+                  f'pass --proj-size 64 for the intended default.',
+                  file=sys.stderr)
     if args.file_cache_size < args.batch_size:
         print(f'WARN: --file-cache-size ({args.file_cache_size}) < '
               f'--batch-size ({args.batch_size}); bumping cache to batch size.',
@@ -741,14 +1035,21 @@ def main():
               f"probably want --label-key labels_hier.", file=sys.stderr)
 
     gpu = VkCompute()
-    # seq_mode=True so linear layers' output buffers are sized for B*T
-    # flat batches. n_classes drives the output dim of linear_out and
-    # therefore the shape of grad_acc / target buffers below.
-    model = build_beat_crnn(gpu, input_size=216, hidden_size=args.hidden,
-                             proj_size=args.proj_size,
-                             n_classes=args.n_classes,
-                             batch_size=args.batch_size,
-                             max_seq_len=args.chunk_len, seq_mode=True)
+    if args.architecture == 'multidepth':
+        model = build_beat_crnn_multidepth(
+            gpu, input_size=216, hidden_size=args.hidden,
+            proj_size=args.proj_size, n_gru_layers=args.n_gru_layers,
+            n_heads=args.n_gru_layers,
+            batch_size=args.batch_size, max_seq_len=args.chunk_len)
+    else:
+        # seq_mode=True so linear layers' output buffers are sized for B*T
+        # flat batches. n_classes drives the output dim of linear_out and
+        # therefore the shape of grad_acc / target buffers below.
+        model = build_beat_crnn(gpu, input_size=216, hidden_size=args.hidden,
+                                 proj_size=args.proj_size,
+                                 n_classes=args.n_classes,
+                                 batch_size=args.batch_size,
+                                 max_seq_len=args.chunk_len, seq_mode=True)
 
     start_epoch = 0
     best_val_loss = float('inf')
@@ -783,13 +1084,32 @@ def main():
     in_buf = gpu.create_buffer(args.batch_size * 216 * 4)
     grad_buf = gpu.create_buffer(args.batch_size * 4)  # not used in seq path
     input_seq_buf = gpu.create_buffer(BT * 216 * 4)
-    # Target + grad buffers sized for n_classes channels. Loss is summed
-    # over channels into a single (BT,) accumulator (the multich BCE
-    # shader handles this; for n_classes=1 it's the same as before).
-    target_seq_buf = gpu.create_buffer(BT * C * 4)
-    gru_seq_out_buf = gpu.create_buffer(BT * args.hidden * 4)
-    loss_acc_buf = gpu.create_buffer(BT * 4)
-    grad_acc_buf = gpu.create_buffer(BT * C * 4)
+
+    if args.architecture == 'multidepth':
+        # Per-head buffers (one per GRU layer). Each head's BCE is a
+        # single-channel dispatch so each gets its own (BT,) target /
+        # loss / grad buffer. No combined (BT, n_classes) buffer
+        # needed for this path.
+        per_head_target_bufs = [gpu.create_buffer(BT * 4)
+                                 for _ in range(args.n_gru_layers)]
+        per_head_loss_bufs = [gpu.create_buffer(BT * 4)
+                               for _ in range(args.n_gru_layers)]
+        per_head_grad_bufs = [gpu.create_buffer(BT * 4)
+                               for _ in range(args.n_gru_layers)]
+        # Single-arch buffers below are unused in this branch; allocate
+        # placeholders so the existing branch's variable names still
+        # resolve (validate_continuous reads in_buf etc., but won't be
+        # called for multidepth).
+        target_seq_buf = gru_seq_out_buf = loss_acc_buf = grad_acc_buf = None
+    else:
+        # Target + grad buffers sized for n_classes channels. Loss is
+        # summed over channels into a single (BT,) accumulator (the
+        # multich BCE shader handles this; for n_classes=1 it's the
+        # same as before).
+        target_seq_buf = gpu.create_buffer(BT * C * 4)
+        gru_seq_out_buf = gpu.create_buffer(BT * args.hidden * 4)
+        loss_acc_buf = gpu.create_buffer(BT * 4)
+        grad_acc_buf = gpu.create_buffer(BT * C * 4)
 
     file_cache = LazyFileCache(max_files=args.file_cache_size)
 
@@ -811,44 +1131,75 @@ def main():
         val_batches = make_chunks(val_data, args.chunk_len,
                                    args.batch_size, rng)
 
-        train_loss = train_epoch_continuous(
-            model, gpu, train_batches, args.lr, args.chunk_len,
-            in_buf, grad_buf, train_data, file_cache,
-            target_seq_buf, loss_acc_buf, grad_acc_buf,
-            input_seq_buf, gru_seq_out_buf,
-            val_batches=val_batches, val_data=val_data,
-            val_interval=args.val_interval,
-            val_sample_size=args.val_sample_size,
-            best_val_state=best_val_state,
-            save_path=args.output, epoch_num=epoch,
-            prep_workers=args.prep_workers,
-            target_col=args.target_col,
-            n_classes=args.n_classes,
-            label_key=args.label_key,
-            schema=schema,
-        )
-        # Validation: per-head F1 in n_classes>1 mode (each head has
-        # its own threshold — see DEFAULT_HEAD_THRESHOLDS_3HEAD).
-        # Headline F1 returned is the col-1 (any-beat) one since that's
-        # what's directly comparable to v1's F1=0.544 baseline (v1's
-        # beat_score was 1 - non_beat_prob = col 0 + col 1).
-        val_loss, val_f1, val_metrics = validate_continuous(
-            model, gpu, val_batches, args.chunk_len, in_buf,
-            val_data, file_cache, peak_threshold=args.peak_threshold,
-            target_col=args.target_col,
-            n_classes=args.n_classes, label_key=args.label_key, schema=schema,
-        )
-        f1_label = ('F1[any-beat]' if args.n_classes > 1 else 'F1')
-        print(f'  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  '
-              f'{f1_label}={val_f1:.3f}')
-        print(format_continuous_metrics(val_metrics))
-
         # Architecture dims serialized into the checkpoint so the
         # runtime can reconstruct the model without hardcoded constants.
+        # Built before the train call so train_epoch_multidepth's mid-
+        # epoch saves use the same fields as the end-of-epoch save.
         ckpt_dims = dict(
             input_size=216, proj_size=args.proj_size,
             hidden_size=args.hidden, n_classes=args.n_classes,
         )
+        if args.architecture == 'multidepth':
+            ckpt_dims['architecture'] = 'multidepth'
+            ckpt_dims['n_gru_layers'] = args.n_gru_layers
+
+        if args.architecture == 'multidepth':
+            train_loss = train_epoch_multidepth(
+                model, gpu, train_batches, args.lr, args.chunk_len,
+                train_data, file_cache, input_seq_buf,
+                per_head_target_bufs, per_head_loss_bufs,
+                per_head_grad_bufs,
+                val_batches=val_batches, val_data=val_data,
+                val_interval=args.val_interval,
+                val_sample_size=args.val_sample_size,
+                best_val_state=best_val_state,
+                save_path=args.output, epoch_num=epoch,
+                prep_workers=args.prep_workers,
+                schema=schema, ckpt_dims=ckpt_dims,
+            )
+            val_loss, val_f1, val_metrics = validate_multidepth(
+                model, gpu, val_batches, args.chunk_len, input_seq_buf,
+                None, val_data, file_cache, schema=schema)
+            f1_label = 'F1[beat]'
+        else:
+            train_loss = train_epoch_continuous(
+                model, gpu, train_batches, args.lr, args.chunk_len,
+                in_buf, grad_buf, train_data, file_cache,
+                target_seq_buf, loss_acc_buf, grad_acc_buf,
+                input_seq_buf, gru_seq_out_buf,
+                val_batches=val_batches, val_data=val_data,
+                val_interval=args.val_interval,
+                val_sample_size=args.val_sample_size,
+                best_val_state=best_val_state,
+                save_path=args.output, epoch_num=epoch,
+                prep_workers=args.prep_workers,
+                target_col=args.target_col,
+                n_classes=args.n_classes,
+                label_key=args.label_key,
+                schema=schema,
+            )
+            # Validation: per-head F1 in n_classes>1 mode (each head has
+            # its own threshold — see DEFAULT_HEAD_THRESHOLDS_3HEAD).
+            # Headline F1 returned is the col-1 (any-beat) one since
+            # that's what's directly comparable to v1's F1=0.544 (v1's
+            # beat_score was 1 - non_beat_prob = col 0 + col 1).
+            val_loss, val_f1, val_metrics = validate_continuous(
+                model, gpu, val_batches, args.chunk_len, in_buf,
+                val_data, file_cache, peak_threshold=args.peak_threshold,
+                target_col=args.target_col,
+                n_classes=args.n_classes, label_key=args.label_key,
+                schema=schema,
+            )
+            f1_label = ('F1[any-beat]' if args.n_classes > 1 else 'F1')
+
+        print(f'  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  '
+              f'{f1_label}={val_f1:.3f}')
+        # Multi-depth uses depth-ordered head names (onset/beat/downbeat
+        # at head index 0/1/2) — different from the single-arch
+        # labels_hier column order (downbeat/any-beat/any-onset).
+        names = (MULTIDEPTH_HEAD_NAMES
+                 if args.architecture == 'multidepth' else None)
+        print(format_continuous_metrics(val_metrics, head_names=names))
         if val_loss < best_val_state[0]:
             best_val_state[0] = val_loss
             save_checkpoint(args.output, model.save_weights(),
