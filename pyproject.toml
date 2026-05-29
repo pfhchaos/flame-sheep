@@ -15,6 +15,7 @@ dependencies = [
     "scipy>=1.16",
     "sounddevice>=0.5.1",
     "wallpaper-ml",
+    "viz-authoring",
 ]
 
 [project.optional-dependencies]

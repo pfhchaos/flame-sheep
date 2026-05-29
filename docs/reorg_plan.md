@@ -18,7 +18,8 @@ This is for the project author's own sensibilities — internal-satisfaction is 
 | 7 | Comm-pipe API polish (`debug/` uses only public names) | **Done** — all production code (`flame_sheep/`) and `tools/` import only from `flame_sheep_audio` public surface. `a_weight_curve` promoted to public. Tests retain underscore reaches by design (they test internals). |
 | 8a | Worker subprocess-bootstrap dedup (logging/nice/DB) | **Done** — new `flame_sheep/worker_bootstrap.py` `init_worker_subprocess()` helper; pruner / score / transitions migrated. Render worker keeps bespoke bootstrap because of its 10-second GPU-yield sleep interleaving with bootstrap steps. Dead `BackgroundScorer` deleted. |
 | 8b | Full worker patterns (`GpuWorker` / `CpuWorkerPool` / `ScheduledTask`) + `LoadMonitor` pub/sub | **Pending** — bundled with Vulkan transition since GPU-aware scheduling needs Vulkan primitives. Feeds the GPU scheduler design (see `~/.claude/projects/-home-chaos/memory/project_gpu_scheduler_design.md`). |
-| 9 | `viz_authoring/` extraction | **Pending** — gated on 6+7+8. |
+| 9a | `viz_authoring/` extraction (core primitives) | **Done tonight** — `viz_authoring/` package at repo root with `GpuContext`/`Viewport`/`GpuRingTimer`/`SHADER_DIR`-free, `load_aware`, `worker_bootstrap`. flame_sheep modules now thin shims re-exporting from viz_authoring (back-compat for all in-flame imports). `SHADER_DIR` kept flame-side (it's flame-specific shaders, was just mistakenly defined in the framework file). |
+| 9b | viz_authoring extensions | **Pending** — audio response/easing helpers move from `flame_sheep_audio.response`; worker patterns (GpuWorker/CpuWorkerPool/ScheduledTask) added once Stage 8b lands with Vulkan. |
 
 The remainder of this document is the original planning text — kept as historical reference for *why* each stage was structured the way it was. Body uses future-tense ("will move X → Y"); read past tense for stages 0-5.
 
