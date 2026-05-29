@@ -303,32 +303,118 @@ def f_measure(pred_times: np.ndarray, true_times: np.ndarray,
 OUR_FPS = 93.75  # matches generate_beat_labels.py
 
 
+# Per-head peak-pick thresholds for the 3-head model. The downbeat head's
+# sigmoid output never gets near 0.3 because BeatNet's softmax assigns at
+# most ~0.37 probability to downbeats (the three classes compete). Using
+# threshold 0.3 against this head guarantees an uncrossable bar — the
+# original mistake the 2026-05-29 hierarchical retrain investigation
+# surfaced (post-hoc per-head F1: downbeat 0.04 → 0.41 just by dropping
+# the threshold to 0.15). Defaults below are calibrated against the
+# actual label distribution per head; modify in source if your label
+# generator settings produce different ranges.
+DEFAULT_HEAD_THRESHOLDS_3HEAD = {
+    0: 0.15,  # downbeat — label max ~0.37, need much lower threshold
+    1: 0.30,  # any-beat — label max ~0.93, v1-comparable
+    2: 0.30,  # any-onset — same shape as any-beat
+}
+
+# Channel names for log output (only used in n_classes=3 mode).
+HEAD_NAMES_3HEAD = {0: 'downbeat', 1: 'any-beat', 2: 'any-onset'}
+
+
+def _f1_for_head(probs: np.ndarray, targets: np.ndarray,
+                 pred_threshold: float, label_threshold: float) -> dict:
+    """Peak-pick predicted probs + labels for one head, compute F1@70ms.
+
+    probs / targets shape: (B, T) float per-sequence. Aggregates tp/fp/fn
+    across all sequences in the batch. Returns the standard metrics dict.
+    """
+    total_tp = total_fp = total_fn = total_pred = total_true = 0
+    B = probs.shape[0]
+    for b in range(B):
+        pred_frames = peak_pick(probs[b], threshold=pred_threshold)
+        true_frames = peak_pick(targets[b], threshold=label_threshold)
+        pred_times = pred_frames / OUR_FPS
+        true_times = true_frames / OUR_FPS
+        m = f_measure(pred_times, true_times)
+        total_tp += m['tp']
+        total_fp += m['fp']
+        total_fn += m['fn']
+        total_pred += m['n_pred']
+        total_true += m['n_true']
+    precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) else 0.0
+    recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+    return {
+        'tp': total_tp, 'fp': total_fp, 'fn': total_fn,
+        'precision': precision, 'recall': recall, 'f1': f1,
+        'n_pred': total_pred, 'n_true': total_true,
+    }
+
+
 def validate_continuous(model, gpu, batches, chunk_len: int, in_buf,
                         dataset, cache: LazyFileCache,
                         max_batches: int | None = None,
                         peak_threshold: float = 0.3,
-                        target_col: int = 216):
+                        target_col: int = 216,
+                        n_classes: int = 1,
+                        label_key: str = 'beat_score',
+                        schema: 'CorpusSchema | None' = None,
+                        head_thresholds: dict[int, float] | None = None):
     """Run validation: peak-pick predicted scores, compute F1@70ms.
 
-    Returns (avg_loss, f1, metrics_dict). metrics_dict has precision,
-    recall, f1, plus tp/fp/fn aggregated across the val sample.
+    Single-channel mode (n_classes=1, default): single-head F1 against
+    `target_col` with `peak_threshold` for both predictions and labels.
+    Returns (avg_loss, f1, metrics_dict) — backward-compatible shape.
+
+    Multi-head mode (n_classes>1): per-head F1 with per-head thresholds
+    from `head_thresholds` (defaults to DEFAULT_HEAD_THRESHOLDS_3HEAD).
+    Returns (avg_loss, headline_f1, metrics_dict) where:
+      - headline_f1 is the col-1 (any-beat) F1 — most v1-comparable
+      - metrics_dict has aggregate {tp,fp,fn,precision,recall,f1,n_pred,
+        n_true} computed by summing across all heads (back-compat with
+        format_continuous_metrics) PLUS a 'per_head' sub-dict keyed by
+        head index with that head's individual metrics.
+
+    The per-head distinction matters because head outputs cover different
+    dynamic ranges (downbeat softmax peaks at ~0.37; any-beat at ~0.93).
+    A single global threshold makes the rare-positive head look broken
+    even when the model has learned it correctly.
     """
     if max_batches is not None and max_batches < len(batches):
         import random
         batches = random.sample(batches, max_batches)
+
+    if n_classes > 1 and head_thresholds is None:
+        head_thresholds = DEFAULT_HEAD_THRESHOLDS_3HEAD
+
     losses = []
-    total_tp = total_fp = total_fn = 0
-    total_pred = total_true = 0
+    # Aggregate across heads for the back-compat top-level metrics dict.
+    # Per-head metrics tracked separately when n_classes>1.
+    total_tp = total_fp = total_fn = total_pred = total_true = 0
+    per_head_tp = [0] * n_classes
+    per_head_fp = [0] * n_classes
+    per_head_fn = [0] * n_classes
+    per_head_pred = [0] * n_classes
+    per_head_true = [0] * n_classes
 
     for batch_spec in batches:
-        inputs, targets = materialize_batch_continuous(
-            batch_spec, dataset, chunk_len, cache, target_col=target_col)
+        if n_classes == 1:
+            inputs, targets = materialize_batch_continuous(
+                batch_spec, dataset, chunk_len, cache, target_col=target_col)
+        else:
+            inputs, targets = materialize_batch_continuous(
+                batch_spec, dataset, chunk_len, cache,
+                n_classes=n_classes, label_key=label_key, schema=schema)
         B = inputs.shape[0]
         T = inputs.shape[1]
 
         # Per-sequence collect logits across timesteps for peak-picking
-        # afterwards. Shape will be (B, T) float.
-        seq_logits = np.zeros((B, T), dtype=np.float32)
+        # afterwards. (B, T) for single, (B, T, C) for multi.
+        if n_classes == 1:
+            seq_logits = np.zeros((B, T), dtype=np.float32)
+        else:
+            seq_logits = np.zeros((B, T, n_classes), dtype=np.float32)
 
         for layer in model.layers:
             if isinstance(layer, VkGRU):
@@ -338,12 +424,21 @@ def validate_continuous(model, gpu, batches, chunk_len: int, in_buf,
             frame = inputs[:, t, :]
             gpu.upload(in_buf, frame.ravel())
             out_buf = model.forward(in_buf, B, (216,))
-            logits = gpu.download(out_buf, np.float32, B).reshape(B)
-            seq_logits[:, t] = logits
+            logits = gpu.download(out_buf, np.float32, B * n_classes)
+            if n_classes == 1:
+                logits = logits.reshape(B)
+                seq_logits[:, t] = logits
+            else:
+                logits = logits.reshape(B, n_classes)
+                seq_logits[:, t, :] = logits
 
             # BCE loss for this timestep (CPU side, for reporting only)
-            tgt = targets[:, t]
-            z = logits
+            if n_classes == 1:
+                tgt = targets[:, t]
+                z = logits
+            else:
+                tgt = targets[:, t, :]
+                z = logits
             abs_z = np.abs(z)
             max_z = np.maximum(z, 0.0)
             loss = max_z - z * tgt + np.log1p(np.exp(-abs_z))
@@ -351,39 +446,100 @@ def validate_continuous(model, gpu, batches, chunk_len: int, in_buf,
 
         # Convert logits to probabilities, peak-pick per sequence
         probs = 1.0 / (1.0 + np.exp(-seq_logits))
-        for b in range(B):
-            pred_frames = peak_pick(probs[b], threshold=peak_threshold)
-            # True beats: peak-pick the soft target the same way (target
-            # was BeatNet's continuous beat-or-downbeat prob, which IS
-            # peak-shaped at beat positions).
-            true_frames = peak_pick(targets[b], threshold=0.5)
-            pred_times = pred_frames / OUR_FPS
-            true_times = true_frames / OUR_FPS
-            m = f_measure(pred_times, true_times)
+
+        if n_classes == 1:
+            # Single-channel — existing behavior unchanged.
+            m = _f1_for_head(probs, targets,
+                              pred_threshold=peak_threshold,
+                              label_threshold=0.5)
             total_tp += m['tp']
             total_fp += m['fp']
             total_fn += m['fn']
             total_pred += m['n_pred']
             total_true += m['n_true']
+        else:
+            # Multi-head — per-head F1 with per-head thresholds.
+            # Aggregate-across-heads totals get computed once at the
+            # end from per_head_*; no need to update them per batch.
+            for c in range(n_classes):
+                thr = head_thresholds.get(c, 0.3)
+                m = _f1_for_head(probs[:, :, c], targets[:, :, c],
+                                  pred_threshold=thr,
+                                  label_threshold=thr)
+                per_head_tp[c] += m['tp']
+                per_head_fp[c] += m['fp']
+                per_head_fn[c] += m['fn']
+                per_head_pred[c] += m['n_pred']
+                per_head_true[c] += m['n_true']
 
     avg_loss = float(np.mean(losses)) if losses else 0.0
-    precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) else 0.0
-    recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
 
+    if n_classes == 1:
+        precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) else 0.0
+        recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+        metrics = {
+            'tp': total_tp, 'fp': total_fp, 'fn': total_fn,
+            'precision': precision, 'recall': recall, 'f1': f1,
+            'n_pred': total_pred, 'n_true': total_true,
+        }
+        return avg_loss, f1, metrics
+
+    # Multi-head: build per-head metrics + aggregate-across-heads totals.
+    per_head = {}
+    headline_f1 = 0.0
+    for c in range(n_classes):
+        tp, fp, fn = per_head_tp[c], per_head_fp[c], per_head_fn[c]
+        prec = tp / (tp + fp) if (tp + fp) else 0.0
+        rec = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+        per_head[c] = {
+            'tp': tp, 'fp': fp, 'fn': fn,
+            'precision': prec, 'recall': rec, 'f1': f1,
+            'n_pred': per_head_pred[c], 'n_true': per_head_true[c],
+        }
+        # Headline = any-beat (col 1) — most directly comparable to v1's
+        # F1 since v1's beat_score equaled the col-0 + col-1 sum (i.e.
+        # 1 - non_beat_prob, which is exactly what col 1 measures).
+        if c == 1:
+            headline_f1 = f1
+
+    agg_tp = sum(per_head_tp)
+    agg_fp = sum(per_head_fp)
+    agg_fn = sum(per_head_fn)
+    agg_prec = agg_tp / (agg_tp + agg_fp) if (agg_tp + agg_fp) else 0.0
+    agg_rec = agg_tp / (agg_tp + agg_fn) if (agg_tp + agg_fn) else 0.0
+    agg_f1 = 2 * agg_prec * agg_rec / (agg_prec + agg_rec) if (agg_prec + agg_rec) else 0.0
     metrics = {
-        'tp': total_tp, 'fp': total_fp, 'fn': total_fn,
-        'precision': precision, 'recall': recall, 'f1': f1,
-        'n_pred': total_pred, 'n_true': total_true,
+        'tp': agg_tp, 'fp': agg_fp, 'fn': agg_fn,
+        'precision': agg_prec, 'recall': agg_rec, 'f1': agg_f1,
+        'n_pred': sum(per_head_pred), 'n_true': sum(per_head_true),
+        'per_head': per_head,
     }
-    return avg_loss, f1, metrics
+    return avg_loss, headline_f1, metrics
 
 
 def format_continuous_metrics(m: dict) -> str:
-    return (f'  F1={m["f1"]:.3f}  precision={m["precision"]:.3f}  '
-            f'recall={m["recall"]:.3f}  '
-            f'tp={m["tp"]} fp={m["fp"]} fn={m["fn"]}  '
-            f'(pred={m["n_pred"]} true={m["n_true"]})')
+    """Pretty-print validation metrics. For multi-head (n_classes>1) the
+    per-head breakdown shows where each head actually lands so you can
+    spot patterns like "downbeat F1 collapses because the threshold is
+    wrong for that head's output range."""
+    lines = [
+        f'  F1={m["f1"]:.3f}  precision={m["precision"]:.3f}  '
+        f'recall={m["recall"]:.3f}  '
+        f'tp={m["tp"]} fp={m["fp"]} fn={m["fn"]}  '
+        f'(pred={m["n_pred"]} true={m["n_true"]})'
+    ]
+    if 'per_head' in m:
+        for c, h in m['per_head'].items():
+            name = HEAD_NAMES_3HEAD.get(c, f'head{c}')
+            lines.append(
+                f'    [{name:<10}] F1={h["f1"]:.3f}  '
+                f'P={h["precision"]:.3f}  R={h["recall"]:.3f}  '
+                f'tp={h["tp"]} fp={h["fp"]} fn={h["fn"]}  '
+                f'(pred={h["n_pred"]} true={h["n_true"]})'
+            )
+    return '\n'.join(lines)
 
 
 def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
@@ -481,9 +637,11 @@ def train_epoch_continuous(model, gpu, batches, lr: float, chunk_len: int,
             val_loss, val_f1, val_metrics = validate_continuous(
                 model, gpu, val_batches, chunk_len, in_buf,
                 val_data, cache, max_batches=val_sample_size,
-                target_col=target_col)
+                target_col=target_col,
+                n_classes=n_classes, label_key=label_key, schema=schema)
+            f1_label = ('F1[any-beat]' if n_classes > 1 else 'F1')
             print(f"    [mid-epoch +{elapsed_min:.1f}min] batch {batch_idx+1}/{n_batches}  "
-                  f"val_loss={val_loss:.4f}  F1={val_f1:.3f}  "
+                  f"val_loss={val_loss:.4f}  {f1_label}={val_f1:.3f}  "
                   f"(sampled {val_sample_size}/{len(val_batches)} val batches)")
             print(format_continuous_metrics(val_metrics))
             if val_loss < best_val_state[0]:
@@ -665,19 +823,20 @@ def main():
             label_key=args.label_key,
             schema=schema,
         )
-        # Validation: for now uses col 0 of multi-head output for the
-        # F1 metric (downbeat detection — the most-imbalanced head and
-        # therefore the most informative single-channel sanity check).
-        # Per-channel F1 breakout is a follow-up — gives us per-axis
-        # ground-truth on whether the multi-head training is actually
-        # separating signals or just learning a common "beat" prior.
+        # Validation: per-head F1 in n_classes>1 mode (each head has
+        # its own threshold — see DEFAULT_HEAD_THRESHOLDS_3HEAD).
+        # Headline F1 returned is the col-1 (any-beat) one since that's
+        # what's directly comparable to v1's F1=0.544 baseline (v1's
+        # beat_score was 1 - non_beat_prob = col 0 + col 1).
         val_loss, val_f1, val_metrics = validate_continuous(
             model, gpu, val_batches, args.chunk_len, in_buf,
             val_data, file_cache, peak_threshold=args.peak_threshold,
             target_col=args.target_col,
+            n_classes=args.n_classes, label_key=args.label_key, schema=schema,
         )
+        f1_label = ('F1[any-beat]' if args.n_classes > 1 else 'F1')
         print(f'  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  '
-              f'F1={val_f1:.3f}')
+              f'{f1_label}={val_f1:.3f}')
         print(format_continuous_metrics(val_metrics))
 
         if val_loss < best_val_state[0]:
