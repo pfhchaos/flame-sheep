@@ -317,3 +317,135 @@ class TestFrameState:
             frame = _tick(core, dt)
             assert 0.7 <= frame.brightness <= 12.0, \
                 f"brightness {frame.brightness} out of expected range"
+
+
+# ============================================================================
+# pin_genome / clear_pin — `show <gid>` control-pipe command path.
+# Locks the wallpaper to a specific genome, used by validation tools
+# (blind_model_eval, whats_changed, the compare-mode positive-control
+# we did 2026-05-27 for the GPU timing investigation).
+# ============================================================================
+
+class TestPinGenome:
+
+    def test_pin_sets_core_state(self, core, clock):
+        from flame_sheep.genome import Genome
+        rng = np.random.default_rng(7)
+        g = Genome.random(rng)
+        assert core._pinned_genome is None
+        assert core._pinned_genome_db_id is None
+
+        core.pin_genome(g, db_id=42)
+        assert core._pinned_genome is g
+        assert core._pinned_genome_db_id == 42
+
+    def test_pin_sets_genome_axis_state(self, core, clock):
+        """The axis-side mirror — GenomeAxis.contribute reads
+        self._pinned_genome to override its normal current/target
+        selection. core.pin_genome must keep that mirror in sync."""
+        from flame_sheep.genome import Genome
+        g = Genome.random(np.random.default_rng(8))
+        core.pin_genome(g)
+        assert core._genome_axis._pinned_genome is g
+
+    def test_clear_pin_clears_both(self, core, clock):
+        from flame_sheep.genome import Genome
+        g = Genome.random(np.random.default_rng(9))
+        core.pin_genome(g, db_id=123)
+        core.clear_pin()
+        assert core._pinned_genome is None
+        assert core._pinned_genome_db_id is None
+        assert core._genome_axis._pinned_genome is None
+
+    def test_pin_overrides_frame_genome_identity(self, core, clock):
+        """After pinning, the per-frame genome's structural identity
+        (variation weights, transform colors) matches the pinned
+        genome. Per the pin_genome docstring, per-frame state like
+        zoom-pulse and rotation ARE still applied by other axes —
+        only the genome IDENTITY is locked, not all per-frame state."""
+        from flame_sheep.genome import Genome
+        g = Genome.random(np.random.default_rng(10))
+        # Tick a few frames without pin so axis has some state to diverge
+        dt = 1.0 / 60
+        for _ in range(10):
+            clock.advance(dt)
+            _tick(core, dt)
+        # Pin
+        core.pin_genome(g)
+        clock.advance(dt)
+        frame = _tick(core, dt)
+        # IDENTITY is locked: variations + colors + weights match
+        # exactly (zoom + rotation don't touch these fields).
+        assert len(frame.genome.transforms) == len(g.transforms)
+        for ft, gt in zip(frame.genome.transforms, g.transforms):
+            np.testing.assert_array_equal(ft.variations, gt.variations)
+            assert ft.color == gt.color
+            assert ft.weight == gt.weight
+        # Per-frame state (zoom, rotation, center) IS allowed to
+        # differ — driven by ZoomAxis + rotation phase tracking.
+
+    def test_pin_overrides_palette(self, core, clock):
+        """When pinned, frame.palette should come from the pinned
+        genome's palette (not whatever PaletteAxis was mid-transition
+        to). This matters because the pin use case is 'show me exactly
+        this genome' — color included."""
+        from flame_sheep.genome import Genome
+        g = Genome.random(np.random.default_rng(11))
+        # Ensure g has a distinctive palette so equality is meaningful
+        g.palette = np.linspace(0.2, 0.9, 256*3, dtype=np.float32).reshape(256, 3)
+
+        # Tick some to advance palette axis off the initial palette
+        dt = 1.0 / 60
+        for _ in range(30):
+            clock.advance(dt)
+            _tick(core, dt)
+        # Pin
+        core.pin_genome(g)
+        clock.advance(dt)
+        frame = _tick(core, dt)
+        np.testing.assert_array_equal(frame.palette, g.palette)
+
+    def test_active_genome_db_id_returns_pinned_id(self, core, clock):
+        """active_genome_db_id is the "what's on screen right now"
+        property used for like/dislike ratings. When pinned, ratings
+        should target the pinned genome, not whatever the axis was
+        morphing toward."""
+        from flame_sheep.genome import Genome
+        g = Genome.random(np.random.default_rng(12))
+        core.pin_genome(g, db_id=777)
+        assert core.active_genome_db_id == 777
+
+    def test_active_genome_db_id_falls_through_when_not_pinned(self, core, clock):
+        """No pin → axis-derived behavior. Should return some db_id
+        from the genome the axis is showing (or None for an
+        unstored genome — synthetic test genomes have no db_id)."""
+        # No pin set — should fall through to axis logic
+        assert core._pinned_genome_db_id is None
+        # The test genomes don't have db_id set, so result is None
+        # (the fall-through path works; the "real id" path would need
+        # a real loaded genome with db_id).
+        result = core.active_genome_db_id
+        # Just verify it doesn't crash and returns something we can use
+        assert result is None or isinstance(result, int)
+
+    def test_clear_after_pin_restores_axis_behavior(self, core, clock):
+        from flame_sheep.genome import Genome
+        g = Genome.random(np.random.default_rng(13))
+        core.pin_genome(g, db_id=99)
+        assert core.active_genome_db_id == 99
+        core.clear_pin()
+        # Falls back to axis-derived id
+        assert core.active_genome_db_id != 99
+
+    def test_repin_replaces_previous_pin(self, core, clock):
+        """Calling pin_genome twice — second pin replaces the first.
+        Used by `show <gid>` to switch which genome is locked
+        without an explicit unshow between."""
+        from flame_sheep.genome import Genome
+        g1 = Genome.random(np.random.default_rng(14))
+        g2 = Genome.random(np.random.default_rng(15))
+        core.pin_genome(g1, db_id=1)
+        core.pin_genome(g2, db_id=2)
+        assert core._pinned_genome is g2
+        assert core._pinned_genome_db_id == 2
+        assert core._genome_axis._pinned_genome is g2
