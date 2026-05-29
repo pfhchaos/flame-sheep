@@ -97,6 +97,133 @@ def forward_sequence(features: np.ndarray, weights: tuple,
     return logits
 
 
+# ---------------------------------------------------------------------------
+# Multi-depth variant
+# ---------------------------------------------------------------------------
+#
+# Stacked-GRU layout (matches build_beat_crnn_multidepth in
+# wallpaper_ml.models). save_weights() concat order:
+#   [input_linear, gru_0, gru_1, ..., gru_{k-1}, head_0, ..., head_{k-1}]
+# Each head is a (hidden_size, 1) linear with its own bias.
+#
+# Convention: head index 0 = shallowest GRU, k-1 = deepest. Each head
+# reads from its own layer's output (one head per depth). The runtime
+# detector maps head_idx → (downbeat / beat / onset) per the training
+# convention in train_beat_rnn_continuous.MULTIDEPTH_HEAD_TO_LABEL_COL.
+
+
+def unpack_weights_multidepth(flat: np.ndarray, input_size: int,
+                              proj_size: int, hidden_size: int,
+                              n_gru_layers: int,
+                              n_heads: int | None = None) -> tuple:
+    """Slice flat weights into (W_in, b_in, [gru_k …], [head_k …]) where
+    each gru_k is (W, U, bias) and each head_k is (W, b).
+
+    Raises ValueError if the parsed offset doesn't equal len(flat) — i.e.
+    the caller passed wrong dims for this file. Same loud-failure
+    discipline as the single-arch unpack_weights.
+    """
+    if n_heads is None:
+        n_heads = n_gru_layers
+    offset = 0
+
+    # Input linear: (input_size → proj_size) + bias
+    n_w = input_size * proj_size
+    W_in = flat[offset:offset + n_w].reshape(input_size, proj_size)
+    offset += n_w
+    b_in = flat[offset:offset + proj_size]
+    offset += proj_size
+
+    # Stacked GRUs. Layer 0 consumes proj_size; later layers consume
+    # hidden_size from the previous layer's output.
+    grus = []
+    for k in range(n_gru_layers):
+        I_k = proj_size if k == 0 else hidden_size
+        n_W = 3 * I_k * hidden_size
+        n_U = 3 * hidden_size * hidden_size
+        n_bias = 6 * hidden_size
+        W_k = flat[offset:offset + n_W].reshape(3, I_k, hidden_size)
+        offset += n_W
+        U_k = flat[offset:offset + n_U].reshape(3, hidden_size, hidden_size)
+        offset += n_U
+        bias_k = flat[offset:offset + n_bias].reshape(6, hidden_size)
+        offset += n_bias
+        grus.append((W_k, U_k, bias_k))
+
+    # Heads: each (hidden_size → 1) linear. Save order: head_0, head_1, ...
+    heads = []
+    for _ in range(n_heads):
+        n_w = hidden_size * 1
+        W_h = flat[offset:offset + n_w].reshape(hidden_size, 1)
+        offset += n_w
+        b_h = flat[offset:offset + 1]
+        offset += 1
+        heads.append((W_h, b_h))
+
+    if offset != len(flat):
+        raise ValueError(
+            f'Multi-depth weight length mismatch: parsed {offset} floats, '
+            f'file has {len(flat)}. Expected layout for input={input_size}, '
+            f'proj={proj_size}, hidden={hidden_size}, '
+            f'n_gru_layers={n_gru_layers}, n_heads={n_heads}.')
+    return W_in, b_in, grus, heads
+
+
+def step_multidepth(x: np.ndarray, hidden_states: list[np.ndarray],
+                    weights: tuple) -> tuple[np.ndarray, list[np.ndarray]]:
+    """One streaming-inference timestep through the multi-depth stack.
+
+    x: (input_size,) — single frame's feature vector
+    hidden_states: list of n_gru_layers (hidden_size,) arrays — updated
+        in-place semantically but the function returns a new list so
+        callers can choose whether to overwrite.
+    weights: (W_in, b_in, grus, heads) from unpack_weights_multidepth.
+
+    Returns (head_logits, new_hidden_states) where head_logits is
+    shape (n_heads,) — caller applies sigmoid for the per-head
+    probability.
+    """
+    W_in, b_in, grus, heads = weights
+    proj = linear_forward(x, W_in, b_in, relu=True)
+
+    new_hiddens: list[np.ndarray] = []
+    layer_input = proj
+    layer_outputs: list[np.ndarray] = []
+    for (W_g, U_g, bias_g), h_prev in zip(grus, hidden_states):
+        h_new = gru_forward_step(layer_input, h_prev, W_g, U_g, bias_g,
+                                  hidden_size=h_prev.shape[0],
+                                  input_size=layer_input.shape[0])
+        new_hiddens.append(h_new)
+        layer_outputs.append(h_new)
+        layer_input = h_new
+
+    # One head per layer (multi-depth design). head_k reads layer_outputs[k].
+    head_logits = np.empty(len(heads), dtype=np.float32)
+    for k, ((W_h, b_h), h_k) in enumerate(zip(heads, layer_outputs)):
+        head_logits[k] = float((h_k @ W_h + b_h)[0])
+    return head_logits, new_hiddens
+
+
+def forward_sequence_multidepth(features: np.ndarray, weights: tuple,
+                                hidden_size: int,
+                                n_gru_layers: int) -> np.ndarray:
+    """Run the multi-depth stack over (T, input_size) features.
+
+    Returns logits shape (T, n_heads). Hidden states initialized to zero
+    — matches the training-time reset_hidden() at chunk boundaries.
+    """
+    _, _, _, heads = weights
+    n_heads = len(heads)
+    T = features.shape[0]
+    hiddens = [np.zeros(hidden_size, dtype=np.float32)
+               for _ in range(n_gru_layers)]
+    logits = np.empty((T, n_heads), dtype=np.float32)
+    for t in range(T):
+        logits_t, hiddens = step_multidepth(features[t], hiddens, weights)
+        logits[t] = logits_t
+    return logits
+
+
 def peak_pick(scores: np.ndarray, threshold: float = 0.3,
               min_distance: int = 5) -> np.ndarray:
     """Find local maxima above threshold in a 1D score array.
