@@ -20,6 +20,8 @@ import zlib
 
 import numpy as np
 
+from ..load_aware import sleep_if_loaded
+
 log = logging.getLogger(__name__)
 
 RENDER_VERSION = 10  # v10: first-hit = single-frame snapshots at iter=N (match live wallpaper semantics)
@@ -109,8 +111,7 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
     try:
         while not stop_event.is_set():
             # Load-aware: pause when system is busy
-            if os.getloadavg()[0] > BackgroundGpuRenderer.LOAD_THRESHOLD:
-                stop_event.wait(BackgroundGpuRenderer.LOAD_CHECK_INTERVAL)
+            if sleep_if_loaded(stop_event):
                 continue
 
             # Find next genome to render
@@ -298,9 +299,7 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
 class BackgroundGpuRenderer:
     """Load-aware background process that renders unscored genomes."""
 
-    LOAD_THRESHOLD = 6.0
-    LOAD_CHECK_INTERVAL = 10.0
-    IDLE_CHECK_INTERVAL = 30.0
+    IDLE_CHECK_INTERVAL = 30.0  # one-shot per genome; once done, low cadence
 
     def __init__(self, db_path: str):
         self._db_path = db_path

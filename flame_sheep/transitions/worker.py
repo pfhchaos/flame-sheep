@@ -15,6 +15,8 @@ import multiprocessing
 import os
 import sqlite3
 
+from ..load_aware import sleep_if_loaded
+
 log = logging.getLogger(__name__)
 
 
@@ -44,8 +46,7 @@ def _transition_main(db_path: str, stop_event: multiprocessing.synchronize.Event
 
     try:
         while not stop_event.is_set():
-            if os.getloadavg()[0] > BackgroundTransitionScorer.LOAD_THRESHOLD:
-                stop_event.wait(BackgroundTransitionScorer.LOAD_CHECK_INTERVAL)
+            if sleep_if_loaded(stop_event):
                 continue
 
             # Phase 1: backfill variation_signature
@@ -156,9 +157,7 @@ def _transition_main(db_path: str, stop_event: multiprocessing.synchronize.Event
 class BackgroundTransitionScorer:
     """Load-aware background process that computes genome transition distances."""
 
-    LOAD_THRESHOLD = 6.0
-    LOAD_CHECK_INTERVAL = 10.0
-    IDLE_CHECK_INTERVAL = 30.0
+    IDLE_CHECK_INTERVAL = 30.0  # one-shot per genome; once done, low cadence
 
     def __init__(self, db_path: str):
         self._db_path = db_path

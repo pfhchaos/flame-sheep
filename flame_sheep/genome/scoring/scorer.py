@@ -18,6 +18,8 @@ import sqlite3
 
 import numpy as np
 
+from ...load_aware import sleep_if_loaded
+
 log = logging.getLogger(__name__)
 
 
@@ -40,8 +42,7 @@ def _scorer_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
 
     try:
         while not stop_event.is_set():
-            if os.getloadavg()[0] > BackgroundScorer.LOAD_THRESHOLD:
-                stop_event.wait(BackgroundScorer.LOAD_CHECK_INTERVAL)
+            if sleep_if_loaded(stop_event):
                 continue
 
             row = conn.execute(
@@ -209,8 +210,6 @@ class BackgroundScorer:
     # Bump this when the scoring algorithm changes to re-score all genomes
     SCORE_VERSION = 4  # v4: added cluster-based scoring (cl_*)
 
-    LOAD_THRESHOLD = 6.0
-    LOAD_CHECK_INTERVAL = 10.0
     IDLE_CHECK_INTERVAL = 30.0
     GRID_SIZE = 128
     N_ITERATIONS = 50_000

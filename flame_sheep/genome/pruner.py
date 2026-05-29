@@ -15,6 +15,8 @@ import multiprocessing
 import os
 import sqlite3
 
+from ..load_aware import sleep_if_loaded
+
 log = logging.getLogger(__name__)
 
 
@@ -116,8 +118,7 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
             except Exception:
                 log.exception('[gen-advance] step failed')
 
-            if os.getloadavg()[0] > BackgroundPruner.LOAD_THRESHOLD:
-                stop_event.wait(BackgroundPruner.LOAD_CHECK_INTERVAL)
+            if sleep_if_loaded(stop_event):
                 continue
 
             row = conn.execute(
@@ -187,9 +188,7 @@ def _pruner_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
 class BackgroundPruner:
     """Load-aware background process that archives unstable genomes."""
 
-    LOAD_THRESHOLD = 6.0
-    LOAD_CHECK_INTERVAL = 10.0
-    IDLE_CHECK_INTERVAL = 60.0
+    IDLE_CHECK_INTERVAL = 60.0  # bulk-rare work; slow poll is fine
 
     def __init__(self, db_path: str):
         self._db_path = db_path
