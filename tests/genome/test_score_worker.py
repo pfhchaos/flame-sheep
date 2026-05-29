@@ -164,3 +164,56 @@ class TestScoreCompleteness:
         for k, v in scores.items():
             if isinstance(v, (int, float)):
                 assert np.isfinite(v), f'{k} is not finite: {v}'
+
+
+# ============================================================================
+# _compute_cnn_weights_hash — pure-function hash that includes both weights
+# AND normalization version. Tracking just weights misses input-pipeline
+# changes that change scores without changing the model file. The 2026-05
+# incident (3000 genomes with legacy scores frozen under v3-normalized
+# hash) is exactly what tests in this class are guarding against.
+# ============================================================================
+
+class TestComputeCnnWeightsHash:
+
+    def test_same_weights_same_norm_same_hash(self):
+        from flame_sheep.genome.score_worker import _compute_cnn_weights_hash
+        h1 = _compute_cnn_weights_hash(b'fake weights bytes', 'v3')
+        h2 = _compute_cnn_weights_hash(b'fake weights bytes', 'v3')
+        assert h1 == h2
+
+    def test_different_weights_different_hash(self):
+        from flame_sheep.genome.score_worker import _compute_cnn_weights_hash
+        h1 = _compute_cnn_weights_hash(b'weights A', 'v3')
+        h2 = _compute_cnn_weights_hash(b'weights B', 'v3')
+        assert h1 != h2
+
+    def test_same_weights_different_norm_different_hash(self):
+        """The May 2026 incident shape — weights file unchanged but
+        normalization upgraded from legacy to v3. Scores produced before
+        vs after are NOT equivalent and must hash differently."""
+        from flame_sheep.genome.score_worker import _compute_cnn_weights_hash
+        h_legacy = _compute_cnn_weights_hash(b'weights', None)
+        h_v3 = _compute_cnn_weights_hash(b'weights', 'v3')
+        assert h_legacy != h_v3
+
+    def test_none_normalization_tags_as_legacy(self):
+        """normalization=None ↔ normalization='legacy_v0' — same hash
+        (legacy weights load as None, but the tag is canonicalized)."""
+        from flame_sheep.genome.score_worker import _compute_cnn_weights_hash
+        h_none = _compute_cnn_weights_hash(b'weights', None)
+        h_explicit = _compute_cnn_weights_hash(b'weights', 'legacy_v0')
+        assert h_none == h_explicit
+
+    def test_hex_output_is_16_chars(self):
+        from flame_sheep.genome.score_worker import _compute_cnn_weights_hash
+        h = _compute_cnn_weights_hash(b'whatever', 'v1')
+        assert len(h) == 16
+        assert all(c in '0123456789abcdef' for c in h)
+
+    def test_different_norm_versions_distinct(self):
+        from flame_sheep.genome.score_worker import _compute_cnn_weights_hash
+        weights = b'fixed weights'
+        hashes = [_compute_cnn_weights_hash(weights, v)
+                  for v in ['v1', 'v2', 'v3', 'legacy_v0']]
+        assert len(set(hashes)) == 4, 'each normalization version should produce a distinct hash'
