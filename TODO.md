@@ -90,3 +90,15 @@ Side monitors show stale/flickering data during compare mode because the main re
 `VkCompute` currently tracks `buffer_count` and `pipeline_count` via `_live_buffers` / `_live_pipelines` sets. Used by `tests/wallpaper_ml/test_vk_leaks.py` to catch buffer/pipeline leaks in training loops (a real bug that caused a full system lockup before the leak fix).
 
 When the renderer moves to Vulkan, add the same pattern for image-class resources: `_live_images`, `_live_framebuffers`, `_live_samplers`, `_live_descriptor_pools` if not subsumed by pipeline. Each new resource wrapper should accept `ctx=self` in its constructor and call `ctx._live_<type>.discard(id(self))` in `destroy()`. Then add a render-loop leak test mirroring `test_training_step_no_leak`: warm up, snapshot, render N frames, assert counts flat.
+
+## Abstractions to extract from one-off implementations
+
+Patterns that work well in one place that should be promoted to shared infrastructure (most likely `viz_authoring` or `wallpaper_ml`) when a second consumer appears.
+
+### Arch-discovery loader for ML weights files
+
+The 2026-05-29 `flame_sheep_audio.beat_rnn._discover_arch` pattern: weights file carries explicit dimension metadata (input_size/proj_size/hidden_size/n_classes); the loader prefers those over hardcoded module constants, with a legacy lookup table by flat-weight length as fallback for pre-metadata files. Replaces the silent `_HIDDEN_SIZE = 96` mismatch class of bug (constant out of sync with the file's actual H).
+
+Currently lives in `flame_sheep_audio/src/flame_sheep_audio/beat_rnn.py`. The CNN scorer (`flame_sheep/genome/scoring/cnn_scorer.py:load_cnn_weights_file`) is the obvious second consumer once its architecture starts varying — today the AestheticNet shape is hardcoded in code, but channel sweeps / layer-count experiments would benefit from the same discover-from-file pattern. Promote to `wallpaper_ml` (or `viz_authoring`) when that happens, keeping the per-model legacy-lookup tables in the consuming modules.
+
+Shape worth keeping: explicit-dims-in-file is the preferred path; the legacy-lookup table is a migration aid that should accumulate entries for known historical layouts and otherwise stay small. Don't make the lookup table the primary path — having authoritative metadata in the file is what stops the silent-mismatch bugs.
