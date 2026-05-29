@@ -8,7 +8,7 @@ This is for the project author's own sensibilities — internal-satisfaction is 
 
 | Stage | Description | Status |
 |-------|-------------|--------|
-| 0 | FlameRenderer decomposition | **Partial** — GpuContext extracted (`rendering/gpu_context.py`); `renderer.py` at 808 lines, down from 1174 but still flame-specific monolith. Acceptable end-state if viz_authoring (Stage 9) isn't imminent. |
+| 0 | FlameRenderer decomposition | **Done** — GpuContext extracted earlier; this session split FlameRenderer into 3 sub-components: `ChaosGame` (chaos.py, dispatch + histogram mgmt), `TonemapPipeline` (tonemap.py, render + blur + temporal blend), `SnapshotPipeline` (snapshot.py, PNG snapshot variants + DE). renderer.py 808 → 419 lines; each unit passes the "describe in one sentence" test. Old method names kept as delegators — no caller changes. |
 | 1 | Extract `wallpaper_ml/` to standalone package | **Done** — package at `wallpaper_ml/src/wallpaper_ml/`; thin re-export shim at `flame_sheep/wallpaper_ml.py` for back-compat. |
 | 2 | Split `storage.py` + audio cross-package cleanup | **Done** — `storage/{library,schema,serialization,catalog,esheep_parser}.py`; `palette/scoring.py`; `audio/tempo.py`. |
 | 3 | Group siblings into packages (runtime/, rendering/, audio/, ui/, etc.) | **Done** — 3a/b/d/e committed during May 2026 reorg work. |
