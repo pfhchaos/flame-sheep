@@ -46,6 +46,10 @@ SCHEMAS = {
 
 
 def main():
+    # Line-buffer stdout so progress lines appear as they happen rather
+    # than waiting for the default block-buffer to fill (matters when
+    # stdout is redirected to a file or piped).
+    sys.stdout.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
