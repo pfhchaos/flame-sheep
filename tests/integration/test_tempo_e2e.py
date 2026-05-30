@@ -17,7 +17,7 @@ from flame_sheep_audio.source import FeedSource
 from flame_sheep_audio._cqt_engine import CqtEngine
 from flame_sheep_audio.tempo_acf import AutocorrelationTempoTracker
 from flame_sheep.audio.tempo import TempoTracker
-from synths import (
+from flame_sheep_audio.eval.synths import (
     DrumPattern, PatternSpec, ALL_PATTERNS,
     FOUR_FOUR, FOUR_FOUR_FAST, WALTZ, HALF_TIME,
     TRAP, DNB_ELECTRONIC, REGGAETON, FOUR_ON_FLOOR_808,
