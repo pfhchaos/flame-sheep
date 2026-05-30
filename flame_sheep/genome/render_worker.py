@@ -29,7 +29,9 @@ RENDER_VERSION = 10  # v10: first-hit = single-frame snapshots at iter=N (match 
 COLOR_SCALE = 1_000_000.0
 
 
-def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> None:
+def _render_main(db_path: str,
+                  stop_event: multiprocessing.synchronize.Event,
+                  pause_flag_path: str | None = None) -> None:
     """Entry point for the GPU render subprocess.
 
     NOTE: doesn't use `worker_bootstrap.init_worker_subprocess` because
@@ -38,6 +40,11 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
     user sees a "started" message immediately; SQLite connection
     happens post-sleep after the GPU is claimed. The helper assumes
     all bootstrap steps happen contiguously, which doesn't fit.
+
+    pause_flag_path: if given (when spawned by the wallpaper), throttle
+    based on the scheduler's pause flag (which is driven by wallpaper
+    frame-budget signal). When None (CLI standalone invocation), falls
+    back to the legacy CPU-load-average throttle.
     """
     for name in ('flame_sheep', 'flame_sheep_audio', None):
         logging.getLogger(name).handlers.clear()
@@ -116,10 +123,40 @@ def _render_main(db_path: str, stop_event: multiprocessing.synchronize.Event) ->
     n_frames = 60
     swept_steps = 36
 
+    # Throttle source: scheduler pause flag (when spawned by wallpaper)
+    # falls back to system load average (when run standalone via CLI).
+    pause_reader = None
+    if pause_flag_path:
+        try:
+            from ..scheduler.pause_flag import PauseFlagReader
+            from ..scheduler.policy import BatchState
+            pause_reader = PauseFlagReader(pause_flag_path)
+            log.info(f'render worker throttling on pause flag '
+                     f'{pause_flag_path}')
+        except Exception as e:
+            log.warning(f'failed to open pause flag {pause_flag_path!r}: '
+                         f'{e}; falling back to load-average throttle')
+
+    def _yield_to_scheduler() -> bool:
+        """Mirror sleep_if_loaded contract: return True if work should
+        skip this iteration. Uses pause flag when available, falls
+        back to load-average."""
+        if pause_reader is not None:
+            state = pause_reader.state
+            if state is BatchState.PAUSE:
+                stop_event.wait(0.2)
+                return True
+            if state is BatchState.SLOW:
+                # Proceed but with extra delay before the next render
+                stop_event.wait(0.5)
+                return False
+            return False
+        return sleep_if_loaded(stop_event)
+
     try:
         while not stop_event.is_set():
-            # Load-aware: pause when system is busy
-            if sleep_if_loaded(stop_event):
+            # Scheduler-driven yield (preferred) or load-average fallback
+            if _yield_to_scheduler():
                 continue
 
             # Find next genome to render
@@ -309,8 +346,13 @@ class BackgroundGpuRenderer:
 
     IDLE_CHECK_INTERVAL = 30.0  # one-shot per genome; once done, low cadence
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, pause_flag_path: str | None = None):
+        """pause_flag_path: optional scheduler pause flag for
+        wallpaper-signal-driven throttling. When set, takes precedence
+        over the legacy load-average throttle. None = CLI/standalone
+        mode."""
         self._db_path = db_path
+        self._pause_flag_path = pause_flag_path
         self._process: multiprocessing.Process | None = None
         self._stop = multiprocessing.Event()
 
@@ -318,7 +360,7 @@ class BackgroundGpuRenderer:
         self._stop.clear()
         self._process = multiprocessing.Process(
             target=_render_main,
-            args=(self._db_path, self._stop),
+            args=(self._db_path, self._stop, self._pause_flag_path),
             daemon=True, name='gpu-render')
         self._process.start()
         log.info('GPU render worker started (pid=%d)', self._process.pid)

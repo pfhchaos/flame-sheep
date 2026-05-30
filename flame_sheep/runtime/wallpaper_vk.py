@@ -476,6 +476,30 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
         log.exception('[precompile] init failed; continuing without')
         precompile_driver = None
 
+    # --- Background GPU render worker (best-effort) ----------------
+    # Renders unscored genomes headlessly so the CPU score worker has
+    # images to score. Wired to the scheduler at LOW priority — gets
+    # throttled sooner than precompile because the user notices new
+    # shader compiles but doesn't watch the score DB fill in.
+    render_supervisor = None
+    if wallpaper_signal_writer is not None:
+        try:
+            from ..scheduler.render_supervisor import (
+                RenderWorkerSupervisor)
+            from ..scheduler.wallpaper_signal import WallpaperSignalReader
+            from ..storage import _db_path
+            # The supervisor needs its OWN reader (separate fd) so its
+            # policy thread can sample independently of precompile's.
+            render_reader = WallpaperSignalReader()
+            render_supervisor = RenderWorkerSupervisor(
+                str(_db_path()), render_reader)
+            render_supervisor.start()
+        except Exception:
+            log.exception('[render-supervisor] init failed; continuing without')
+            render_supervisor = None
+    else:
+        log.info('[render-supervisor] skipped (wallpaper signal not active)')
+
     orch = Orchestrator(audio_device=audio_device, test_audio=test_audio)
     core = FlameSheepCore(orchestrator=orch, lib=lib)
 
@@ -680,6 +704,11 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 precompile_driver.stop()
             except Exception:
                 log.exception('[precompile] stop failed')
+        if render_supervisor is not None:
+            try:
+                render_supervisor.stop()
+            except Exception:
+                log.exception('[render-supervisor] stop failed')
         if wallpaper_signal_writer is not None:
             try:
                 wallpaper_signal_writer.close()
