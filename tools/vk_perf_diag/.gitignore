@@ -1,0 +1,4 @@
+# Generated artifacts — large + reproducible via dump_chaos_isa.py
+dump_*.txt
+dump_*.spv
+dump_*.spvdis

@@ -1,0 +1,70 @@
+#version 450
+// Trimmed chaos game for IR-diff analysis (Vulkan flavor).
+//
+// Goal: produce the SAME structural pattern as flame_chaos.comp's hot
+// loop — affine + variation (linear / identity) + atomicAdd into a
+// histogram — but with all the non-essential machinery stripped:
+//   - No variations.glsl include (1500 lines + 100+ variations)
+//   - No symmetry groups
+//   - No pre-variations, post-affines, final xform, color blend
+//   - Hardcoded single transform = identity (linear variation = passthrough)
+//
+// Result: SPIR-V that's small enough to read by hand and compare to
+// the GL-side compile via Mesa's INTEL_DEBUG=cs ISA dump. We're looking
+// specifically for differences in atomic-add codegen — whether the
+// Vulkan / ANV path emits the same hardware-atomic UGM ops as the
+// GL / iris path on the same pattern.
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) buffer Histogram {
+    uint histogram[];
+};
+layout(std430, binding = 1) buffer Walkers {
+    float walker_data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    int   u_width;
+    int   u_height;
+    int   u_iterations;
+    uint  u_rng_seed;
+};
+
+// Local xorshift (matches the GL rng.glsl exactly)
+uint rng_state;
+uint rng_next() {
+    rng_state ^= rng_state << 13u;
+    rng_state ^= rng_state >> 17u;
+    rng_state ^= rng_state << 5u;
+    return rng_state;
+}
+float rng_float() { return float(rng_next()) / float(0xFFFFFFFFu); }
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    rng_state = gid * 1973u + 9277u + u_rng_seed;
+
+    uint base = gid * 3u;
+    float px = walker_data[base + 0u];
+    float py = walker_data[base + 1u];
+
+    for (int iter = 0; iter < u_iterations; iter++) {
+        // Identity affine + linear variation = passthrough (px, py).
+        // Map to pixel and plot.
+        int x = int((px + 1.0) * 0.5 * float(u_width));
+        int y = int((py + 1.0) * 0.5 * float(u_height));
+        if (x >= 0 && x < u_width && y >= 0 && y < u_height) {
+            uint idx = uint(y * u_width + x);
+            atomicAdd(histogram[idx], 1u);
+        }
+        // Tiny perturbation so the walker doesn't stay in one pixel
+        // (otherwise the bounds-check + atomic pattern doesn't see
+        // realistic spread / contention).
+        px += (rng_float() - 0.5) * 0.01;
+        py += (rng_float() - 0.5) * 0.01;
+    }
+
+    walker_data[base + 0u] = px;
+    walker_data[base + 1u] = py;
+}
