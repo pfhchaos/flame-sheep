@@ -1,4 +1,4 @@
-"""Policy: given a rolling window of GPU busy samples, decide whether
+"""Policy: given a rolling window of busy samples, decide whether
 batch work should RUN, SLOW (rate-limited), or PAUSE.
 
 Rolling-max over the window (not mean) — we want to be pessimistic.
@@ -8,14 +8,19 @@ samples averaged 40%.
 Tuning is intentionally simple: two thresholds, three states. If we
 need finer control later, the place to add it is here without
 changing the worker protocol.
+
+Accepts any "signal source" with the duck-typed interface:
+    .available  -> bool
+    .sample()   -> (busy_fraction: float, window_s: float) | None
+Currently used with either GpuLoadSampler (system-wide GPU%) or
+WallpaperSignalReader (wallpaper's own frame-budget usage).
 """
 from __future__ import annotations
 
 import collections
 import enum
 import time
-
-from .gpu_load import GpuLoadSampler
+from typing import Protocol
 
 
 class BatchState(enum.Enum):
@@ -24,9 +29,16 @@ class BatchState(enum.Enum):
     PAUSE = 'pause'  # GPU near saturation; halt batch
 
 
+class _SignalSource(Protocol):
+    @property
+    def available(self) -> bool: ...
+    def sample(self) -> tuple[float, float] | None: ...
+
+
 class Policy:
-    """Polls a GpuLoadSampler at a fixed cadence, maintains a rolling
-    window of busy fractions, and exposes a current BatchState.
+    """Polls a busy-fraction signal source at a fixed cadence,
+    maintains a rolling window of values, and exposes a current
+    BatchState.
 
     Tick from the main loop (or a scheduler thread): `policy.tick()`
     samples + recomputes state. Read `policy.state` to act on it.
@@ -36,14 +48,13 @@ class Policy:
     pause batch before a render frame deadline blows up, slow enough
     not to flip-flop on every microsecond of jitter.
 
-    If the sampler is unavailable (no perf access), the policy stays
-    in RUN — fail open. Without a signal we have no basis to throttle,
-    and the user can still rely on nice/ionice to keep batch out of
-    the way.
+    If the source is unavailable, the policy stays in RUN — fail
+    open. Without a signal we have no basis to throttle, and the
+    user can still rely on nice/ionice to keep batch out of the way.
     """
 
     def __init__(self,
-                  sampler: GpuLoadSampler,
+                  sampler: _SignalSource,
                   *,
                   sample_interval_s: float = 0.25,
                   window_samples: int = 5,

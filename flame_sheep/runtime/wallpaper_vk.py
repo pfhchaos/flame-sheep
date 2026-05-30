@@ -424,48 +424,54 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
     # cold to ~3ms cache-hit. Catalog enumeration runs in a thread
     # so it doesn't delay startup.
     #
-    # Best-effort: if anything fails (perm denied on perf, can't
-    # spawn subprocess, etc.), the wallpaper continues with the
-    # synchronous compile path — visible as occasional 500ms
-    # stutters on first-use of new tuples.
+    # Best-effort: if anything fails (can't spawn subprocess etc.)
+    # the wallpaper continues with the synchronous compile path —
+    # visible as occasional 500ms stutters on first-use of new tuples.
+    wallpaper_signal_writer = None
     try:
-        from ..scheduler.gpu_load import GpuLoadSampler
         from ..scheduler.policy import Policy
         from ..scheduler.precompile_driver import PrecompileDriver
-        _sampler = GpuLoadSampler()
-        if not _sampler.available:
-            log.info(f'[precompile] disabled: '
-                     f'{_sampler.unavailable_reason}')
-            _sampler.close()
-        else:
-            _policy = Policy(_sampler,
-                              sample_interval_s=0.25,
-                              slow_threshold=0.55,
-                              pause_threshold=0.85)
-            precompile_driver = PrecompileDriver(
-                canvas_w=canvas_w, canvas_h=canvas_h, policy=_policy)
-            precompile_driver.start()
+        from ..scheduler.wallpaper_signal import (
+            WallpaperSignalReader, WallpaperSignalWriter)
 
-            # Background enumeration — scans catalog (~3s) and enqueues
-            # at LOW priority. Done in a daemon thread so it doesn't
-            # block wallpaper startup.
-            def _enumerate_and_enqueue():
-                try:
-                    from ..scheduler.precompile_warm import (
-                        enumerate_catalog_tuples)
-                    # Don't pass main-thread's `lib` — sqlite3 connections
-                    # are not cross-thread safe. The helper opens its own.
-                    tuples = enumerate_catalog_tuples()
-                    added = precompile_driver.enqueue(
-                        tuples, priority=10)
-                    log.info(f'[precompile] enqueued {added} catalog '
-                             f'tuples at priority=10')
-                except Exception:
-                    log.exception(
-                        '[precompile] catalog enumeration failed')
-            threading.Thread(target=_enumerate_and_enqueue,
-                              name='precompile-enum',
-                              daemon=True).start()
+        # The wallpaper publishes its frame-budget usage; the scheduler
+        # reads the same shmem region. Both share a default path under
+        # $XDG_RUNTIME_DIR.
+        target_ms = 1000.0 / cfg.max_fps
+        wallpaper_signal_writer = WallpaperSignalWriter(target_ms=target_ms)
+        signal_reader = WallpaperSignalReader()
+
+        # Thresholds calibrated against chaos_ms / target_ms semantics:
+        # at iters=100 baseline chaos ≈ 14ms / 16.7ms ≈ 0.84 → SLOW.
+        # If chaos exceeds the frame budget itself → PAUSE.
+        _policy = Policy(signal_reader,
+                          sample_interval_s=0.25,
+                          slow_threshold=0.85,
+                          pause_threshold=1.00)
+        precompile_driver = PrecompileDriver(
+            canvas_w=canvas_w, canvas_h=canvas_h, policy=_policy)
+        precompile_driver.start()
+
+        # Background enumeration — scans catalog (~3s) and enqueues
+        # at LOW priority. Done in a daemon thread so it doesn't
+        # block wallpaper startup.
+        def _enumerate_and_enqueue():
+            try:
+                from ..scheduler.precompile_warm import (
+                    enumerate_catalog_tuples)
+                # Don't pass main-thread's `lib` — sqlite3 connections
+                # are not cross-thread safe. The helper opens its own.
+                tuples = enumerate_catalog_tuples()
+                added = precompile_driver.enqueue(
+                    tuples, priority=10)
+                log.info(f'[precompile] enqueued {added} catalog '
+                         f'tuples at priority=10')
+            except Exception:
+                log.exception(
+                    '[precompile] catalog enumeration failed')
+        threading.Thread(target=_enumerate_and_enqueue,
+                          name='precompile-enum',
+                          daemon=True).start()
     except Exception:
         log.exception('[precompile] init failed; continuing without')
         precompile_driver = None
@@ -607,8 +613,17 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 center=tuple(frame.genome.center),
                 decay=0.3,
             )
-            _accum('chaos_game', time.perf_counter() - _ts)
+            chaos_dt = time.perf_counter() - _ts
+            _accum('chaos_game', chaos_dt)
             perf_iters.append(frame.iterations)
+
+            # Publish frame budget usage to the scheduler. busy_fraction
+            # downstream = chaos_dt / target_ms — drives precompile
+            # throttling.
+            if wallpaper_signal_writer is not None:
+                wallpaper_signal_writer.update(
+                    frame_ms=frame_time * 1000.0,
+                    chaos_ms=chaos_dt * 1000.0)
 
             # --- Tonemap + present per output ---
             # NOTE: brightness is not yet wired into the pre-recorded command
@@ -665,6 +680,11 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 precompile_driver.stop()
             except Exception:
                 log.exception('[precompile] stop failed')
+        if wallpaper_signal_writer is not None:
+            try:
+                wallpaper_signal_writer.close()
+            except Exception:
+                log.exception('[scheduler] signal writer close failed')
         vk.vkDeviceWaitIdle(ctx.device)
         # Cleanup — best-effort; OS reclaims on exit anyway.
         for name in output_names:
