@@ -68,6 +68,10 @@ def main() -> None:
                         help='print library statistics and exit')
     parser.add_argument('--blur-radius', type=float, default=0.6,
                         help='wallpaper blur strength (0=off, 1=light, 2+=heavy; default: 1.0)')
+    parser.add_argument('--backend', choices=['gl', 'vk'], default='gl',
+                        help='rendering backend (default: gl). vk uses '
+                             'viz_authoring.vk — no compare mode / test '
+                             'pattern / audio-uniform support yet.')
     parser.add_argument('--log-features', action='store_true',
                         help='log audio features as JSON lines for offline analysis')
     parser.add_argument('--log-file', type=str, default=None,
@@ -160,9 +164,19 @@ def main() -> None:
         if audio_device is None:
             from .config import cfg
             audio_device = cfg.audio_device
-        _run_wallpaper(audio_device, args.test_audio, blur_radius=args.blur_radius,
-                       log_features=args.log_features, log_file=args.log_file,
-                       test_pattern=args.test_pattern)
+        if args.backend == 'vk':
+            from .runtime.wallpaper_vk import _run_wallpaper_vk
+            _run_wallpaper_vk(audio_device, args.test_audio,
+                              blur_radius=args.blur_radius,
+                              log_features=args.log_features,
+                              log_file=args.log_file,
+                              test_pattern=args.test_pattern)
+        else:
+            _run_wallpaper(audio_device, args.test_audio,
+                           blur_radius=args.blur_radius,
+                           log_features=args.log_features,
+                           log_file=args.log_file,
+                           test_pattern=args.test_pattern)
         return
 
     # No mode given — print help. flame-sheep is a wallpaper system; running

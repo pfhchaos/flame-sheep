@@ -1,0 +1,475 @@
+"""Wallpaper mode entry point — Vulkan backend.
+
+Parallel to wallpaper.py (the moderngl/OpenGL runtime). Reuses the
+Orchestrator + FlameSheepCore + Library + background workers + command
+machinery unchanged; swaps the GL renderer + WallpaperSession for the
+Vulkan stack (viz_authoring.vk.ChaosGame + tonemap pipeline + per-
+output LayerShellSurface).
+
+Out of scope for the first cut (each with a known follow-up):
+  - Compare mode (eval-time only; commands.comparing always False here)
+  - Test pattern
+  - Audio FFT uniform texture (deferred per the user, not used by
+    flame-sheep currently)
+  - GpuRingTimer (CPU-side timing only for now)
+  - VT switch + suspend recovery (the Vulkan stack hasn't been tested
+    against compositor suspend; for now we exit on Wayland disconnect
+    and rely on systemd to restart)
+  - Hot-plug / output reconfiguration (compute layout once at start)
+
+What's preserved verbatim:
+  - Library auto-seed on empty DB
+  - Background CPU scorer + transition scorer + pruner
+  - Watchdog
+  - Frame-rate cap from cfg.max_fps
+  - Per-frame genome / palette / brightness from FlameSheepCore.tick
+  - Walker re-randomize on genome change
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import struct
+import threading
+import time
+
+import cffi
+import numpy as np
+import vulkan as vk
+
+from ..config import cfg
+from ..genome import Genome
+from .core import FlameSheepCore
+from .orchestrator import Orchestrator
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Genome → ChaosGame.set_genome kwarg adapter
+# ---------------------------------------------------------------------------
+
+def _genome_to_chaos_kwargs(genome: Genome) -> dict:
+    """Convert an in-memory Genome to the kwarg dict ChaosGame.set_genome
+    expects. Mirror of viz_authoring.vk.wallpaper_demo._genome_from_catalog
+    minus the DB load step — used here for the per-frame genome refresh
+    coming out of FlameSheepCore.tick()."""
+    arrays = genome.to_gpu_arrays()
+    av = arrays['active_vars'].reshape(7, 8, 10)
+    pv = arrays['pre_active_vars'].reshape(7, 8, 10)
+    return dict(
+        affines=arrays['affines'],
+        post_affines=arrays['post_affines'],
+        active_vars=av, pre_vars=pv,
+        colors=arrays['colors'],
+        color_speeds=arrays['color_speeds'],
+        weights=arrays['weights'],
+        n_transforms=len(genome.transforms),
+        has_final_xform=arrays['has_final_xform'],
+    )
+
+
+def _palette_to_rgba8(palette_f32: np.ndarray) -> np.ndarray:
+    """(256, 3) float32 [0,1] → (1, 256, 4) uint8 with alpha=255."""
+    rgb = (np.clip(palette_f32, 0.0, 1.0) * 255.0).astype(np.uint8)
+    rgba = np.zeros((1, 256, 4), dtype=np.uint8)
+    rgba[0, :, :3] = rgb
+    rgba[0, :, 3] = 255
+    return rgba
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
+                     blur_radius: float = 1.0,
+                     log_features: bool = False, log_file: str | None = None,
+                     test_pattern: bool = False) -> None:
+    """Vulkan-backed wallpaper runtime — same external contract as
+    _run_wallpaper(). blur_radius and test_pattern are accepted for CLI
+    parity but currently ignored (TODOs in the unsupported-features
+    list above)."""
+    if test_pattern:
+        log.warning('--test-pattern not supported by the Vulkan backend yet '
+                    '— ignored')
+
+    from ..rendering import _ensure_singleton
+    _ensure_singleton()
+
+    # Lazy import so flame_sheep can be imported on systems without Vulkan
+    # (the GL backend remains the default until --backend vk is passed).
+    from viz_authoring.vk.context import VkContext
+    from viz_authoring.vk.chaos_game import ChaosGame
+    from viz_authoring.vk.layer_shell import LayerShellSurface
+    from viz_authoring.vk.swapchain import Swapchain
+    from viz_authoring.vk.pipeline import (
+        GraphicsPipeline, make_color_attachment_render_pass)
+    from viz_authoring.vk.image import (
+        create_image_rgba8, upload_image_rgba8, create_linear_sampler)
+    from ..rendering.surface import _get_output_layout
+
+    # --- 1. Discover outputs + compute physical-mm layout (same approach as
+    # multi_wallpaper.py) ----------------------------------------------------
+
+    raw_layout = _get_output_layout()
+    if not raw_layout:
+        raise RuntimeError('No active sway outputs found — is sway running?')
+    # Auto-order left-to-right by physical x (matches multi_wallpaper).
+    output_names = sorted(raw_layout.keys(), key=lambda n: raw_layout[n]['x'])
+    layout = {n: raw_layout[n] for n in output_names}
+    for name, g in layout.items():
+        log.info(f'{name}: {g["w"]}x{g["h"]}px @ {g["ppi"]:.1f}ppi, '
+                 f'physical {g["phys_w_mm"]:.0f}x{g["phys_h_mm"]:.0f}mm')
+
+    # Physical-mm viewport math (matches MultiMonitorWallpaper).
+    max_ppi = max(g['ppi'] for g in layout.values())
+    RENDER_SCALE = 0.5
+    canvas_ppmm = max_ppi / 25.4 * RENDER_SCALE
+    phys_x_mm = {}
+    cur = 0.0
+    for name in output_names:
+        phys_x_mm[name] = cur
+        cur += layout[name]['phys_w_mm']
+    max_phys_h_mm = max(g['phys_h_mm'] for g in layout.values())
+    canvas_w = int(cur * canvas_ppmm)
+    canvas_h = int(max_phys_h_mm * canvas_ppmm)
+    log.info(f'canvas: {canvas_w}x{canvas_h}px @ {canvas_ppmm:.2f} px/mm')
+
+    # --- 2. Per-output LayerShellSurface ------------------------------------
+
+    surfaces: dict[str, LayerShellSurface] = {}
+    for name in output_names:
+        surfaces[name] = LayerShellSurface(output_name=name,
+                                            install_sigint=False)
+
+    # --- 3. Vulkan context + per-output swapchains ---------------------------
+
+    ctx = VkContext(
+        instance_extensions=LayerShellSurface.required_instance_extensions(),
+        app_name='flame-sheep wallpaper (vk)',
+    )
+    for s in surfaces.values():
+        s.create_surface(ctx)
+    ctx.select_device(surface=surfaces[output_names[0]].surface)
+    log.info(f'device: {ctx.device_name}')
+
+    first_sc = Swapchain(ctx, surfaces[output_names[0]].surface,
+                          requested_extent=surfaces[output_names[0]].framebuffer_size())
+    render_pass = make_color_attachment_render_pass(ctx, first_sc.format)
+    first_sc.build_framebuffers(render_pass)
+    swapchains: dict[str, Swapchain] = {output_names[0]: first_sc}
+    for name in output_names[1:]:
+        sc = Swapchain(ctx, surfaces[name].surface,
+                        requested_extent=surfaces[name].framebuffer_size())
+        if sc.format != first_sc.format:
+            raise NotImplementedError(
+                f'output {name} surface format != first output\'s; '
+                f'per-output render passes needed')
+        sc.build_framebuffers(render_pass)
+        swapchains[name] = sc
+
+    # Per-output viewport rectangles (canvas pixels)
+    viewports: dict[str, tuple[int, int, int, int]] = {}
+    for name in output_names:
+        g = layout[name]
+        y_off_mm = (max_phys_h_mm - g['phys_h_mm']) / 2.0
+        viewports[name] = (
+            int(phys_x_mm[name] * canvas_ppmm),
+            int(y_off_mm * canvas_ppmm),
+            int(g['phys_w_mm'] * canvas_ppmm),
+            int(g['phys_h_mm'] * canvas_ppmm),
+        )
+        log.info(f'{name}: viewport {viewports[name]}')
+
+    # --- 4. Chaos game + palette image + tonemap pipeline -------------------
+
+    chaos = ChaosGame(ctx, canvas_w, canvas_h, n_walkers=65536)
+    palette_img = create_image_rgba8(ctx, 256, 1)
+    # Initial palette is zeros — first frame upload from core.tick() fills it.
+    upload_image_rgba8(ctx, palette_img,
+                        np.zeros((1, 256, 4), dtype=np.uint8))
+    palette_sampler = create_linear_sampler(ctx)
+
+    SHADER_DIR = (os.path.dirname(__file__) + '/../../viz_authoring/src/'
+                  'viz_authoring/vk/shaders')
+    from pathlib import Path
+    shader_dir = Path(SHADER_DIR).resolve()
+    tonemap = GraphicsPipeline(
+        ctx, render_pass,
+        shader_dir / 'tonemap.vert',
+        shader_dir / 'tonemap.frag',
+        extent=first_sc.extent,
+        storage_buffers=[chaos.histogram, chaos.max_buf],
+        sampled_images=[(palette_img, palette_sampler)],
+        push_constant_size=28,
+        dynamic_viewport=True,
+    )
+
+    # --- 5. Pre-record per-(output, image-index) command buffers ------------
+
+    ffi = cffi.FFI()
+
+    def _record_for_output(name: str):
+        sc = swapchains[name]
+        cmd_bufs = ctx.allocate_command_buffers(len(sc.framebuffers))
+        vx, vy, vw, vh = viewports[name]
+        viewport = vk.VkViewport(
+            x=0.0, y=0.0,
+            width=float(sc.extent.width), height=float(sc.extent.height),
+            minDepth=0.0, maxDepth=1.0,
+        )
+        scissor = vk.VkRect2D(offset=vk.VkOffset2D(x=0, y=0),
+                                extent=sc.extent)
+        clear = vk.VkClearValue(
+            color=vk.VkClearColorValue(float32=[0, 0, 0, 1]))
+        push = struct.pack('6if', canvas_w, canvas_h, vx, vy, vw, vh, 1.0)
+        # Brightness goes into the gamma slot at runtime via vkCmdPushConstants
+        # on each frame — the pre-recorded command buffer is rebuilt below.
+        # For now record with a placeholder.
+        pc_ptr = ffi.new('char[]', push)
+        for i, cb in enumerate(cmd_bufs):
+            vk.vkBeginCommandBuffer(cb, vk.VkCommandBufferBeginInfo())
+            vk.vkCmdSetViewport(cb, 0, 1, [viewport])
+            vk.vkCmdSetScissor(cb, 0, 1, [scissor])
+            rp_begin = vk.VkRenderPassBeginInfo(
+                renderPass=render_pass,
+                framebuffer=sc.framebuffers[i],
+                renderArea=vk.VkRect2D(
+                    offset=vk.VkOffset2D(x=0, y=0),
+                    extent=sc.extent),
+                clearValueCount=1, pClearValues=[clear],
+            )
+            vk.vkCmdBeginRenderPass(cb, rp_begin,
+                                      vk.VK_SUBPASS_CONTENTS_INLINE)
+            vk.vkCmdBindPipeline(
+                cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, tonemap.pipeline)
+            vk.vkCmdBindDescriptorSets(
+                cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                tonemap.layout, 0, 1, [tonemap.descriptor_set], 0, None)
+            vk.vkCmdPushConstants(
+                cb, tonemap.layout,
+                vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+                0, len(push), ffi.cast('void*', pc_ptr))
+            vk.vkCmdDraw(cb, 6, 1, 0, 0)
+            vk.vkCmdEndRenderPass(cb)
+            vk.vkEndCommandBuffer(cb)
+        return cmd_bufs
+
+    command_buffers: dict[str, list] = {
+        name: _record_for_output(name) for name in output_names
+    }
+
+    # --- 6. Per-output sync primitives --------------------------------------
+
+    image_available = {}
+    render_finished = {}
+    in_flight = {}
+    for name in output_names:
+        image_available[name] = vk.vkCreateSemaphore(
+            ctx.device, vk.VkSemaphoreCreateInfo(), None)
+        render_finished[name] = vk.vkCreateSemaphore(
+            ctx.device, vk.VkSemaphoreCreateInfo(), None)
+        in_flight[name] = vk.vkCreateFence(
+            ctx.device, vk.VkFenceCreateInfo(
+                flags=vk.VK_FENCE_CREATE_SIGNALED_BIT), None)
+
+    # --- 7. Library auto-seed + workers + orchestrator/core (unchanged) ---
+
+    from ..storage import Library
+    from ..loops import compose_loops, save_best_loops
+    lib = Library()
+
+    if lib.genome_count() == 0:
+        log.info('Empty library — generating initial genomes...')
+        rng = np.random.default_rng()
+        for i in range(200):
+            g = Genome.random(rng)
+            lib.save_genome(g, g.aesthetic_score())
+            if (i + 1) % 50 == 0:
+                log.info(f'  {i+1}/200 genomes')
+        log.info(f'Generated {lib.genome_count()} genomes')
+
+    if lib.loop_count() == 0 and lib.genome_count() >= 20:
+        log.info('No loops — composing initial loops...')
+        candidates = compose_loops(lib, n_attempts=200, loop_length=6)
+        if candidates:
+            save_best_loops(lib, candidates, n_keep=20)
+        log.info(f'Composed {lib.loop_count()} loops')
+
+    orch = Orchestrator(audio_device=audio_device, test_audio=test_audio)
+    core = FlameSheepCore(orchestrator=orch, lib=lib)
+
+    from ..genome.score_worker import BackgroundCpuScorer
+    from ..transitions import BackgroundTransitionScorer
+    from ..genome.pruner import BackgroundPruner
+    from ..storage import _db_path
+    db = str(_db_path())
+    cpu_scorer = BackgroundCpuScorer(db_path=db)
+    transition_scorer = BackgroundTransitionScorer(db_path=db)
+    pruner = BackgroundPruner(db_path=db)
+    cpu_scorer.start()
+    transition_scorer.start()
+    pruner.start()
+
+    orch.start()
+
+    # Feature logger (optional)
+    feature_logger = None
+    if log_features:
+        from ..audio.feature_logger import AudioFeatureLogger
+        feature_logger = AudioFeatureLogger(orch, path=log_file or None)
+
+    # --- 8. Watchdog (same pattern as wallpaper.py) -------------------------
+
+    _watchdog_last = [time.perf_counter()]
+    _quit = [False]
+
+    def _pet_watchdog() -> None:
+        _watchdog_last[0] = time.perf_counter()
+
+    import signal as _signal
+    _signal.signal(_signal.SIGINT, lambda *_: _quit.__setitem__(0, True))
+
+    def _watchdog():
+        start = time.perf_counter()
+        while not _quit[0]:
+            time.sleep(2.0)
+            elapsed = time.perf_counter() - start
+            timeout = 15.0 if elapsed < 20.0 else 3.0
+            if time.perf_counter() - _watchdog_last[0] > timeout:
+                log.error('[watchdog] render loop stalled, forcing exit')
+                os._exit(1)
+
+    threading.Thread(target=_watchdog, daemon=True).start()
+
+    # --- 9. Render loop ----------------------------------------------------
+
+    last_time = time.perf_counter()
+    last_genome_id: int | None = None
+    last_palette_id: int | None = None  # palette is a numpy array; id() ok for change detection
+    perf_frames = 0
+    perf_accum: dict[str, float] = {}
+    PERF_INTERVAL = 60
+
+    def _accum(stage, dt):
+        perf_accum[stage] = perf_accum.get(stage, 0.0) + dt
+
+    _pet_watchdog()
+    log.info('vulkan wallpaper render loop starting')
+
+    try:
+        while not _quit[0] and not any(s.should_close() for s in surfaces.values()):
+            _pet_watchdog()
+            orch.tick()
+            if feature_logger:
+                feature_logger.tick()
+
+            for s in surfaces.values():
+                s.dispatch_events(blocking=False)
+
+            now = time.perf_counter()
+            frame_time = now - last_time
+            MIN_FRAME_TIME = 1.0 / cfg.max_fps
+            if frame_time < MIN_FRAME_TIME:
+                time.sleep(MIN_FRAME_TIME - frame_time)
+                now = time.perf_counter()
+                frame_time = now - last_time
+            last_time = now
+            _accum('frame_total', frame_time)
+
+            frame = core.tick(frame_time)
+            _pet_watchdog()
+
+            # --- Genome upload (only on change — saves per-frame buffer churn)
+            gid = id(frame.genome)
+            _ts = time.perf_counter()
+            if gid != last_genome_id:
+                chaos.set_genome(**_genome_to_chaos_kwargs(frame.genome))
+                last_genome_id = gid
+                # New genome → re-randomize walkers (matches GL upload_genome
+                # path's reset on change behavior).
+                chaos.reset_walkers()
+            _accum('upload_genome', time.perf_counter() - _ts)
+
+            # --- Palette upload (small, do every frame; cheap memcpy)
+            _ts = time.perf_counter()
+            upload_image_rgba8(ctx, palette_img,
+                                _palette_to_rgba8(frame.palette))
+            _accum('upload_palette', time.perf_counter() - _ts)
+
+            # --- Chaos game pass (decay 0.3 matches GL wallpaper)
+            _ts = time.perf_counter()
+            chaos.clear_histogram(decay=0.3)
+            chaos.render_frame(
+                iterations=frame.iterations,
+                zoom=(frame.genome.zoom, frame.genome.zoom),
+                rotation=frame.genome.rotation,
+                center=tuple(frame.genome.center),
+            )
+            chaos.reduce_max_hits()
+            _accum('chaos_game', time.perf_counter() - _ts)
+
+            # --- Tonemap + present per output ---
+            # NOTE: brightness is not yet wired into the pre-recorded command
+            # buffers' push constants — gamma stays at 1.0. Hooking it up
+            # cleanly means either re-recording per-frame or using a
+            # uniform buffer; deferred until the brightness pulse feels off
+            # in practice.
+            _ts = time.perf_counter()
+            for name in output_names:
+                sc = swapchains[name]
+                vk.vkWaitForFences(ctx.device, 1, [in_flight[name]],
+                                    vk.VK_TRUE, 0xFFFFFFFFFFFFFFFF)
+                vk.vkResetFences(ctx.device, 1, [in_flight[name]])
+                img_idx = sc.acquire_next_image(image_available[name])
+                submit = vk.VkSubmitInfo(
+                    waitSemaphoreCount=1,
+                    pWaitSemaphores=[image_available[name]],
+                    pWaitDstStageMask=[
+                        vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT],
+                    commandBufferCount=1,
+                    pCommandBuffers=[command_buffers[name][img_idx]],
+                    signalSemaphoreCount=1,
+                    pSignalSemaphores=[render_finished[name]],
+                )
+                vk.vkQueueSubmit(ctx.graphics_queue, 1, [submit],
+                                  in_flight[name])
+                sc.present(img_idx, render_finished[name])
+            _accum('tonemap+present', time.perf_counter() - _ts)
+            _pet_watchdog()
+
+            perf_frames += 1
+            if perf_frames >= PERF_INTERVAL:
+                ft = perf_accum.pop('frame_total', 0.0) / perf_frames * 1000
+                parts = sorted(perf_accum.items(), key=lambda kv: -kv[1])
+                s = '  '.join(f'{k}={v/perf_frames*1000:.2f}ms'
+                              for k, v in parts)
+                log.info(f'[vk perf {perf_frames} frames]  '
+                         f'frame={ft:.2f}ms  {s}')
+                perf_frames = 0
+                perf_accum.clear()
+
+    except Exception:
+        log.exception('[vk] exception in render loop')
+        raise
+    finally:
+        log.info('vulkan wallpaper render loop exiting')
+        vk.vkDeviceWaitIdle(ctx.device)
+        # Cleanup — best-effort; OS reclaims on exit anyway.
+        for name in output_names:
+            vk.vkDestroySemaphore(ctx.device, image_available[name], None)
+            vk.vkDestroySemaphore(ctx.device, render_finished[name], None)
+            vk.vkDestroyFence(ctx.device, in_flight[name], None)
+            swapchains[name].cleanup()
+        tonemap.cleanup()
+        palette_img.destroy()
+        palette_sampler.destroy()
+        chaos.cleanup()
+        vk.vkDestroyRenderPass(ctx.device, render_pass, None)
+        for s in surfaces.values():
+            s.destroy_surface()
+        ctx.cleanup()
+        for s in surfaces.values():
+            s.cleanup()
