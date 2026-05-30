@@ -105,9 +105,11 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
     from viz_authoring.vk.layer_shell import LayerShellSurface
     from viz_authoring.vk.swapchain import Swapchain
     from viz_authoring.vk.pipeline import (
-        GraphicsPipeline, make_color_attachment_render_pass)
+        GraphicsPipeline, make_color_attachment_render_pass,
+        make_intermediate_render_pass)
     from viz_authoring.vk.image import (
-        create_image_rgba8, upload_image_rgba8, create_linear_sampler)
+        create_image_rgba8, create_color_attachment_image,
+        upload_image_rgba8, create_linear_sampler)
     from ..rendering.surface import _get_output_layout
 
     # --- 1. Discover outputs + compute physical-mm layout (same approach as
@@ -157,8 +159,15 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
 
     first_sc = Swapchain(ctx, surfaces[output_names[0]].surface,
                           requested_extent=surfaces[output_names[0]].framebuffer_size())
-    render_pass = make_color_attachment_render_pass(ctx, first_sc.format)
-    first_sc.build_framebuffers(render_pass)
+    # Two render passes: the swapchain target (PRESENT_SRC_KHR final
+    # layout) and an intermediate target (SHADER_READ_ONLY_OPTIMAL final
+    # layout, RGBA8_UNORM format) for the blur passes. The intermediate
+    # render pass is fixed to RGBA8_UNORM since that's what our color-
+    # attachment images use.
+    swapchain_pass = make_color_attachment_render_pass(ctx, first_sc.format)
+    intermediate_pass = make_intermediate_render_pass(
+        ctx, vk.VK_FORMAT_R8G8B8A8_UNORM)
+    first_sc.build_framebuffers(swapchain_pass)
     swapchains: dict[str, Swapchain] = {output_names[0]: first_sc}
     for name in output_names[1:]:
         sc = Swapchain(ctx, surfaces[name].surface,
@@ -167,7 +176,7 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
             raise NotImplementedError(
                 f'output {name} surface format != first output\'s; '
                 f'per-output render passes needed')
-        sc.build_framebuffers(render_pass)
+        sc.build_framebuffers(swapchain_pass)
         swapchains[name] = sc
 
     # Per-output viewport rectangles (canvas pixels)
@@ -196,64 +205,169 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                   'viz_authoring/vk/shaders')
     from pathlib import Path
     shader_dir = Path(SHADER_DIR).resolve()
+
+    # Per-output intermediate images for the blur path:
+    #   imgA = tonemap output (read by blurH)
+    #   imgB = blurH output (read by blurV, which writes to swapchain)
+    # Plus per-output framebuffers wrapping them at intermediate_pass.
+    intermediate_a: dict[str, object] = {}
+    intermediate_b: dict[str, object] = {}
+    framebuffer_a: dict[str, int] = {}
+    framebuffer_b: dict[str, int] = {}
+    intermediate_sampler = create_linear_sampler(ctx)
+    for name in output_names:
+        sc = swapchains[name]
+        w, h = sc.extent.width, sc.extent.height
+        intermediate_a[name] = create_color_attachment_image(ctx, w, h)
+        intermediate_b[name] = create_color_attachment_image(ctx, w, h)
+        fb_a = vk.vkCreateFramebuffer(ctx.device, vk.VkFramebufferCreateInfo(
+            renderPass=intermediate_pass,
+            attachmentCount=1, pAttachments=[intermediate_a[name].view],
+            width=w, height=h, layers=1), None)
+        fb_b = vk.vkCreateFramebuffer(ctx.device, vk.VkFramebufferCreateInfo(
+            renderPass=intermediate_pass,
+            attachmentCount=1, pAttachments=[intermediate_b[name].view],
+            width=w, height=h, layers=1), None)
+        framebuffer_a[name] = fb_a
+        framebuffer_b[name] = fb_b
+
+    # Tonemap now renders into the intermediate render pass (its color
+    # attachment is the per-output imgA, set per command-buffer record).
     tonemap = GraphicsPipeline(
-        ctx, render_pass,
+        ctx, intermediate_pass,
         shader_dir / 'tonemap.vert',
         shader_dir / 'tonemap.frag',
-        extent=first_sc.extent,
+        extent=first_sc.extent,  # ignored — dynamic viewport
         storage_buffers=[chaos.histogram, chaos.max_buf],
         sampled_images=[(palette_img, palette_sampler)],
         push_constant_size=28,
         dynamic_viewport=True,
     )
 
+    # Per-output blurH pipeline (reads its imgA, writes its imgB via the
+    # intermediate render pass). Pipeline descriptor sets are baked at
+    # creation time so we need ONE pipeline per (output, A-image) pair.
+    # Same for blurV.
+    BLUR_PUSH_SIZE = 12   # vec2 (8 + alignment) + float = 12, but vec2 is
+                          # 8-byte aligned so we pack vec2 first then float
+                          # → 4 + 4 + 4 = 12. Actually vec2 needs 8-byte
+                          # alignment so layout: vec2 (0..7), float (8..11).
+    # Use 16 to give std140 alignment headroom — push constant min size
+    # is 128 bytes anyway, so over-allocating costs nothing.
+    BLUR_PUSH_SIZE = 16
+    blur_h: dict[str, GraphicsPipeline] = {}
+    blur_v: dict[str, GraphicsPipeline] = {}
+    for name in output_names:
+        blur_h[name] = GraphicsPipeline(
+            ctx, intermediate_pass,
+            shader_dir / 'tonemap.vert',  # same fullscreen-quad vert
+            shader_dir / 'blur.frag',
+            extent=first_sc.extent,
+            sampled_images=[(intermediate_a[name], intermediate_sampler)],
+            push_constant_size=BLUR_PUSH_SIZE,
+            dynamic_viewport=True,
+        )
+        blur_v[name] = GraphicsPipeline(
+            ctx, swapchain_pass,
+            shader_dir / 'tonemap.vert',
+            shader_dir / 'blur.frag',
+            extent=first_sc.extent,
+            sampled_images=[(intermediate_b[name], intermediate_sampler)],
+            push_constant_size=BLUR_PUSH_SIZE,
+            dynamic_viewport=True,
+        )
+
     # --- 5. Pre-record per-(output, image-index) command buffers ------------
 
     ffi = cffi.FFI()
 
+    BLUR_RADIUS = float(blur_radius)
+
     def _record_for_output(name: str):
+        """3-pass per-frame command buffer per swapchain image:
+          1. tonemap → imgA  (intermediate render pass)
+          2. blur H samples imgA → imgB  (intermediate render pass)
+          3. blur V samples imgB → swapchain image  (swapchain render pass)
+        All three passes use the same fullscreen-quad vertex shader; only
+        the fragment shader + descriptor set + render pass differ.
+        """
         sc = swapchains[name]
         cmd_bufs = ctx.allocate_command_buffers(len(sc.framebuffers))
         vx, vy, vw, vh = viewports[name]
-        viewport = vk.VkViewport(
+        # Tonemap viewport spans the per-output surface; blur passes
+        # render fullscreen at the same surface dimensions.
+        viewport_full = vk.VkViewport(
             x=0.0, y=0.0,
             width=float(sc.extent.width), height=float(sc.extent.height),
             minDepth=0.0, maxDepth=1.0,
         )
-        scissor = vk.VkRect2D(offset=vk.VkOffset2D(x=0, y=0),
-                                extent=sc.extent)
+        scissor_full = vk.VkRect2D(offset=vk.VkOffset2D(x=0, y=0),
+                                     extent=sc.extent)
         clear = vk.VkClearValue(
             color=vk.VkClearColorValue(float32=[0, 0, 0, 1]))
-        push = struct.pack('6if', canvas_w, canvas_h, vx, vy, vw, vh, 1.0)
-        # Brightness goes into the gamma slot at runtime via vkCmdPushConstants
-        # on each frame — the pre-recorded command buffer is rebuilt below.
-        # For now record with a placeholder.
-        pc_ptr = ffi.new('char[]', push)
-        for i, cb in enumerate(cmd_bufs):
-            vk.vkBeginCommandBuffer(cb, vk.VkCommandBufferBeginInfo())
-            vk.vkCmdSetViewport(cb, 0, 1, [viewport])
-            vk.vkCmdSetScissor(cb, 0, 1, [scissor])
-            rp_begin = vk.VkRenderPassBeginInfo(
-                renderPass=render_pass,
-                framebuffer=sc.framebuffers[i],
-                renderArea=vk.VkRect2D(
-                    offset=vk.VkOffset2D(x=0, y=0),
-                    extent=sc.extent),
-                clearValueCount=1, pClearValues=[clear],
-            )
-            vk.vkCmdBeginRenderPass(cb, rp_begin,
-                                      vk.VK_SUBPASS_CONTENTS_INLINE)
-            vk.vkCmdBindPipeline(
-                cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, tonemap.pipeline)
+
+        tonemap_push = struct.pack(
+            '6if', canvas_w, canvas_h, vx, vy, vw, vh, 1.0)
+        tonemap_pc = ffi.new('char[]', tonemap_push)
+        # Blur push: vec2 direction + float radius (alignment forces 16).
+        # Horizontal: direction = (1/w, 0); vertical: (0, 1/h).
+        blur_h_push = struct.pack(
+            '2f f 4x', 1.0 / sc.extent.width, 0.0, BLUR_RADIUS)
+        blur_h_pc = ffi.new('char[]', blur_h_push)
+        blur_v_push = struct.pack(
+            '2f f 4x', 0.0, 1.0 / sc.extent.height, BLUR_RADIUS)
+        blur_v_pc = ffi.new('char[]', blur_v_push)
+
+        def _bind_and_draw(cb, pipe, push, pc_ptr):
+            vk.vkCmdBindPipeline(cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                   pipe.pipeline)
             vk.vkCmdBindDescriptorSets(
                 cb, vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
-                tonemap.layout, 0, 1, [tonemap.descriptor_set], 0, None)
+                pipe.layout, 0, 1, [pipe.descriptor_set], 0, None)
             vk.vkCmdPushConstants(
-                cb, tonemap.layout,
+                cb, pipe.layout,
                 vk.VK_SHADER_STAGE_FRAGMENT_BIT,
                 0, len(push), ffi.cast('void*', pc_ptr))
             vk.vkCmdDraw(cb, 6, 1, 0, 0)
+
+        for i, cb in enumerate(cmd_bufs):
+            vk.vkBeginCommandBuffer(cb, vk.VkCommandBufferBeginInfo())
+            vk.vkCmdSetViewport(cb, 0, 1, [viewport_full])
+            vk.vkCmdSetScissor(cb, 0, 1, [scissor_full])
+
+            # Pass 1: tonemap → imgA
+            vk.vkCmdBeginRenderPass(cb, vk.VkRenderPassBeginInfo(
+                renderPass=intermediate_pass,
+                framebuffer=framebuffer_a[name],
+                renderArea=vk.VkRect2D(offset=vk.VkOffset2D(x=0, y=0),
+                                         extent=sc.extent),
+                clearValueCount=1, pClearValues=[clear]),
+                vk.VK_SUBPASS_CONTENTS_INLINE)
+            _bind_and_draw(cb, tonemap, tonemap_push, tonemap_pc)
             vk.vkCmdEndRenderPass(cb)
+
+            # Pass 2: blur H samples imgA → imgB
+            vk.vkCmdBeginRenderPass(cb, vk.VkRenderPassBeginInfo(
+                renderPass=intermediate_pass,
+                framebuffer=framebuffer_b[name],
+                renderArea=vk.VkRect2D(offset=vk.VkOffset2D(x=0, y=0),
+                                         extent=sc.extent),
+                clearValueCount=1, pClearValues=[clear]),
+                vk.VK_SUBPASS_CONTENTS_INLINE)
+            _bind_and_draw(cb, blur_h[name], blur_h_push, blur_h_pc)
+            vk.vkCmdEndRenderPass(cb)
+
+            # Pass 3: blur V samples imgB → swapchain image
+            vk.vkCmdBeginRenderPass(cb, vk.VkRenderPassBeginInfo(
+                renderPass=swapchain_pass,
+                framebuffer=sc.framebuffers[i],
+                renderArea=vk.VkRect2D(offset=vk.VkOffset2D(x=0, y=0),
+                                         extent=sc.extent),
+                clearValueCount=1, pClearValues=[clear]),
+                vk.VK_SUBPASS_CONTENTS_INLINE)
+            _bind_and_draw(cb, blur_v[name], blur_v_push, blur_v_pc)
+            vk.vkCmdEndRenderPass(cb)
+
             vk.vkEndCommandBuffer(cb)
         return cmd_bufs
 
@@ -462,12 +576,20 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
             vk.vkDestroySemaphore(ctx.device, image_available[name], None)
             vk.vkDestroySemaphore(ctx.device, render_finished[name], None)
             vk.vkDestroyFence(ctx.device, in_flight[name], None)
+            blur_h[name].cleanup()
+            blur_v[name].cleanup()
+            vk.vkDestroyFramebuffer(ctx.device, framebuffer_a[name], None)
+            vk.vkDestroyFramebuffer(ctx.device, framebuffer_b[name], None)
+            intermediate_a[name].destroy()
+            intermediate_b[name].destroy()
             swapchains[name].cleanup()
+        intermediate_sampler.destroy()
         tonemap.cleanup()
         palette_img.destroy()
         palette_sampler.destroy()
         chaos.cleanup()
-        vk.vkDestroyRenderPass(ctx.device, render_pass, None)
+        vk.vkDestroyRenderPass(ctx.device, intermediate_pass, None)
+        vk.vkDestroyRenderPass(ctx.device, swapchain_pass, None)
         for s in surfaces.values():
             s.destroy_surface()
         ctx.cleanup()
