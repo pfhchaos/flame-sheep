@@ -195,6 +195,11 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
     # --- 4. Chaos game + palette image + tonemap pipeline -------------------
 
     chaos = ChaosGame(ctx, canvas_w, canvas_h, n_walkers=65536)
+
+    # Precompile driver is constructed below after `lib` exists (the
+    # background enumeration thread closes over `lib`).
+    precompile_driver = None
+
     palette_img = create_image_rgba8(ctx, 256, 1)
     # Initial palette is zeros — first frame upload from core.tick() fills it.
     upload_image_rgba8(ctx, palette_img,
@@ -412,6 +417,59 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
             save_best_loops(lib, candidates, n_keep=20)
         log.info(f'Composed {lib.loop_count()} loops')
 
+    # --- Shader precompile worker (best-effort) ---------------------
+    # Spawns a subprocess that warms Mesa's shader cache for every
+    # genome's (n_transforms, has_final_xform, variation_set) tuple,
+    # so the wallpaper's per-genome compile drops from ~300-500ms
+    # cold to ~3ms cache-hit. Catalog enumeration runs in a thread
+    # so it doesn't delay startup.
+    #
+    # Best-effort: if anything fails (perm denied on perf, can't
+    # spawn subprocess, etc.), the wallpaper continues with the
+    # synchronous compile path — visible as occasional 500ms
+    # stutters on first-use of new tuples.
+    try:
+        from ..scheduler.gpu_load import GpuLoadSampler
+        from ..scheduler.policy import Policy
+        from ..scheduler.precompile_driver import PrecompileDriver
+        _sampler = GpuLoadSampler()
+        if not _sampler.available:
+            log.info(f'[precompile] disabled: '
+                     f'{_sampler.unavailable_reason}')
+            _sampler.close()
+        else:
+            _policy = Policy(_sampler,
+                              sample_interval_s=0.25,
+                              slow_threshold=0.55,
+                              pause_threshold=0.85)
+            precompile_driver = PrecompileDriver(
+                canvas_w=canvas_w, canvas_h=canvas_h, policy=_policy)
+            precompile_driver.start()
+
+            # Background enumeration — scans catalog (~3s) and enqueues
+            # at LOW priority. Done in a daemon thread so it doesn't
+            # block wallpaper startup.
+            def _enumerate_and_enqueue():
+                try:
+                    from ..scheduler.precompile_warm import (
+                        enumerate_catalog_tuples)
+                    # Don't pass main-thread's `lib` — sqlite3 connections
+                    # are not cross-thread safe. The helper opens its own.
+                    tuples = enumerate_catalog_tuples()
+                    added = precompile_driver.enqueue(
+                        tuples, priority=10)
+                    log.info(f'[precompile] enqueued {added} catalog '
+                             f'tuples at priority=10')
+                except Exception:
+                    log.exception(
+                        '[precompile] catalog enumeration failed')
+            threading.Thread(target=_enumerate_and_enqueue,
+                              name='precompile-enum',
+                              daemon=True).start()
+    except Exception:
+        log.exception('[precompile] init failed; continuing without')
+        precompile_driver = None
+
     orch = Orchestrator(audio_device=audio_device, test_audio=test_audio)
     core = FlameSheepCore(orchestrator=orch, lib=lib)
 
@@ -463,6 +521,7 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
     last_time = time.perf_counter()
     last_genome_id: int | None = None
     last_palette_id: int | None = None  # palette is a numpy array; id() ok for change detection
+    last_loop_id: int | None = None  # track loop changes for precompile MED hints
     perf_frames = 0
     perf_accum: dict[str, float] = {}
     perf_iters: list[int] = []
@@ -506,6 +565,28 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 # New genome → re-randomize walkers (matches GL upload_genome
                 # path's reset on change behavior).
                 chaos.reset_walkers()
+
+                # Precompile MED hint: when loop changes, push all the
+                # new loop's members so they're cached before the next
+                # set_genome lands. Cheap (small loops, dedupe in driver).
+                if precompile_driver is not None:
+                    try:
+                        loop_id = core._genome_axis.active_loop_id
+                        if loop_id != last_loop_id:
+                            last_loop_id = loop_id
+                            from ..scheduler.precompile_warm import (
+                                _genome_tuple)
+                            loop_tuples = [
+                                _genome_tuple(g) for g in
+                                core._genome_axis._loop.loop_genomes]
+                            n = precompile_driver.enqueue(
+                                loop_tuples, priority=0)
+                            if n:
+                                log.debug(
+                                    f'[precompile] enqueued {n} loop '
+                                    f'#{loop_id} members at MED')
+                    except Exception:
+                        log.exception('[precompile] loop hint failed')
             _accum('upload_genome', time.perf_counter() - _ts)
 
             # --- Palette upload (small, do every frame; cheap memcpy)
@@ -577,6 +658,13 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
         raise
     finally:
         log.info('vulkan wallpaper render loop exiting')
+        # Stop precompile first so its worker isn't competing during
+        # the GPU teardown.
+        if precompile_driver is not None:
+            try:
+                precompile_driver.stop()
+            except Exception:
+                log.exception('[precompile] stop failed')
         vk.vkDeviceWaitIdle(ctx.device)
         # Cleanup — best-effort; OS reclaims on exit anyway.
         for name in output_names:
