@@ -27,7 +27,13 @@ from flame_sheep_audio._constants import HOP_SIZE, SAMPLE_RATE
 from flame_sheep_audio.beat_rnn import BeatRNNDetector
 
 
-WEIGHTS = _PROJECT / 'flame_sheep' / 'data' / 'beat_rnn_continuous.npz'
+# Streaming tests use the currently-deployed model. v1
+# (beat_rnn_continuous.npz, n_classes=1) is no longer compatible with
+# BeatRNNDetector.detect() — it assumes a 3-head output and indexes
+# _COL_BEAT=1 unconditionally. The streaming-vs-offline equivalence
+# behavior being tested is architecture-agnostic, so v3 works equally
+# well as the test target.
+WEIGHTS = _PROJECT / 'flame_sheep' / 'data' / 'beat_rnn_3head.npz'
 
 
 def _weights_or_skip() -> Path:
