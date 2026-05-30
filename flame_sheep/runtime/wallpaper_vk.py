@@ -513,16 +513,18 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                                 _palette_to_rgba8(frame.palette))
             _accum('upload_palette', time.perf_counter() - _ts)
 
-            # --- Chaos game pass (decay 0.3 matches GL wallpaper)
+            # --- Chaos game pass (decay 0.3 matches GL wallpaper).
+            # frame() batches clear + chaos + reduce_max into ONE
+            # command buffer with memory barriers between dispatches —
+            # one fence-wait per frame instead of three.
             _ts = time.perf_counter()
-            chaos.clear_histogram(decay=0.3)
-            chaos.render_frame(
+            chaos.frame(
                 iterations=frame.iterations,
                 zoom=(frame.genome.zoom, frame.genome.zoom),
                 rotation=frame.genome.rotation,
                 center=tuple(frame.genome.center),
+                decay=0.3,
             )
-            chaos.reduce_max_hits()
             _accum('chaos_game', time.perf_counter() - _ts)
 
             # --- Tonemap + present per output ---
