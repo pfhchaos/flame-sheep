@@ -465,6 +465,7 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
     last_palette_id: int | None = None  # palette is a numpy array; id() ok for change detection
     perf_frames = 0
     perf_accum: dict[str, float] = {}
+    perf_iters: list[int] = []
     PERF_INTERVAL = 60
 
     def _accum(stage, dt):
@@ -526,6 +527,7 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 decay=0.3,
             )
             _accum('chaos_game', time.perf_counter() - _ts)
+            perf_iters.append(frame.iterations)
 
             # --- Tonemap + present per output ---
             # NOTE: brightness is not yet wired into the pre-recorded command
@@ -562,10 +564,13 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 parts = sorted(perf_accum.items(), key=lambda kv: -kv[1])
                 s = '  '.join(f'{k}={v/perf_frames*1000:.2f}ms'
                               for k, v in parts)
+                iters_avg = sum(perf_iters) / len(perf_iters)
                 log.info(f'[vk perf {perf_frames} frames]  '
-                         f'frame={ft:.2f}ms  {s}')
+                         f'frame={ft:.2f}ms  {s}  '
+                         f'iters={min(perf_iters)}/{iters_avg:.0f}/{max(perf_iters)}')
                 perf_frames = 0
                 perf_accum.clear()
+                perf_iters.clear()
 
     except Exception:
         log.exception('[vk] exception in render loop')
