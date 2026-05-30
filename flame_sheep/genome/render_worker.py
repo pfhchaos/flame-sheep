@@ -29,6 +29,29 @@ RENDER_VERSION = 10  # v10: first-hit = single-frame snapshots at iter=N (match 
 COLOR_SCALE = 1_000_000.0
 
 
+def _genome_to_chaos_kwargs(genome) -> dict:
+    """Convert an in-memory Genome to the kwarg dict
+    HeadlessVkRenderer.set_genome() (and ChaosGame.set_genome())
+    expect.
+
+    Sibling of flame_sheep.runtime.wallpaper_vk._genome_to_chaos_kwargs
+    — same conversion; if we get a third caller we should extract this
+    to a shared module."""
+    arrays = genome.to_gpu_arrays()
+    av = arrays['active_vars'].reshape(7, 8, 10)
+    pv = arrays['pre_active_vars'].reshape(7, 8, 10)
+    return dict(
+        affines=arrays['affines'],
+        post_affines=arrays['post_affines'],
+        active_vars=av, pre_vars=pv,
+        colors=arrays['colors'],
+        color_speeds=arrays['color_speeds'],
+        weights=arrays['weights'],
+        n_transforms=len(genome.transforms),
+        has_final_xform=arrays['has_final_xform'],
+    )
+
+
 def _render_main(db_path: str,
                   stop_event: multiprocessing.synchronize.Event,
                   pause_flag_path: str | None = None) -> None:
@@ -78,23 +101,29 @@ def _render_main(db_path: str,
     # Round to multiple of 64 (workgroup size)
     scoring_walkers = (scoring_walkers // 64) * 64
 
-    # Create standalone GPU context
-    os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
-    import moderngl
+    # Create standalone Vulkan context (headless, no surface).
+    # Ported from moderngl+EGL to viz_authoring.vk to eliminate the
+    # Mesa-Xe + EGL + fork crash mode + reuse the Vulkan stack's
+    # shader cache + scheduler integration.
     try:
-        ctx = moderngl.create_context(standalone=True, backend='egl')
+        from viz_authoring.vk.context import VkContext
+        from viz_authoring.vk.headless import HeadlessVkRenderer
     except Exception as e:
-        log.error(f'Failed to create EGL context: {e}')
+        log.error(f'Failed to import Vulkan stack: {e}')
+        return
+    try:
+        ctx = VkContext(instance_extensions=[])
+        ctx.select_device()
+    except Exception as e:
+        log.error(f'Failed to create Vulkan context: {e}')
         return
 
-    from ..rendering import FlameRenderer, N_ITERS, LIVE_ITER_MIN, LIVE_ITER_MAX
+    from ..rendering import N_ITERS, LIVE_ITER_MIN, LIVE_ITER_MAX
     from ..storage import _genome_from_json, _ensure_schema
-    from flame_sheep_audio import N_BINS
     from ..genome import _score_from_histogram
 
-    from ..rendering import GpuContext
-    renderer = FlameRenderer(GpuContext(ctx, render_size, render_size),
-                              scoring=True, n_walkers=scoring_walkers)
+    renderer = HeadlessVkRenderer(ctx, render_size, render_size,
+                                    n_walkers=scoring_walkers)
 
     # Fixed rainbow palette for scoring renders (genome doesn't own a palette)
     _hues = np.linspace(0, 1, 256, endpoint=False)
@@ -174,13 +203,15 @@ def _render_main(db_path: str,
             gid, params_json = row
             try:
                 genome = _genome_from_json(params_json)
+                genome_kwargs = _genome_to_chaos_kwargs(genome)
 
                 # --- Static render with first-hit snapshots ---
-                renderer.upload_genome(genome)
-                renderer.upload_palette(_rainbow)
+                renderer.set_genome(**genome_kwargs)
+                renderer.set_palette(_rainbow)
                 renderer.reset_walkers()
-                renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
                 renderer.clear_transform_hits()
+                # Vk path doesn't need audio uniforms (no real-time
+                # spectrum reactivity in the headless shader).
 
                 # First-hit iteration response: for each pixel, record the
                 # smallest iter count at which it appears in a single live frame.
@@ -201,17 +232,17 @@ def _render_main(db_path: str,
                 # Burn-in: get walkers to converged positions before the
                 # first snapshot, otherwise burn-in trace pollutes snap 0.
                 # Live wallpaper walkers persist across frames so they're
-                # always converged in steady state — match that.
+                # always converged in steady state — match that. Vk path
+                # uses fence syncs in render_frame() so no explicit
+                # memory_barrier needed between dispatches.
                 renderer.clear_histogram()
                 renderer.dispatch_chaos_game(iterations=50)
-                ctx.memory_barrier()
 
                 first_hit = None
                 for snap_idx, target in enumerate(snap_iters):
                     renderer.clear_histogram()
                     renderer.dispatch_chaos_game(iterations=int(target))
-                    ctx.memory_barrier()
-                    hits, _ = renderer.histogram_data()
+                    hits, _ = renderer.download_histogram()
                     if first_hit is None:
                         first_hit = np.full(hits.shape, 255, dtype=np.uint8)
                     mapped = snap_idx * 240 // (n_snapshots - 1)
@@ -224,38 +255,36 @@ def _render_main(db_path: str,
                 renderer.clear_histogram()
                 renderer.clear_transform_hits()
                 renderer.dispatch_chaos_game(iterations=LIVE_ITER_MAX)
-                ctx.memory_barrier()
 
                 render_static = renderer.snapshot_png()
 
                 # Read histogram data
-                hit_counts, color_accs = renderer.histogram_data()
+                hit_counts, color_accs = renderer.download_histogram()
                 hist_static_blob = pack_static_histogram(hit_counts, color_accs)
-                transform_hits = renderer.transform_hits_data()
+                transform_hits = renderer.download_transform_hits()
                 hist_transform_blob = pack_histogram(transform_hits)
                 hist_first_hit_blob = pack_histogram(first_hit) if first_hit is not None else None
 
                 # --- Swept render ---
-                renderer.upload_genome(genome)
+                renderer.set_genome(**genome_kwargs)
                 renderer.reset_walkers()
-                renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
                 renderer.clear_histogram()
 
                 base_rotation = genome.rotation
                 for i in range(swept_steps):
                     angle = base_rotation + (2.0 * math.pi * i / swept_steps)
                     rotated = genome.rotated(angle - base_rotation)
-                    renderer.upload_genome(rotated)
-                    # Fix viewport to base rotation — only affines change
-                    renderer.set_rotation(base_rotation)
-                    renderer.dispatch_chaos_game(iterations=N_ITERS)
-                    ctx.memory_barrier()
+                    renderer.set_genome(**_genome_to_chaos_kwargs(rotated))
+                    # Viewport rotation stays at base; only the genome's
+                    # affines rotate (Vk passes rotation per-dispatch).
+                    renderer.dispatch_chaos_game(iterations=N_ITERS,
+                                                   rotation=base_rotation)
 
                 # Swept centroid from histogram (before snapshot)
-                swept_hits, swept_colors = renderer.histogram_data()
+                swept_hits, swept_colors = renderer.download_histogram()
 
                 # Grayscale palette for swept snapshot (color is meaningless)
-                renderer.upload_palette(_gray_palette)
+                renderer.set_palette(_gray_palette)
                 render_swept = renderer.snapshot_png()
 
                 hist_swept_blob = pack_histogram(swept_hits)
@@ -338,7 +367,8 @@ def _render_main(db_path: str,
 
     finally:
         conn.close()
-        ctx.release()
+        renderer.cleanup()
+        ctx.cleanup()
 
 
 class BackgroundGpuRenderer:
