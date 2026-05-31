@@ -30,10 +30,9 @@ from ..variations import (
 )
 
 if TYPE_CHECKING:
-    # Renderer protocol — historically FlameRenderer (GL). With the
-    # Vulkan port, viz_authoring.vk.headless.HeadlessVkRenderer
-    # implements the same upload_genome / dispatch_chaos_game /
-    # histogram_data surface. Either works.
+    # Renderer arg type for the dormant aesthetic_score(renderer=...)
+    # path. No caller actually passes a renderer (all sites use the
+    # CPU/histogram path), so the precise type doesn't matter.
     from typing import Any as FlameRenderer  # noqa: F401
 
 

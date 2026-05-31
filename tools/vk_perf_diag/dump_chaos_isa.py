@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
-"""Compile + dispatch the trimmed chaos shader on both backends, capturing
-Mesa's Intel Gen ISA dump for side-by-side analysis.
+"""Compile + dispatch the trimmed and full chaos shaders on Vulkan,
+capturing Mesa's Intel Gen ISA dump.
 
 Outputs:
-  tools/vk_perf_diag/dump_vk.txt   — ANV (Vulkan)
-  tools/vk_perf_diag/dump_gl.txt   — iris (OpenGL)
-  tools/vk_perf_diag/dump_vk.spv   — raw SPIR-V (for spirv-dis manual inspection)
+  tools/vk_perf_diag/dump_vk.txt       — trimmed flame_chaos ISA
+  tools/vk_perf_diag/dump_vk_full.txt  — full flame_chaos.comp ISA
+  tools/vk_perf_diag/dump_vk.spv       — raw SPIR-V
 
-Why this exists: profiling shows the Vulkan chaos game is ~2× slower
-than the GL chaos game on Mesa-Xe for the same shader. The leading
-hypothesis is divergent atomic-add codegen — the GL driver may emit a
-hardware-optimized atomic sequence that Mesa's ANV path doesn't apply.
-This script dumps the ISA from both backends on a structurally-identical
-shader so we can read the relevant fragments by hand.
+Historically dumped both Vulkan AND OpenGL ISA for side-by-side
+comparison (which identified Mesa Vulkan's register-spill issue on
+the universal variations switch — see project_vk_chaos_atomic_perf
+memory). The GL stack was removed; only the Vk dumps remain, still
+useful when diagnosing Vk shader codegen.
 
-Usage:
-  python tools/vk_perf_diag/dump_chaos_isa.py
-
-The script sets MESA_SHADER_CACHE_DISABLE=1 + INTEL_DEBUG=cs internally
-— Mesa's cache otherwise skips the recompile and silently produces an
-empty dump.
+The script sets MESA_SHADER_CACHE_DISABLE=1 + INTEL_DEBUG=cs
+internally — Mesa's cache otherwise skips the recompile and silently
+produces an empty dump.
 """
 from __future__ import annotations
 
@@ -34,9 +30,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 VK_SRC = HERE / 'trimmed_chaos_vk.comp'
-GL_SRC = HERE / 'trimmed_chaos_gl.comp'
 VK_DUMP = HERE / 'dump_vk.txt'
-GL_DUMP = HERE / 'dump_gl.txt'
 SPIRV_RAW = HERE / 'dump_vk.spv'
 SPIRV_DIS = HERE / 'dump_vk.spvdis'
 
@@ -97,52 +91,7 @@ def dump_vulkan():
         print(f'  wrote {SPIRV_DIS}: {SPIRV_DIS.stat().st_size} bytes')
 
 
-# ---------------------------------------------------------------------------
-# GL path — use moderngl with a standalone EGL context
-# ---------------------------------------------------------------------------
-
-GL_RUNNER = r'''
-import os
-os.environ['PYOPENGL_PLATFORM'] = 'egl'
-import moderngl
-import numpy as np
-ctx = moderngl.create_context(standalone=True, backend='egl')
-src = open('{gl_src}').read()
-shader = ctx.compute_shader(src)
-N_WALKERS = 64
-hist = ctx.buffer(reserve=64 * 64 * 4)
-walkers = ctx.buffer(np.random.default_rng(0).uniform(-1, 1, (N_WALKERS, 3))
-                      .astype(np.float32).tobytes())
-hist.bind_to_storage_buffer(0)
-walkers.bind_to_storage_buffer(1)
-shader['u_width'] = 64
-shader['u_height'] = 64
-shader['u_iterations'] = 30
-shader['u_rng_seed'] = 12345
-shader.run(group_x=N_WALKERS // 64)
-ctx.finish()
-'''
-
-
-def dump_gl():
-    print('--- OpenGL / iris ---')
-    env = {**os.environ,
-           'MESA_SHADER_CACHE_DISABLE': '1',
-           'INTEL_DEBUG': 'cs',
-           'MESA_GLSL_CACHE_DISABLE': 'true'}
-    runner = GL_RUNNER.format(gl_src=GL_SRC)
-    result = subprocess.run(
-        [sys.executable, '-c', runner],
-        env=env, capture_output=True, text=True)
-    GL_DUMP.write_text(result.stderr)
-    print(f'  wrote {GL_DUMP}: {GL_DUMP.stat().st_size} bytes')
-    if result.returncode != 0:
-        print(f'  WARNING: exit code {result.returncode}')
-        print(f'  stdout: {result.stdout[:500]}')
-
-
 VK_FULL_DUMP = HERE / 'dump_vk_full.txt'
-GL_FULL_DUMP = HERE / 'dump_gl_full.txt'
 
 VK_FULL_RUNNER = r'''
 import sys
@@ -176,57 +125,15 @@ def dump_vulkan_full():
     print(f'  wrote {VK_FULL_DUMP}: {VK_FULL_DUMP.stat().st_size} bytes')
 
 
-GL_FULL_RUNNER = r'''
-import os
-os.environ['PYOPENGL_PLATFORM'] = 'egl'
-import sys
-sys.path.insert(0, '{project}')
-import numpy as np
-import moderngl
-from flame_sheep.rendering import FlameRenderer, GpuContext
-from flame_sheep_audio import N_BINS
-
-ctx = moderngl.create_context(standalone=True, backend='egl')
-renderer = FlameRenderer(GpuContext(ctx, 256, 256))
-# Force a chaos-game dispatch so the driver actually compiles the shader.
-from flame_sheep.genome import Genome
-g = Genome.random(np.random.default_rng(42))
-renderer.upload_genome(g)
-renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
-renderer.reset_walkers()
-renderer.clear_histogram()
-renderer.dispatch_chaos_game(iterations=30)
-ctx.finish()
-'''
-
-
-def dump_gl_full():
-    print('--- OpenGL / iris — FULL flame.comp ---')
-    env = {**os.environ,
-           'MESA_SHADER_CACHE_DISABLE': '1',
-           'INTEL_DEBUG': 'cs',
-           'MESA_GLSL_CACHE_DISABLE': 'true'}
-    runner = GL_FULL_RUNNER.format(project=HERE.parents[1])
-    result = subprocess.run(
-        [sys.executable, '-c', runner],
-        env=env, capture_output=True, text=True)
-    GL_FULL_DUMP.write_text(result.stderr)
-    print(f'  wrote {GL_FULL_DUMP}: {GL_FULL_DUMP.stat().st_size} bytes')
-    if result.returncode != 0:
-        print(f'  WARN: exit={result.returncode}; stdout={result.stdout[:300]}')
-
-
 if __name__ == '__main__':
     dump_vulkan()
-    dump_gl()
     dump_vulkan_full()
-    dump_gl_full()
 
     print()
-    print('Next steps for the IR diff:')
-    print(f'  spirv-dis output  : {SPIRV_DIS}')
-    print(f'  Vulkan Gen ISA    : {VK_DUMP}')
-    print(f'  OpenGL Gen ISA    : {GL_DUMP}')
+    print('Outputs:')
+    print(f'  spirv-dis output         : {SPIRV_DIS}')
+    print(f'  Vulkan Gen ISA (trimmed) : {VK_DUMP}')
+    print(f'  Vulkan Gen ISA (full)    : {VK_FULL_DUMP}')
     print(f'  diff side-by-side : diff -y {VK_DUMP} {GL_DUMP} | less -R')
     print()
     print('Focus area: search the ISA dumps for "ugm" (Unified Global '

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .rendering import Viewport
+from viz_authoring.gpu_context import Viewport
 
 
 @dataclass(frozen=True)

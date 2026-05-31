@@ -34,7 +34,6 @@ from .config import cfg
 from flame_sheep_audio import DEFAULT_DEVICE
 from .ui.benchmark import _run_variation_benchmark
 from .ui.library_cli import _run_library_commands
-from .runtime import _run_wallpaper
 
 
 def main() -> None:
@@ -48,8 +47,11 @@ def main() -> None:
                         help=f'audio input device name or index (default: {DEFAULT_DEVICE!r})')
     parser.add_argument('--test-audio', action='store_true',
                         help='use synthetic metronome instead of real audio (120bpm, predictable beats)')
+    # --debug overlay was a GL-mode-only audio-analysis window built
+    # on top of FlameRenderer. Removed with the GL stack; will be
+    # rebuilt against viz_authoring.vk if needed.
     parser.add_argument('--debug', action='store_true',
-                        help='open debug overlay window (audio analysis visualization)')
+                        help='(removed) was GL-only debug overlay')
     parser.add_argument('--test-pattern', action='store_true',
                         help='show grid test pattern instead of fractal (alignment debugging)')
     parser.add_argument('--generate-genomes', type=int, metavar='N',
@@ -68,10 +70,11 @@ def main() -> None:
                         help='print library statistics and exit')
     parser.add_argument('--blur-radius', type=float, default=0.6,
                         help='wallpaper blur strength (0=off, 1=light, 2+=heavy; default: 1.0)')
-    parser.add_argument('--backend', choices=['gl', 'vk'], default='gl',
-                        help='rendering backend (default: gl). vk uses '
-                             'viz_authoring.vk — no compare mode / test '
-                             'pattern / audio-uniform support yet.')
+    # --backend flag retained as a no-op for back-compat scripts that
+    # still pass it; only `vk` is supported now. The GL wallpaper was
+    # removed in favor of the single Vulkan stack.
+    parser.add_argument('--backend', choices=['vk'], default='vk',
+                        help='rendering backend (vk only; GL removed)')
     parser.add_argument('--log-features', action='store_true',
                         help='log audio features as JSON lines for offline analysis')
     parser.add_argument('--log-file', type=str, default=None,
@@ -125,13 +128,9 @@ def main() -> None:
         return
 
     if args.debug:
-        from .debug import run_debug_overlay
-        audio_device = args.audio_device
-        if audio_device is None:
-            from .config import cfg
-            audio_device = cfg.audio_device
-        run_debug_overlay(audio_device=audio_device, test_audio=args.test_audio)
-        return
+        log.error('--debug overlay was removed with the GL stack. '
+                  'Rebuild against viz_authoring.vk if you need it.')
+        sys.exit(2)
 
     if args.benchmark_variations:
         _run_variation_benchmark(sample_mode=args.bench_sample,
@@ -164,19 +163,12 @@ def main() -> None:
         if audio_device is None:
             from .config import cfg
             audio_device = cfg.audio_device
-        if args.backend == 'vk':
-            from .runtime.wallpaper_vk import _run_wallpaper_vk
-            _run_wallpaper_vk(audio_device, args.test_audio,
-                              blur_radius=args.blur_radius,
-                              log_features=args.log_features,
-                              log_file=args.log_file,
-                              test_pattern=args.test_pattern)
-        else:
-            _run_wallpaper(audio_device, args.test_audio,
-                           blur_radius=args.blur_radius,
-                           log_features=args.log_features,
-                           log_file=args.log_file,
-                           test_pattern=args.test_pattern)
+        from .runtime.wallpaper_vk import _run_wallpaper_vk
+        _run_wallpaper_vk(audio_device, args.test_audio,
+                          blur_radius=args.blur_radius,
+                          log_features=args.log_features,
+                          log_file=args.log_file,
+                          test_pattern=args.test_pattern)
         return
 
     # No mode given — print help. flame-sheep is a wallpaper system; running

@@ -78,7 +78,7 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
         log.warning('--test-pattern not supported by the Vulkan backend yet '
                     '— ignored')
 
-    from ..rendering import _ensure_singleton
+    from .wayland_outputs import _ensure_singleton
     _ensure_singleton()
 
     # Lazy import so flame_sheep can be imported on systems without Vulkan
@@ -93,7 +93,7 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
     from viz_authoring.vk.image import (
         create_image_rgba8, create_color_attachment_image,
         upload_image_rgba8, create_linear_sampler)
-    from ..rendering.surface import _get_output_layout
+    from .wayland_outputs import _get_output_layout
 
     # --- 1. Discover outputs + compute physical-mm layout (same approach as
     # multi_wallpaper.py) ----------------------------------------------------
