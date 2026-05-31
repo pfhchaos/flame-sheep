@@ -71,12 +71,32 @@ class GenomeAxis:
     def __init__(self, genome_factory: Callable[[], Genome],
                  role: RoleMapper,
                  lib: Library | None = None,
-                 rng: np.random.Generator | None = None) -> None:
+                 rng: np.random.Generator | None = None,
+                 is_pipeline_ready: Callable[[Genome], bool] | None = None,
+                 on_pipeline_request: Callable[[Genome], None] | None = None,
+                 ) -> None:
+        """is_pipeline_ready: optional predicate the axis consults
+        before committing to a new target_genome. If supplied and the
+        candidate's pipeline isn't ready, the axis defers the swap
+        (keeps current target / no morph start). The wallpaper passes
+        this so cold genomes never get selected — render loop only
+        ever sees genomes whose shaders are compiled.
+
+        on_pipeline_request: optional side-effect called whenever a
+        candidate is rejected for not being ready. Caller wires this
+        to enqueue a precompile request, so the not-ready set shrinks
+        over time. Without it, deferred swaps never get unstuck.
+
+        Both default to None for backward compat (tests, batch tools
+        that don't need shader gating); when both are absent the axis
+        behaves exactly as before."""
         self.enabled = True
         self._genome_factory = genome_factory
         self._role = role
         self._lib = lib
         self.rng = rng or np.random.default_rng()
+        self._is_pipeline_ready = is_pipeline_ready
+        self._on_pipeline_request = on_pipeline_request
 
         # --- Mode ---
         self._mode = Mode.IDLE
@@ -349,20 +369,64 @@ class GenomeAxis:
         self.target_genome = target
         self._morph.start_morph()
 
+    def set_pipeline_readiness(
+            self,
+            *,
+            is_ready: Callable[[Genome], bool],
+            on_request: Callable[[Genome], None] | None = None) -> None:
+        """Late-bind the pipeline-readiness predicate + (optional)
+        not-ready callback. Used by wallpaper_vk after FlameSheepCore
+        construction (the renderer's pipeline cache + precompile
+        driver aren't available at axis-init time)."""
+        self._is_pipeline_ready = is_ready
+        self._on_pipeline_request = on_request
+
+    def _accept_target(self, candidate: Genome) -> bool:
+        """Returns True if `candidate` may be committed as target_genome.
+        If a readiness predicate was supplied and the candidate isn't
+        ready (shader uncompiled), request the compile and return False
+        so the caller can skip the swap. Caller is then expected to
+        leave target_genome unchanged — render continues on the current
+        genome until precompile catches up.
+
+        No fallback to "compile inline anyway" — if the system is
+        compile-starved, staying on the current genome forever is the
+        correct behavior (user-confirmed). Avoids the silent wrong-
+        shader pattern where the render thread gets a target it can't
+        actually render properly."""
+        if self._is_pipeline_ready is None:
+            return True
+        if candidate is None:
+            return True
+        if self._is_pipeline_ready(candidate):
+            return True
+        if self._on_pipeline_request is not None:
+            try:
+                self._on_pipeline_request(candidate)
+            except Exception:
+                log.exception('[genome-axis] pipeline request failed')
+        log.debug(f'[genome-axis] deferring swap; candidate '
+                  f'#{getattr(candidate, "db_id", "?")} not yet compiled')
+        return False
+
     def next_loop(self) -> None:
         ref = self.current_genome
         if ref.db_id is None and self.target_genome is not None:
             ref = self.target_genome
         target = self._loop.next_loop(ref)
-        if target is not None:
+        if target is not None and self._accept_target(target):
             self.target_genome = target
             self._morph.start_morph()
 
     def _swap_next_genome(self) -> None:
-        self.target_genome = self._loop.swap_next(self.current_genome)
+        candidate = self._loop.swap_next(self.current_genome)
+        if self._accept_target(candidate):
+            self.target_genome = candidate
 
     def _graph_walk_next(self) -> None:
-        self.target_genome = self._loop.graph_walk(self.current_genome)
+        candidate = self._loop.graph_walk(self.current_genome)
+        if self._accept_target(candidate):
+            self.target_genome = candidate
 
 
 # Reverse map: variation index -> name

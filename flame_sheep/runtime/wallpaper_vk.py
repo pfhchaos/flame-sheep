@@ -516,6 +516,48 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
     orch = Orchestrator(audio_device=audio_device, test_audio=test_audio)
     core = FlameSheepCore(orchestrator=orch, lib=lib)
 
+    # Gate genome selection on pipeline readiness. GenomeAxis will
+    # defer swaps to genomes whose shaders aren't compiled yet, and
+    # request precompile in the same call. The render loop never
+    # sees a mismatched pipeline because the upstream caller filtered
+    # out the unready candidate. If precompile is starved (e.g. saw
+    # the scheduler pinned PAUSE for hours), we just stay on the
+    # current genome — better than rendering with the wrong shader.
+    def _genome_is_ready(g) -> bool:
+        try:
+            from ..scheduler.precompile_warm import _genome_tuple
+            t = _genome_tuple(g)
+            n_tx, has_final, keep_vars = t
+            # In-process cache hit OR disk warm marker — both are
+            # cheap to re-create (~ms).
+            if (n_tx, has_final, keep_vars) in chaos._chaos_pipes:
+                return True
+            from viz_authoring.vk import pipeline_warm
+            return pipeline_warm.is_warm(n_tx, bool(has_final), keep_vars)
+        except Exception:
+            # On predicate error, fail open — better to render with a
+            # possibly-cold genome than to deadlock the axis.
+            log.exception('[axis-gate] readiness probe failed')
+            return True
+
+    def _genome_request_precompile(g) -> None:
+        if precompile_driver is None:
+            return
+        try:
+            from ..scheduler.precompile_warm import _genome_tuple
+            n_added = precompile_driver.enqueue(
+                [_genome_tuple(g)], priority=-100)
+            if n_added:
+                log.debug(
+                    f'[axis-gate] requested compile for genome '
+                    f'#{getattr(g, "db_id", "?")} (axis deferred swap)')
+        except Exception:
+            log.exception('[axis-gate] precompile enqueue failed')
+
+    core._genome_axis.set_pipeline_readiness(
+        is_ready=_genome_is_ready,
+        on_request=_genome_request_precompile)
+
     from ..genome.score_worker import BackgroundCpuScorer
     from ..transitions import BackgroundTransitionScorer
     from ..genome.pruner import BackgroundPruner
@@ -801,63 +843,27 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                     perf_iters.clear()
                 continue  # skip normal render path
 
-            # --- Genome upload. Note: frame.genome is a fresh object every
-            # frame (lerp + rotated produce new instances), so id()-based
-            # change detection here is essentially "always" — but the
-            # underlying ChaosGame.set_genome dispatches cheap dict-lookup
-            # pipeline-binds for the common case (variation key unchanged)
-            # and only compiles on a true key change.
+            # --- Genome upload. frame.genome is a fresh object every
+            # frame (lerp + rotated produce new instances) so the gid
+            # check is essentially "always" — but the underlying
+            # ChaosGame.set_genome bypasses the pipeline-compile cost
+            # via in-memory dict lookup when the variation key matches.
+            #
+            # The render loop TRUSTS the orchestrator's pipeline-
+            # readiness gate (genome_axis.set_pipeline_readiness). If
+            # the axis picked this genome it means its pipeline either
+            # is already compiled or will compile fast off the disk
+            # cache. No render-side warm-gate; no silent fallback.
+            # Morph frames may briefly hit a cold union(current,target)
+            # pipeline — accepted for now; phase 2 would gate on the
+            # union too.
             gid = id(frame.genome)
             _ts = time.perf_counter()
             if gid != last_genome_id:
-                # require_warm=True: ChaosGame ALWAYS uploads buffers
-                # (rotation animation lives in affine matrices) but
-                # refuses to swap to a cold pipeline. Caller-visible
-                # effect on cold: the old pipeline renders the new
-                # buffer state for a few frames during morph — slight
-                # visual mismatch where variation sets differ, but no
-                # freeze. Precompile worker warms the new key in the
-                # background; next frame's swap attempt picks it up.
-                #
-                # First genome of the session: nothing is warm; let
-                # the compile happen in-line one time (200-400ms hit
-                # at startup, then steady-state require_warm wins).
                 kwargs = _genome_to_chaos_kwargs(frame.genome)
-                first_swap = last_genome_id is None
-                swapped = chaos.set_genome(
-                    **kwargs, require_warm=not first_swap)
-                # Reset walkers EVERY frame regardless of swap. The
-                # morph produces a new attractor each frame; walkers
-                # left at the previous attractor would converge to a
-                # tight cluster and hammer the atomicMax on max_buf
-                # (we measured chaos_game climbing from 35ms → 91ms
-                # over 30s when this was skipped). Reset cost is ~ms;
-                # benefit is preventing this contention spiral.
+                chaos.set_genome(**kwargs)
                 chaos.reset_walkers()
-                if swapped:
-                    last_genome_id = gid
-                else:
-                    # Pipeline was cold; buffers ARE uploaded (rotation
-                    # animates). Don't reset_walkers (old pipeline still
-                    # bound, walker positions remain valid for it).
-                    # Don't advance last_genome_id either — every frame
-                    # produces a new gid anyway, so retry happens
-                    # naturally on the next tick.
-                    if precompile_driver is not None:
-                        from ..scheduler.precompile_warm import _genome_tuple
-                        try:
-                            t = _genome_tuple(frame.genome)
-                            n_added = precompile_driver.enqueue(
-                                [t], priority=-100)
-                            if n_added:
-                                log.info(
-                                    f'[precompile] cold-genome miss; '
-                                    f'enqueued tuple at TOP priority '
-                                    f'(n_tx={t[0]}, final={t[1]}, '
-                                    f'|vars|={len(t[2])})')
-                        except Exception:
-                            log.exception(
-                                '[precompile] cold-miss enqueue failed')
+                last_genome_id = gid
 
                 # Precompile hints on loop change:
                 #   MED — current loop's own members (small, focused)
