@@ -25,9 +25,39 @@ Walker state (SSBO, binding=1):
 """
 from __future__ import annotations
 
+import logging
+import re
+import time as _time
+
 import moderngl
 import numpy as np
 from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+
+# Matches one `case N: return var_<name>(...);` line in variations.glsl's
+# apply_single_variation switch. Mirror of viz_authoring.vk.chaos_game's
+# _VAR_CASE_RE — keep them in sync if either side changes the switch
+# format.
+_VAR_CASE_RE = re.compile(
+    r'^[ \t]+case\s+(\d+):\s*return var_\w+\([^)]*\);\s*\n',
+    re.MULTILINE,
+)
+
+
+def _trim_variations_switch(src: str, keep_vars: frozenset[int]) -> str:
+    """Strip `case N:` lines from apply_single_variation's switch for
+    variations not in keep_vars. The `default:` branch stays.
+
+    Cuts a 127-case dispatcher down to typically 5-15 cases per genome.
+    Mesa-Iris register-allocates better on the shorter switch (~1.5-1.8x
+    gpu_chaos reduction measured). Same lever as Mesa-Xe Vk's spec-const
+    trim, less drastic effect (GL compiler wasn't spilling like Vk's
+    was, but still benefits from tighter code)."""
+    def _drop(m: re.Match[str]) -> str:
+        return m.group(0) if int(m.group(1)) in keep_vars else ''
+    return _VAR_CASE_RE.sub(_drop, src)
 
 # Framework-side GPU plumbing lives in gpu_context.py. We re-export here so
 # existing `from .renderer import Viewport, GpuContext, SHADER_DIR,
@@ -107,11 +137,28 @@ class FlameRenderer:
             return src.replace('// {{SYMMETRY_GROUPS}}', generate_glsl())
 
         flame_defines = {'SCORING_MODE': ''} if scoring else None
+        # Stash for the per-genome trim path — every cached shader
+        # reuses the same defines + symmetry injection, only the
+        # case-trimming changes per genome.
+        self._flame_defines = flame_defines
+        self._inject_symmetry = _inject_symmetry
         self.compute_shader = self.gpu.compile_compute_shader(
             SHADER_DIR / 'flame.comp',
             defines=flame_defines,
             source_transform=_inject_symmetry,
         )
+        # Per-genome trimmed-shader cache. Keys = frozenset of
+        # variation indices the genome actually uses. The 127-case
+        # switch in variations.glsl gets stripped down to just the
+        # cases the genome reaches — Mesa-Iris register-allocates
+        # better on the shorter switch, giving ~1.5-1.8x gpu_chaos
+        # reduction in measurements (see tag experiment/gl-chaos-trim
+        # and task #53 for methodology). The universal compile above
+        # serves as a fallback for the very first upload before any
+        # cache entries exist + for codepaths that don't call
+        # upload_genome (test_pattern, smoke tests).
+        self._chaos_shader_cache: dict[frozenset, "moderngl.ComputeShader"] = {}
+        self._chaos_universal_shader = self.compute_shader
         self.clear_shader = self.gpu.compile_compute_shader(
             SHADER_DIR / 'clear.comp')
         self.tonemap_program = self.gpu.compile_program(
@@ -127,6 +174,46 @@ class FlameRenderer:
         self.tonemap_flam3_program = self.gpu.compile_program(
             SHADER_DIR / 'tonemap.vert', SHADER_DIR / 'tonemap_flam3.frag'
         )
+
+    def _get_chaos_shader_for_genome(self, gpu: dict
+                                      ) -> "moderngl.ComputeShader":
+        """Compile-or-cache lookup keyed on the genome's variation set.
+
+        The 7×8×10 active_vars / pre_active_vars buffers encode each
+        slot as (var_idx, weight, p0..p7); the union of var_idx >= 0
+        across both gives the cases the chaos shader's switch needs
+        to keep. Trimming the other ~120 cases tightens the compiled
+        program — measured ~1.5-1.8× gpu_chaos reduction on Mesa-Iris
+        Arc A770.
+
+        Cold compile is blocking and ~600ms. Steady state is dict
+        lookup. Plan commit 3 (KHR_parallel_shader_compile) moves
+        cold compiles off the render thread; commit 4 adds a
+        cross-session ARB_get_program_binary cache.
+        """
+        av = gpu['active_vars'].reshape(7, 8, 10)
+        pv = gpu['pre_active_vars'].reshape(7, 8, 10)
+        var_ids = np.concatenate([av[..., 0].ravel(), pv[..., 0].ravel()])
+        keep_vars = frozenset(int(v) for v in var_ids if v >= 0)
+        cached = self._chaos_shader_cache.get(keep_vars)
+        if cached is not None:
+            return cached
+        _t0 = _time.perf_counter()
+        def _transform(src: str) -> str:
+            src = self._inject_symmetry(src)
+            return _trim_variations_switch(src, keep_vars)
+        prog = self.gpu.compile_compute_shader(
+            SHADER_DIR / 'flame.comp',
+            defines=self._flame_defines,
+            source_transform=_transform,
+        )
+        self._chaos_shader_cache[keep_vars] = prog
+        log.info(
+            f'[gl-chaos-trim] compiled shader for '
+            f'|vars|={len(keep_vars)} in '
+            f'{(_time.perf_counter() - _t0)*1000:.0f}ms '
+            f'(cache size={len(self._chaos_shader_cache)})')
+        return prog
 
     def _create_resources(self) -> None:
         w, h = self.canvas_w, self.canvas_h
@@ -260,6 +347,16 @@ class FlameRenderer:
         self.weights_buf.write(gpu['weights'].tobytes())
         self.post_affines_buf.write(gpu['post_affines'].tobytes())
         self.pre_vars_buf.write(gpu['pre_active_vars'].tobytes())
+
+        # Select the per-genome trimmed compute shader (compiling on
+        # first sight of a new keep_vars). The uniform writes below
+        # all target self.compute_shader, so the swap MUST happen
+        # before the `cs = self.compute_shader` line. Render thread
+        # blocks here on cold compile (~600ms on Arc per measurement);
+        # commits 3 and 4 of the GL revert plan move this off the
+        # render thread via KHR_parallel_shader_compile +
+        # ARB_get_program_binary cache.
+        self.compute_shader = self._get_chaos_shader_for_genome(gpu)
 
         cs = self.compute_shader
         import math
