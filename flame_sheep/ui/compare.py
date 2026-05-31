@@ -718,9 +718,14 @@ class CompareRenderer:
         self._accum('clear_hist', time.perf_counter() - t)
 
         # Left genome: offset=0
-        t = time.perf_counter()
-        cr.set_histogram_offset(0)
-        self._accum('set_offset', time.perf_counter() - t)
+        # NOTE: set_histogram_offset must come AFTER upload_genome.
+        # upload_genome now swaps self.compute_shader to a per-genome
+        # trimmed program (the variation-set shader cache). Setting
+        # u_hist_offset before that swap targets the OLD shader and
+        # gets wiped — the new shader's u_hist_offset retains its
+        # default (0). Right side then writes to the same offset as
+        # left → blank right panel. Same applies to the right path
+        # below.
         t = time.perf_counter()
         cr.upload_audio(frame.spectrum)
         self._accum('upload_audio', time.perf_counter() - t)
@@ -730,6 +735,9 @@ class CompareRenderer:
         t = time.perf_counter()
         cr.upload_palette(frame.palette)
         self._accum('upload_palette', time.perf_counter() - t)
+        t = time.perf_counter()
+        cr.set_histogram_offset(0)
+        self._accum('set_offset', time.perf_counter() - t)
         if self._gpu_timer_L is None:
             self._gpu_timer_L = GpuRingTimer(self.ctx, logger=log)
         t = time.perf_counter()
@@ -744,14 +752,14 @@ class CompareRenderer:
         # needed between them. Single barrier at the end fences both
         # dispatches against the subsequent tonemap pass.
         t = time.perf_counter()
-        cr.set_histogram_offset(n_px)
-        self._accum('set_offset', time.perf_counter() - t)
-        t = time.perf_counter()
         cr.upload_genome(right_g)
         self._accum('upload_genome', time.perf_counter() - t)
         t = time.perf_counter()
         cr.upload_palette(frame.palette)
         self._accum('upload_palette', time.perf_counter() - t)
+        t = time.perf_counter()
+        cr.set_histogram_offset(n_px)
+        self._accum('set_offset', time.perf_counter() - t)
         if self._gpu_timer_R is None:
             self._gpu_timer_R = GpuRingTimer(self.ctx, logger=log)
         t = time.perf_counter()
