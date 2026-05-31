@@ -60,11 +60,20 @@ class Policy:
                   window_samples: int = 5,
                   pause_threshold: float = 0.85,
                   slow_threshold: float = 0.55,
+                  pause_hold_s: float = 1.5,
                   ):
+        """pause_hold_s: once the policy hits PAUSE, hold there for at
+        least this long after the trigger clears. Prevents the policy
+        from flapping back to RUN immediately on a brief signal dip,
+        which would let a 400ms cold shader compile start and stall
+        the wallpaper for the next 25 frames. Set to 0 to disable."""
         self.sampler = sampler
         self.sample_interval_s = sample_interval_s
         self.pause_threshold = pause_threshold
         self.slow_threshold = slow_threshold
+        self.pause_hold_s = pause_hold_s
+        # When was the last PAUSE trigger? Used to enforce pause_hold_s.
+        self._last_pause_trigger_t: float = 0.0
         self._window: collections.deque[float] = collections.deque(
             maxlen=window_samples)
         self._last_sample_t = 0.0
@@ -143,9 +152,22 @@ class Policy:
             return self._state
 
         rm = max(self._window)
-        new_state = (BatchState.PAUSE if rm >= self.pause_threshold
-                      else BatchState.SLOW if rm >= self.slow_threshold
-                      else BatchState.RUN)
+        if rm >= self.pause_threshold:
+            new_state = BatchState.PAUSE
+            self._last_pause_trigger_t = now
+        elif rm >= self.slow_threshold:
+            new_state = BatchState.SLOW
+        else:
+            new_state = BatchState.RUN
+        # Pause-hold hysteresis: once we hit PAUSE, refuse to leave it
+        # until pause_hold_s has elapsed since the last PAUSE trigger.
+        # Stops the policy from oscillating PAUSE→RUN→PAUSE on every
+        # post-spike signal dip, which lets the precompile worker start
+        # a 400ms cold compile and stall the wallpaper for 25 frames.
+        if (self._state is BatchState.PAUSE
+                and new_state is not BatchState.PAUSE
+                and now - self._last_pause_trigger_t < self.pause_hold_s):
+            return self._state
         if new_state is not self._state:
             # Charge time-in-old-state before flipping so each state's
             # duration counts only the interval it was actually current.

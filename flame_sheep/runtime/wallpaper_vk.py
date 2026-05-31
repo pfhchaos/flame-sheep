@@ -465,13 +465,17 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
         wallpaper_signal_writer = WallpaperSignalWriter(target_ms=target_ms)
         signal_reader = WallpaperSignalReader()
 
-        # Thresholds calibrated against chaos_ms / target_ms semantics:
-        # at iters=100 baseline chaos ≈ 14ms / 16.7ms ≈ 0.84 → SLOW.
-        # If chaos exceeds the frame budget itself → PAUSE.
+        # Thresholds calibrated against chaos_ms / target_ms semantics.
+        # Lowered to match observed iters=400+ chaos = 4-9ms (busy ≈
+        # 0.3-0.55) so the policy actually engages when music is on.
+        # pause_hold_s prevents flapping back to RUN immediately after
+        # a pressure spike clears, which let 400ms cold compiles start
+        # and stall the wallpaper for ~25 frames.
         _policy = Policy(signal_reader,
                           sample_interval_s=0.25,
-                          slow_threshold=0.85,
-                          pause_threshold=1.00)
+                          slow_threshold=0.55,
+                          pause_threshold=0.80,
+                          pause_hold_s=2.0)
         precompile_driver = PrecompileDriver(
             canvas_w=canvas_w, canvas_h=canvas_h, policy=_policy)
         precompile_driver.start()

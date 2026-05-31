@@ -34,19 +34,26 @@ class RenderWorkerSupervisor:
     def __init__(self, db_path: str,
                   signal_reader: WallpaperSignalReader,
                   *,
-                  slow_threshold: float = 0.70,
-                  pause_threshold: float = 0.90,
-                  sample_interval_s: float = 0.25):
+                  slow_threshold: float = 0.45,
+                  pause_threshold: float = 0.70,
+                  sample_interval_s: float = 0.25,
+                  pause_hold_s: float = 3.0):
         """slow_threshold / pause_threshold: lower than precompile's
-        defaults (0.85 / 1.00) because render_worker is LOW priority —
+        defaults (0.55 / 0.80) because render_worker is LOW priority —
         user doesn't notice the score DB filling, but does notice
-        wallpaper jitter, so we'd rather throttle the renderer earlier."""
+        wallpaper jitter, so we'd rather throttle the renderer earlier.
+
+        pause_hold_s 3s (vs precompile's 2s) — render worker's per-unit
+        cost is larger (full genome render + tonemap + PNG encode), so
+        an in-flight render that slipped through is more disruptive.
+        Hold pause longer to give the wallpaper recovery room."""
         self._db_path = db_path
         self._flag = PauseFlag('render_worker')
         self._policy = Policy(signal_reader,
                                 sample_interval_s=sample_interval_s,
                                 slow_threshold=slow_threshold,
-                                pause_threshold=pause_threshold)
+                                pause_threshold=pause_threshold,
+                                pause_hold_s=pause_hold_s)
         self._stop = threading.Event()
         self._policy_t: threading.Thread | None = None
         self._renderer = None
