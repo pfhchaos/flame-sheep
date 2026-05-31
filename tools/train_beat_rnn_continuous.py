@@ -808,6 +808,64 @@ def validate_multidepth(model: MultiDepthBeatRNN, gpu, batches,
     return avg_loss, headline_f1, metrics
 
 
+def _resolve_head_pos_weights(spec: str, data_dir: Path,
+                                n_files: int, seed: int
+                                ) -> list[float] | None:
+    """Parse the --head-pos-weights CLI spec into a per-head list.
+    Returns None for 'none' or '1' (uniform = no rebalancing).
+
+    Spec values:
+      'none' / '1' / '1.0'     -> None (unweighted)
+      'auto'                    -> [n_neg/n_pos] per head, sampled
+      'sqrt-auto'               -> [sqrt(n_neg/n_pos)] per head
+      'w0,w1,w2'                -> explicit list in head-index order
+    """
+    s = spec.strip().lower()
+    if s in ('none', '1', '1.0'):
+        return None
+    if s in ('auto', 'sqrt-auto'):
+        # Sample positive rates from the corpus. Mirror the diagnostic
+        # script's logic — keep it local rather than importing the
+        # diag tool (which may not exist post-cleanup).
+        rng = np.random.default_rng(seed)
+        files = sorted(data_dir.glob('*.npz'))
+        sample = rng.choice(files, size=min(n_files, len(files)),
+                              replace=False)
+        head_pos = {h: 0 for h in MULTIDEPTH_HEAD_TO_LABEL_COL}
+        total_frames = 0
+        for path in sample:
+            try:
+                d = np.load(path, allow_pickle=False)
+                labels = d['labels_hier']
+                if labels.ndim != 2 or labels.shape[1] < 3:
+                    continue
+                total_frames += labels.shape[0]
+                for h, c in MULTIDEPTH_HEAD_TO_LABEL_COL.items():
+                    head_pos[h] += int((labels[:, c] > 0.5).sum())
+            except Exception:
+                continue
+        if total_frames == 0:
+            print('WARN: head-pos-weights auto failed; falling back to '
+                  'uniform.', file=sys.stderr)
+            return None
+        weights = []
+        for h in sorted(head_pos):  # head 0..N-1 order
+            rate = head_pos[h] / total_frames
+            if rate <= 0:
+                weights.append(1.0)
+                continue
+            inv = (1.0 - rate) / rate  # n_neg/n_pos
+            weights.append(float(np.sqrt(inv)) if s == 'sqrt-auto' else float(inv))
+        return weights
+    # Explicit list.
+    try:
+        return [float(x) for x in spec.split(',')]
+    except ValueError as e:
+        raise ValueError(f'unparseable --head-pos-weights: {spec!r}; '
+                          f'expected "auto"/"sqrt-auto"/"none" or '
+                          f'comma-separated floats. ({e})')
+
+
 def train_epoch_multidepth(model: MultiDepthBeatRNN, gpu, batches,
                            lr: float, chunk_len: int,
                            dataset, cache,
@@ -823,7 +881,8 @@ def train_epoch_multidepth(model: MultiDepthBeatRNN, gpu, batches,
                            epoch_num: int = 0,
                            prep_workers: int = 8,
                            schema: CorpusSchema | None = None,
-                           ckpt_dims: dict | None = None):
+                           ckpt_dims: dict | None = None,
+                           head_pos_weights: list[float] | None = None):
     """Train one epoch of the multi-depth model.
 
     Per batch:
@@ -877,13 +936,20 @@ def train_epoch_multidepth(model: MultiDepthBeatRNN, gpu, batches,
 
         head_outs = model.forward_multidepth(input_seq_buf, B=B_actual, T=T)
 
-        # Per-head BCE — single-channel shader, three dispatches.
+        # Per-head BCE — single-channel shader, three dispatches. The
+        # multidepth corpus has very different positive rates per head
+        # (downbeat ~1.5% vs onset ~12%), so per-head pos_weight is
+        # essential to keep the downbeat head from being drowned out
+        # by the negative-class contribution to its own BCE.
         for head_idx, head_buf in enumerate(head_outs):
+            pw = (head_pos_weights[head_idx]
+                  if head_pos_weights is not None else 1.0)
             bce_loss_dispatch(
                 gpu, head_buf, per_head_target_bufs[head_idx],
                 per_head_grad_bufs[head_idx],
                 per_head_loss_bufs[head_idx],
                 batch_size=BT, target_offset_floats=0, t_inv=1.0,
+                pos_weight=pw,
             )
 
         # Summed loss across heads — comparable across batches and to
@@ -988,6 +1054,19 @@ def main():
                         help='Stack depth for --architecture multidepth '
                              '(default 3, one per head). Ignored for '
                              '--architecture single.')
+    parser.add_argument('--head-pos-weights', type=str, default='sqrt-auto',
+                        help='Per-head BCE pos_weight (multidepth only). '
+                             '"1" or "none" disables (uniform BCE). '
+                             '"auto" = n_neg/n_pos sampled from data '
+                             '(strongest rebalancing — risks overshoot). '
+                             '"sqrt-auto" (default) = sqrt(n_neg/n_pos) '
+                             '— gentler, pulls bias toward zero without '
+                             'flipping it. Or pass three comma-separated '
+                             'floats in head-index order (head 0=onset, '
+                             '1=beat, 2=downbeat) e.g. "2.7,2.9,8.0".')
+    parser.add_argument('--head-pos-weights-sample', type=int, default=200,
+                        help='Number of files to sample when '
+                             '--head-pos-weights auto/sqrt-auto (default 200).')
     args = parser.parse_args()
 
     if args.architecture == 'multidepth':
@@ -1010,6 +1089,20 @@ def main():
               f'--batch-size ({args.batch_size}); bumping cache to batch size.',
               file=sys.stderr)
         args.file_cache_size = args.batch_size
+
+    # Resolve per-head pos_weights from CLI. Only consulted by the
+    # multidepth path; ignored for --architecture single.
+    head_pos_weights = None
+    if args.architecture == 'multidepth':
+        head_pos_weights = _resolve_head_pos_weights(
+            args.head_pos_weights, args.data_dir,
+            args.head_pos_weights_sample, args.seed)
+        if head_pos_weights is not None:
+            names = [MULTIDEPTH_HEAD_NAMES[i]
+                      for i in range(len(head_pos_weights))]
+            paired = ', '.join(f'{n}={w:.3f}'
+                                for n, w in zip(names, head_pos_weights))
+            print(f'Per-head pos_weights: {paired}', file=sys.stderr)
 
     rng = np.random.default_rng(args.seed)
     dataset = load_dataset(args.data_dir, args.max_files)
@@ -1156,6 +1249,7 @@ def main():
                 save_path=args.output, epoch_num=epoch,
                 prep_workers=args.prep_workers,
                 schema=schema, ckpt_dims=ckpt_dims,
+                head_pos_weights=head_pos_weights,
             )
             val_loss, val_f1, val_metrics = validate_multidepth(
                 model, gpu, val_batches, args.chunk_len, input_seq_buf,
