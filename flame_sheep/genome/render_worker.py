@@ -62,6 +62,11 @@ def _render_main(db_path: str,
     except OSError:
         pass
 
+    # Die with the parent — multiprocessing's daemon=True only catches
+    # CLEAN parent exits. PR_SET_PDEATHSIG covers crash / kill -9 too.
+    from ..process_util import set_pdeathsig
+    set_pdeathsig()
+
     # Let wallpaper start up before competing for GPU
     time.sleep(10)
 

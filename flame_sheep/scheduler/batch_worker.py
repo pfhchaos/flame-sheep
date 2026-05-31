@@ -61,14 +61,26 @@ def _ionice_to_idle():
     libc.syscall(SYS_ioprio_set, IOPRIO_WHO_PROCESS, 0, ioprio)
 
 
+def _set_pdeathsig():
+    from ..process_util import set_pdeathsig
+    set_pdeathsig()
+
+
 def _child_preexec():
     """Run in the child after fork, before exec.
-    Apply nice + ionice so the worker starts deprioritized."""
+    Apply nice + ionice so the worker starts deprioritized; also
+    install PR_SET_PDEATHSIG so the child dies with its parent."""
     os.nice(BATCH_NICE)
     try:
         _ionice_to_idle()
     except OSError:
         # ionice failure is non-fatal; nice alone still helps.
+        pass
+    try:
+        _set_pdeathsig()
+    except (OSError, AttributeError):
+        # prctl unavailable / call failed — fall back to manual
+        # cleanup via atexit. Worth logging but not fatal.
         pass
 
 
