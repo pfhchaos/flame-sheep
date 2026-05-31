@@ -39,9 +39,15 @@ def enumerate_catalog_tuples(lib: Library | None = None
     """Walk all non-archived genomes in the catalog, return the
     deduped set of pipeline cache keys.
 
-    Slow-ish (loads every genome's params blob) but only runs once
-    at wallpaper startup. Bounded — catalog is currently ~4k
-    genomes, this takes O(seconds) on local SSD.
+    DEPRECATED: this dumps the entire catalog (~2200 unique tuples)
+    onto the precompile queue at wallpaper startup, which keeps the
+    precompile worker busy for ~20 minutes consuming GPU time the
+    wallpaper would otherwise have. Use near_tuples() instead — it
+    enqueues only the genomes likely to actually play this session
+    (current loop members + a graph-flood-fill of neighbors).
+
+    Kept around for tools that genuinely want to warm the entire
+    catalog (e.g. cold-start the Mesa shader cache for a benchmark).
     """
     own_lib = lib is None
     if own_lib:
@@ -68,6 +74,59 @@ def enumerate_catalog_tuples(lib: Library | None = None
     log.info(f'enumerated {len(all_ids)} genomes → {len(tuples)} '
              f'unique pipeline tuples '
              f'({len(all_ids)/max(1,len(tuples)):.2f}× reuse)')
+    return tuples
+
+
+def near_tuples(lib: Library,
+                 seed_genome_ids: list[int],
+                 hops: int = 2,
+                 fan_per_node: int = 5,
+                 ) -> set[tuple[int, int, frozenset[int]]]:
+    """BFS flood-fill in the genome transition graph from `seed_genome_ids`,
+    return the deduped pipeline cache keys for everything within
+    `hops` graph distance.
+
+    Replaces the catalog-dump model: instead of compiling every
+    shader in the library at startup, we only compile what's likely
+    to actually play soon (current loop members + their N-hop graph
+    neighborhood via the genome_transitions table). Re-run on each
+    loop change to flood from the new location.
+
+    Bounded growth: at most hops * fan_per_node ** hops genomes
+    visited per call. With defaults (2 hops × 5 fan) that's ≤25
+    genomes added per seed before dedup; in practice much less due
+    to graph overlap. Total per loop change is typically 30-80
+    genomes vs the 2200 from enumerate_catalog_tuples.
+    """
+    visited: set[int] = set(seed_genome_ids)
+    frontier = list(seed_genome_ids)
+    for _ in range(hops):
+        next_frontier: list[int] = []
+        for gid in frontier:
+            try:
+                neighbors = lib.nearest_transitions(gid, n=fan_per_node)
+            except Exception as e:
+                log.debug(f'nearest_transitions({gid}) failed: {e}')
+                continue
+            for neighbor_id, _dist in neighbors:
+                if neighbor_id not in visited:
+                    visited.add(neighbor_id)
+                    next_frontier.append(neighbor_id)
+        frontier = next_frontier
+        if not frontier:
+            break
+
+    tuples: set[tuple[int, int, frozenset[int]]] = set()
+    for gid in visited:
+        try:
+            g = lib.load_genome(gid)
+        except Exception as e:
+            log.debug(f'skip genome {gid}: {e}')
+            continue
+        tuples.add(_genome_tuple(g))
+    log.debug(f'flood from {len(seed_genome_ids)} seeds, {hops}-hop, '
+              f'fan={fan_per_node} → {len(visited)} genomes / '
+              f'{len(tuples)} unique tuples')
     return tuples
 
 

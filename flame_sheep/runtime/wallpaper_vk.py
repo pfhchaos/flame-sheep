@@ -435,26 +435,11 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
             canvas_w=canvas_w, canvas_h=canvas_h, policy=_policy)
         precompile_driver.start()
 
-        # Background enumeration — scans catalog (~3s) and enqueues
-        # at LOW priority. Done in a daemon thread so it doesn't
-        # block wallpaper startup.
-        def _enumerate_and_enqueue():
-            try:
-                from ..scheduler.precompile_warm import (
-                    enumerate_catalog_tuples)
-                # Don't pass main-thread's `lib` — sqlite3 connections
-                # are not cross-thread safe. The helper opens its own.
-                tuples = enumerate_catalog_tuples()
-                added = precompile_driver.enqueue(
-                    tuples, priority=10)
-                log.info(f'[precompile] enqueued {added} catalog '
-                         f'tuples at priority=10')
-            except Exception:
-                log.exception(
-                    '[precompile] catalog enumeration failed')
-        threading.Thread(target=_enumerate_and_enqueue,
-                          name='precompile-enum',
-                          daemon=True).start()
+        # No startup catalog dump anymore — the precompile worker
+        # only warms genomes likely to actually play this session.
+        # See _hint_local_neighborhood() below, called on each loop
+        # change from the render loop with the current loop's members
+        # as flood seeds.
     except Exception:
         log.exception('[precompile] init failed; continuing without')
         precompile_driver = None
@@ -781,25 +766,44 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 # path's reset on change behavior).
                 chaos.reset_walkers()
 
-                # Precompile MED hint: when loop changes, push all the
-                # new loop's members so they're cached before the next
-                # set_genome lands. Cheap (small loops, dedupe in driver).
+                # Precompile hints on loop change:
+                #   MED — current loop's own members (small, focused)
+                #   LOW — 2-hop graph-flood neighborhood (likely candidates
+                #         for the orchestrator's next loop pick)
+                # Replaces the previous startup catalog dump, which
+                # enqueued ~2200 tuples and kept the precompile worker
+                # busy for ~20 minutes consuming GPU time.
                 if precompile_driver is not None:
                     try:
                         loop_id = core._genome_axis.active_loop_id
                         if loop_id != last_loop_id:
                             last_loop_id = loop_id
                             from ..scheduler.precompile_warm import (
-                                _genome_tuple)
-                            loop_tuples = [
-                                _genome_tuple(g) for g in
-                                core._genome_axis._loop.loop_genomes]
-                            n = precompile_driver.enqueue(
+                                _genome_tuple, near_tuples)
+                            loop_genomes = core._genome_axis._loop.loop_genomes
+                            loop_tuples = [_genome_tuple(g)
+                                            for g in loop_genomes]
+                            n_med = precompile_driver.enqueue(
                                 loop_tuples, priority=0)
-                            if n:
-                                log.debug(
-                                    f'[precompile] enqueued {n} loop '
-                                    f'#{loop_id} members at MED')
+                            # Flood fill from loop members for LOW. Done
+                            # on the orch thread (synchronous) — should
+                            # be ms-fast (handful of SQL + load_genome
+                            # calls). Drop in background thread later
+                            # if it becomes a hotspot.
+                            seed_ids = [g.db_id for g in loop_genomes
+                                         if g.db_id is not None]
+                            n_low = 0
+                            if seed_ids:
+                                flood = near_tuples(lib, seed_ids,
+                                                      hops=2,
+                                                      fan_per_node=5)
+                                n_low = precompile_driver.enqueue(
+                                    flood, priority=10)
+                            if n_med or n_low:
+                                log.info(
+                                    f'[precompile] loop #{loop_id}: '
+                                    f'MED={n_med} (loop members) '
+                                    f'LOW={n_low} (2-hop flood)')
                     except Exception:
                         log.exception('[precompile] loop hint failed')
             _accum('upload_genome', time.perf_counter() - _ts)
