@@ -69,7 +69,8 @@ def _palette_to_rgba8(palette_f32: np.ndarray) -> np.ndarray:
 def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                      blur_radius: float = 1.0,
                      log_features: bool = False, log_file: str | None = None,
-                     test_pattern: bool = False) -> None:
+                     test_pattern: bool = False,
+                     sync_chaos: bool = False) -> None:
     """Vulkan-backed wallpaper runtime — same external contract as
     _run_wallpaper(). blur_radius and test_pattern are accepted for CLI
     parity but currently ignored (TODOs in the unsupported-features
@@ -318,8 +319,24 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 0, len(push), ffi.cast('void*', pc_ptr))
             vk.vkCmdDraw(cb, 6, 1, 0, 0)
 
+        # Explicit memory barrier from chaos compute (writes histogram
+        # + max_buf via atomic SSBO) to tonemap fragment shader (reads
+        # them). With sync chaos.frame() the fence-wait made this
+        # implicit; in async mode the chaos submit's writes need to be
+        # made-available before the tonemap submit can read them.
+        chaos_to_tonemap_barrier = vk.VkMemoryBarrier(
+            sType=vk.VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            srcAccessMask=vk.VK_ACCESS_SHADER_WRITE_BIT,
+            dstAccessMask=vk.VK_ACCESS_SHADER_READ_BIT,
+        )
+
         for i, cb in enumerate(cmd_bufs):
             vk.vkBeginCommandBuffer(cb, vk.VkCommandBufferBeginInfo())
+            vk.vkCmdPipelineBarrier(
+                cb,
+                vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0, 1, [chaos_to_tonemap_barrier], 0, None, 0, None)
             vk.vkCmdSetViewport(cb, 0, 1, [viewport_full])
             vk.vkCmdSetScissor(cb, 0, 1, [scissor_full])
 
@@ -825,6 +842,7 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 rotation=frame.genome.rotation,
                 center=tuple(frame.genome.center),
                 decay=0.3,
+                synchronous=sync_chaos,
             )
             chaos_dt = time.perf_counter() - _ts
             _accum('chaos_game', chaos_dt)

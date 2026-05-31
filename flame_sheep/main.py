@@ -70,6 +70,9 @@ def main() -> None:
                         help='print library statistics and exit')
     parser.add_argument('--blur-radius', type=float, default=0.6,
                         help='wallpaper blur strength (0=off, 1=light, 2+=heavy; default: 1.0)')
+    parser.add_argument('--sync-chaos', action='store_true',
+                        help='force synchronous chaos.frame() (debug only; '
+                             'default is async — one frame CPU-ahead of GPU)')
     # --backend flag retained as a no-op for back-compat scripts that
     # still pass it; only `vk` is supported now. The GL wallpaper was
     # removed in favor of the single Vulkan stack.
@@ -168,7 +171,8 @@ def main() -> None:
                           blur_radius=args.blur_radius,
                           log_features=args.log_features,
                           log_file=args.log_file,
-                          test_pattern=args.test_pattern)
+                          test_pattern=args.test_pattern,
+                          sync_chaos=args.sync_chaos)
         return
 
     # No mode given — print help. flame-sheep is a wallpaper system; running
