@@ -40,14 +40,13 @@ DEFAULT_SWEPT_STEPS = 36   # 36 steps × 10° = full rotation
 
 
 def create_renderer(size: int):
-    """Create a headless GPU renderer."""
-    os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
-    import moderngl
-    ctx = moderngl.create_context(standalone=True, backend='egl')
-    log.info('GPU: %s', ctx.info['GL_RENDERER'])
-
-    from flame_sheep.rendering import FlameRenderer, GpuContext
-    renderer = FlameRenderer(GpuContext(ctx, size, size))
+    """Create a headless Vulkan renderer (ported from moderngl+EGL)."""
+    from viz_authoring.vk.context import VkContext
+    from viz_authoring.vk.headless import HeadlessVkRenderer
+    ctx = VkContext(instance_extensions=[])
+    ctx.select_device()
+    log.info('GPU: %s', ctx.device_name)
+    renderer = HeadlessVkRenderer(ctx, size, size)
     return ctx, renderer
 
 
@@ -109,31 +108,30 @@ def render_genome(genome, renderer, ctx,
     """
     import io
     from PIL import Image
-    from flame_sheep.rendering import N_ITERS
+    from flame_sheep.render_params import N_ITERS
+    from flame_sheep.genome import genome_to_chaos_kwargs
 
     gamma = getattr(genome, 'flam3_gamma', 4.0)
 
     def _snapshot(use_de_pass: bool, grayscale: bool = False) -> bytes:
-        if use_de_pass:
-            png = renderer.snapshot_de_png(brightness=gamma, max_radius=9, curve=0.5)
-        else:
-            png = renderer.snapshot_png(brightness=gamma)
+        # use_de_pass was the GL density-estimation snapshot. HeadlessVk
+        # only exposes the regular tonemap; DE pass not yet ported.
+        # Accept the (mild) quality difference for now — this tool is
+        # for offline render of Electric Sheep base training data.
+        png = renderer.snapshot_png(gamma=gamma)
         img = Image.open(io.BytesIO(png))
         if grayscale:
             img = img.convert('L')
-        if output_size and output_size < renderer.canvas_w:
+        if output_size and output_size < renderer.width:
             img = img.resize((output_size, output_size), Image.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, format='PNG', optimize=True)
         return buf.getvalue()
 
-    from flame_sheep_audio import N_BINS
-
     # --- Static render (color) ---
-    renderer.upload_genome(genome)
+    renderer.set_genome(**genome_to_chaos_kwargs(genome))
+    renderer.set_palette(genome.palette)
     renderer.reset_walkers()
-    renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
-
     renderer.clear_histogram()
 
     # Render at live iteration count (max_iters from detail axis).
@@ -143,37 +141,32 @@ def render_genome(genome, renderer, ctx,
     n_dispatches = max(1, LIVE_MAX_ITERS // N_ITERS)
     for _ in range(n_dispatches):
         renderer.dispatch_chaos_game(iterations=N_ITERS)
-        ctx.memory_barrier()
-    # Handle remainder
     remainder = LIVE_MAX_ITERS - n_dispatches * N_ITERS
     if remainder > 0:
         renderer.dispatch_chaos_game(iterations=remainder)
-        ctx.memory_barrier()
 
     static_png = _snapshot(use_de)
-    static_hits, static_colors = renderer.histogram_data()
+    static_hits, static_colors = renderer.download_histogram()
     first_hit = None
 
     # --- Swept render (grayscale, rotation-accumulated) ---
-    renderer.upload_genome(genome)
+    renderer.set_genome(**genome_to_chaos_kwargs(genome))
     renderer.reset_walkers()
-    renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
     renderer.clear_histogram()
 
-    # Spread frames across rotation steps for even density
+    # Spread frames across rotation steps for even density. Vk passes
+    # rotation per-dispatch instead of via set_rotation; the genome's
+    # affines stay fixed (no need for genome.rotated).
     frames_per_step = max(1, n_frames // swept_steps)
     base_rotation = genome.rotation
     for i in range(swept_steps):
         angle = base_rotation + (2.0 * math.pi * i / swept_steps)
-        rotated = genome.rotated(angle - base_rotation)
-        renderer.upload_genome(rotated)
-        renderer.set_rotation(base_rotation)  # pin viewport to base
         for _ in range(frames_per_step):
-            renderer.dispatch_chaos_game(iterations=N_ITERS)
-            ctx.memory_barrier()
+            renderer.dispatch_chaos_game(iterations=N_ITERS,
+                                          rotation=angle)
 
     swept_png = _snapshot(use_de, grayscale=True)
-    swept_hits, _ = renderer.histogram_data()
+    swept_hits, _ = renderer.download_histogram()
 
     return static_png, swept_png, (static_hits, static_colors, swept_hits, first_hit)
 
@@ -303,7 +296,8 @@ def main():
     log.info('Done: %d rendered, %d failed, %.1fs (%.1f genomes/s)',
              rendered, failed, elapsed, rendered / max(elapsed, 1))
 
-    ctx.release()
+    renderer.cleanup()
+    ctx.cleanup()
 
 
 if __name__ == '__main__':

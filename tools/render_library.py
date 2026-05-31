@@ -62,13 +62,16 @@ def main():
 
     log.info('Rendering %d genomes to %s', len(genome_ids), output_dir)
 
-    # Create renderer
-    from flame_sheep.rendering import FlameRenderer, GpuContext, N_ITERS
-    import moderngl
-    ctx = moderngl.create_context(standalone=True, backend='egl')
-    renderer = FlameRenderer(GpuContext(ctx, args.size, args.size))
+    # Create Vulkan renderer (was moderngl+EGL; see render_worker
+    # commit for the port rationale).
+    from flame_sheep.render_params import N_ITERS
+    from flame_sheep.genome import genome_to_chaos_kwargs
+    from viz_authoring.vk.context import VkContext
+    from viz_authoring.vk.headless import HeadlessVkRenderer
+    ctx = VkContext(instance_extensions=[])
+    ctx.select_device()
+    renderer = HeadlessVkRenderer(ctx, args.size, args.size)
 
-    from flame_sheep_audio import N_BINS
     from flame_sheep.genome.scoring.scoring_channels import save_raw_histograms
 
     LIVE_MAX_ITERS = 500  # match detail axis max
@@ -85,9 +88,8 @@ def main():
             genome = lib.load_genome(gid)
 
             # --- Static render with first-hit snapshots ---
-            renderer.upload_genome(genome)
+            renderer.set_genome(**genome_to_chaos_kwargs(genome))
             renderer.reset_walkers()
-            renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
             renderer.clear_histogram()
 
             # 16 snapshots across the live iteration range (100-500)
@@ -102,34 +104,30 @@ def main():
                 while total_dispatched < target_iter:
                     dispatch_count = min(N_ITERS, target_iter - total_dispatched)
                     renderer.dispatch_chaos_game(iterations=dispatch_count)
-                    ctx.memory_barrier()
                     total_dispatched += dispatch_count
-                hits, _ = renderer.histogram_data()
+                hits, _ = renderer.download_histogram()
                 if first_hit is None:
                     first_hit = np.full(hits.shape, 255, dtype=np.uint8)
                 mapped_idx = snap_idx * 255 // max(n_snapshots - 1, 1)
                 newly_hit = (hits > 0) & (first_hit == 255)
                 first_hit[newly_hit] = mapped_idx
 
-            static_hits, static_colors = renderer.histogram_data()
+            static_hits, static_colors = renderer.download_histogram()
 
             # --- Swept render ---
-            renderer.upload_genome(genome)
+            renderer.set_genome(**genome_to_chaos_kwargs(genome))
             renderer.reset_walkers()
-            renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
             renderer.clear_histogram()
 
             base_rotation = genome.rotation
             frames_per_step = max(1, n_dispatches // swept_steps)
             for i in range(swept_steps):
                 angle = base_rotation + (2.0 * math.pi * i / swept_steps)
-                renderer.set_rotation(angle)
                 for _ in range(frames_per_step):
-                    renderer.dispatch_chaos_game(iterations=N_ITERS)
-                    ctx.memory_barrier()
-            renderer.set_rotation(base_rotation)
+                    renderer.dispatch_chaos_game(iterations=N_ITERS,
+                                                  rotation=angle)
 
-            swept_hits, _ = renderer.histogram_data()
+            swept_hits, _ = renderer.download_histogram()
 
             # --- Save ---
             hist_path = output_dir / f'genome_{gid}_hist.npz'

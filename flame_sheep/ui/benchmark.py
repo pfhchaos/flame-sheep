@@ -32,9 +32,11 @@ log = logging.getLogger(__name__)
 def _run_variation_benchmark(sample_mode: str = 'random',
                              n_genomes: int = 50) -> None:
     """Benchmark variations and library genomes on the GPU."""
-    import moderngl
-    from ..genome import (Genome, Variation, NUM_VARIATIONS)
-    from ..rendering import FlameRenderer, GpuContext, LIVE_ITER_MAX
+    from ..genome import (Genome, Variation, NUM_VARIATIONS,
+                           genome_to_chaos_kwargs)
+    from ..render_params import LIVE_ITER_MAX
+    from viz_authoring.vk.context import VkContext
+    from viz_authoring.vk.headless import HeadlessVkRenderer
 
     # Variation names for display
     var_names = {}
@@ -45,8 +47,9 @@ def _run_variation_benchmark(sample_mode: str = 'random',
         if isinstance(val, int) and 0 <= val < NUM_VARIATIONS:
             var_names[val] = name
 
-    ctx = moderngl.create_context(standalone=True)
-    renderer = FlameRenderer(GpuContext(ctx, 1920, 1080))
+    ctx = VkContext(instance_extensions=[])
+    ctx.select_device()
+    renderer = HeadlessVkRenderer(ctx, 1920, 1080)
 
     n_warmup = 5
     n_frames = 30
@@ -54,16 +57,16 @@ def _run_variation_benchmark(sample_mode: str = 'random',
 
     def _bench_genome(g: Genome) -> float:
         """Returns ms/frame for a genome at LIVE_ITER_MAX (worst-case live render)."""
-        renderer.upload_genome(g)
+        renderer.set_genome(**genome_to_chaos_kwargs(g))
+        # Vk's render_frame() is fence-synced; each call returns after
+        # GPU work completes. No explicit ctx.finish() needed.
         for _ in range(n_warmup):
             renderer.clear_histogram(decay=0.3)
             renderer.dispatch_chaos_game(iterations=LIVE_ITER_MAX)
-            ctx.finish()
         t0 = time.perf_counter()
         for _ in range(n_frames):
             renderer.clear_histogram(decay=0.3)
             renderer.dispatch_chaos_game(iterations=LIVE_ITER_MAX)
-            ctx.finish()
         return (time.perf_counter() - t0) / n_frames * 1000
 
     # --- Phase 1: Per-variation ---
@@ -165,4 +168,5 @@ def _run_variation_benchmark(sample_mode: str = 'random',
                   f'(positive = expensive genomes score higher)')
 
     lib.close()
-    ctx.release()
+    renderer.cleanup()
+    ctx.cleanup()
