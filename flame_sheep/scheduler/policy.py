@@ -72,6 +72,16 @@ class Policy:
                         else BatchState.PAUSE)  # start conservative
                                                   # until we have data
         self._last_busy: float = 0.0
+        # State-duration accumulator — observability. The wallpaper
+        # periodically calls drain_state_distribution() to log how
+        # much time was spent in each state since last drain. Tells
+        # us whether the policy is actually engaging or sleeping at
+        # the wheel.
+        self._state_durations: dict[BatchState, float] = {
+            BatchState.RUN: 0.0, BatchState.SLOW: 0.0,
+            BatchState.PAUSE: 0.0,
+        }
+        self._last_state_t: float = time.perf_counter()
 
     @property
     def state(self) -> BatchState:
@@ -86,6 +96,24 @@ class Policy:
     @property
     def rolling_max(self) -> float:
         return max(self._window) if self._window else 0.0
+
+    def _charge_state_duration(self, now: float) -> None:
+        """Add (now - last_state_t) to the current state's duration.
+        Called whenever state might change (before transition) and
+        also on drain (so the trailing window is accounted for)."""
+        delta = now - self._last_state_t
+        if delta > 0:
+            self._state_durations[self._state] += delta
+        self._last_state_t = now
+
+    def drain_state_distribution(self) -> dict[BatchState, float]:
+        """Return state-duration dict (seconds) since last drain, and
+        reset. For perf-log telemetry."""
+        self._charge_state_duration(time.perf_counter())
+        out = dict(self._state_durations)
+        for k in self._state_durations:
+            self._state_durations[k] = 0.0
+        return out
 
     def tick(self) -> BatchState:
         """If sample_interval has elapsed since last sample, draw one
@@ -115,10 +143,12 @@ class Policy:
             return self._state
 
         rm = max(self._window)
-        if rm >= self.pause_threshold:
-            self._state = BatchState.PAUSE
-        elif rm >= self.slow_threshold:
-            self._state = BatchState.SLOW
-        else:
-            self._state = BatchState.RUN
+        new_state = (BatchState.PAUSE if rm >= self.pause_threshold
+                      else BatchState.SLOW if rm >= self.slow_threshold
+                      else BatchState.RUN)
+        if new_state is not self._state:
+            # Charge time-in-old-state before flipping so each state's
+            # duration counts only the interval it was actually current.
+            self._charge_state_duration(now)
+            self._state = new_state
         return self._state

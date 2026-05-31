@@ -93,6 +93,10 @@ class PrecompileDriver:
         self._recv_t.start()
         self._policy_t.start()
 
+    def drain_state_distribution(self) -> dict:
+        """Pass-through to the policy — see Policy.drain_state_distribution."""
+        return self.policy.drain_state_distribution()
+
     def enqueue(self, tuples: Iterable[tuple[int, int, frozenset[int]]],
                  priority: int = 0) -> int:
         """Add tuples to the queue at given priority. Lower priority

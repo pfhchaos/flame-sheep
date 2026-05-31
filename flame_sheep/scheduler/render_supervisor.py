@@ -74,6 +74,10 @@ class RenderWorkerSupervisor:
             self._flag.set(state)
             time.sleep(interval)
 
+    def drain_state_distribution(self) -> dict:
+        """Pass-through to the policy — see Policy.drain_state_distribution."""
+        return self._policy.drain_state_distribution()
+
     def stop(self) -> None:
         self._stop.set()
         if self._renderer is not None:

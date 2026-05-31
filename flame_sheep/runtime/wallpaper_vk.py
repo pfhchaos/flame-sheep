@@ -62,6 +62,30 @@ def _palette_to_rgba8(palette_f32: np.ndarray) -> np.ndarray:
     return rgba
 
 
+def _log_scheduler_distribution(precompile_driver, render_supervisor):
+    """Drain + log RUN/SLOW/PAUSE % from both scheduler consumers.
+    Skipped silently when a consumer isn't running. Use to verify
+    the policy is actually engaging — if both lines show 100% RUN
+    while the wallpaper is hot, thresholds are too high."""
+    for name, owner in (('precompile', precompile_driver),
+                         ('render',     render_supervisor)):
+        if owner is None:
+            continue
+        try:
+            dist = owner.drain_state_distribution()
+        except Exception:
+            continue
+        total = sum(dist.values())
+        if total <= 0:
+            continue
+        from ..scheduler.policy import BatchState
+        run  = dist.get(BatchState.RUN, 0.0) / total * 100
+        slow = dist.get(BatchState.SLOW, 0.0) / total * 100
+        pause = dist.get(BatchState.PAUSE, 0.0) / total * 100
+        log.info(f'[sched/{name}] RUN={run:.0f}%  SLOW={slow:.0f}%  '
+                 f'PAUSE={pause:.0f}%  ({total:.1f}s window)')
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -898,6 +922,12 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 perf_frames = 0
                 perf_accum.clear()
                 perf_iters.clear()
+                # Scheduler state distribution — tells us if the
+                # precompile + render policies are actually engaging.
+                # If both show 100% RUN, thresholds are too high and
+                # batch is contending against the wallpaper unchecked.
+                _log_scheduler_distribution(precompile_driver,
+                                              render_supervisor)
 
     except Exception:
         log.exception('[vk] exception in render loop')
