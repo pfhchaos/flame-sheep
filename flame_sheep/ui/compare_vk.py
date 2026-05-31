@@ -154,9 +154,9 @@ class CompareRendererVk:
 
     def set_pair(self, left_genome, right_genome) -> None:
         """Upload new pair. Done once on pair change, not per frame."""
-        from ..runtime.wallpaper_vk import _genome_to_chaos_kwargs
-        self._left_chaos.set_genome(**_genome_to_chaos_kwargs(left_genome))
-        self._right_chaos.set_genome(**_genome_to_chaos_kwargs(right_genome))
+        from ..genome import genome_to_chaos_kwargs
+        self._left_chaos.set_genome(**genome_to_chaos_kwargs(left_genome))
+        self._right_chaos.set_genome(**genome_to_chaos_kwargs(right_genome))
         self._left_chaos.reset_walkers()
         self._right_chaos.reset_walkers()
         self._left_genome = left_genome

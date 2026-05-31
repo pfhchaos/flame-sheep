@@ -98,67 +98,33 @@ def render_genome_to_image(genome, size: int = 512,
 def render_genome_gpu(genome, ctx, size: int = 2048, n_frames: int = 60,
                       brightness: float = 6.0,
                       _renderer_cache: dict = {}) -> np.ndarray | None:
-    """Render a genome using the GPU pipeline. Returns RGBA uint8 array or None.
+    """Render a genome using the Vulkan headless renderer.
+    Returns RGBA uint8 array.
 
-    Uses a headless moderngl context and the full FlameRenderer pipeline:
-    chaos game → histogram → tonemap → readback.
-
-    Caches the renderer to avoid recompiling shaders per genome.
+    `ctx` is a viz_authoring.vk.context.VkContext (caller-managed —
+    catalog operations create one context and reuse it). The renderer
+    is cached per (ctx, size) so we don't recreate buffers / recompile
+    shaders per genome.
     """
-    from ..rendering import FlameRenderer, GpuContext, Viewport, N_ITERS
-    import moderngl
+    from viz_authoring.vk.headless import HeadlessVkRenderer
+    from ..render_params import N_ITERS
+    from ..genome import genome_to_chaos_kwargs
 
     cache_key = (id(ctx), size)
     if cache_key not in _renderer_cache:
-        _renderer_cache[cache_key] = FlameRenderer(GpuContext(ctx, size, size))
+        _renderer_cache[cache_key] = HeadlessVkRenderer(ctx, size, size)
     renderer = _renderer_cache[cache_key]
-    renderer.upload_genome(genome)
+    renderer.set_genome(**genome_to_chaos_kwargs(genome))
+    renderer.set_palette(genome.palette)
     renderer.reset_walkers()
-    renderer.blur_radius = 0  # no blur for catalog images
 
-    # Upload a flat audio texture (no audio reactivity for stills)
-    from flame_sheep_audio import N_BINS
-    renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
-
-    # Run multiple frames to accumulate density
+    # Run multiple frames to accumulate density. Vk's fence-synced
+    # render_frame() handles memory barriers between dispatches.
     for _ in range(n_frames):
         renderer.clear_histogram()
         renderer.dispatch_chaos_game(iterations=N_ITERS)
-        ctx.memory_barrier()
 
-    # Tonemap to FBO
-    fbo_tex = ctx.texture((size, size), components=4, dtype='f1')
-    fbo = ctx.framebuffer(color_attachments=[fbo_tex])
-    fbo.use()
-    ctx.viewport = (0, 0, size, size)
-
-    viewport = Viewport(0, 0, size, size)
-    renderer.palette_tex.use(location=0)
-
-    p = renderer.tonemap_program
-    p['u_palette'] = 0
-    p['u_width'] = size
-    p['u_height'] = size
-    p['u_viewport_x'] = 0
-    p['u_viewport_y'] = 0
-    p['u_viewport_w'] = size
-    p['u_viewport_h'] = size
-    p['u_surface_w'] = size
-    p['u_surface_h'] = size
-    p['u_gamma'] = brightness
-
-    renderer.quad_vao.render(moderngl.TRIANGLES)
-
-    # Read back pixels
-    data = fbo.read(components=4)
-    img = np.frombuffer(data, dtype=np.uint8).reshape(size, size, 4)
-    # Flip vertically (OpenGL origin is bottom-left)
-    img = img[::-1].copy()
-
-    fbo.release()
-    fbo_tex.release()
-
-    return img
+    return renderer.snapshot_rgba(gamma=brightness)
 
 
 def generate_catalog(
@@ -222,12 +188,14 @@ def generate_catalog(
         genomes = [(gid, g) for _, gid, g in survivors] + children
         log.info(f'Evolution gen {gen + 1}: {len(genomes)} genomes')
 
-    # Create GPU context if available
+    # Create Vulkan context (was moderngl/EGL — see render_worker
+    # commit for rationale on the port).
     gpu_ctx = None
     try:
-        import moderngl
-        gpu_ctx = moderngl.create_standalone_context(require=430)
-        log.info('GPU rendering enabled')
+        from viz_authoring.vk.context import VkContext
+        gpu_ctx = VkContext(instance_extensions=[])
+        gpu_ctx.select_device()
+        log.info('GPU rendering enabled (Vk)')
     except Exception as e:
         log.info(f'GPU not available ({e}), using CPU renderer')
 
@@ -268,7 +236,7 @@ def generate_catalog(
             log.info(f'Rendered {rendered}/{len(genomes)}...')
 
     if gpu_ctx is not None:
-        gpu_ctx.release()
+        gpu_ctx.cleanup()
 
     log.info(f'Rendered {rendered} genomes to {output / "unsorted"}')
     log.info(f'Sort into good/ and bad/, then run --import-catalog')
@@ -307,12 +275,13 @@ def render_unrated(
         log.info('All genomes have been rated!')
         return
 
-    # GPU context
+    # GPU context (Vk; was moderngl/EGL)
     gpu_ctx = None
     try:
-        import moderngl
-        gpu_ctx = moderngl.create_standalone_context(require=430)
-        log.info('GPU rendering enabled')
+        from viz_authoring.vk.context import VkContext
+        gpu_ctx = VkContext(instance_extensions=[])
+        gpu_ctx.select_device()
+        log.info('GPU rendering enabled (Vk)')
     except Exception:
         log.info('GPU not available, using CPU renderer')
 
@@ -343,7 +312,7 @@ def render_unrated(
             log.info(f'Rendered {rendered}/{len(genome_ids)}...')
 
     if gpu_ctx is not None:
-        gpu_ctx.release()
+        gpu_ctx.cleanup()
 
     log.info(f'Rendered {rendered} unrated genomes to {output / "unsorted"}')
 

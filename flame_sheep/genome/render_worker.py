@@ -29,27 +29,7 @@ RENDER_VERSION = 10  # v10: first-hit = single-frame snapshots at iter=N (match 
 COLOR_SCALE = 1_000_000.0
 
 
-def _genome_to_chaos_kwargs(genome) -> dict:
-    """Convert an in-memory Genome to the kwarg dict
-    HeadlessVkRenderer.set_genome() (and ChaosGame.set_genome())
-    expect.
-
-    Sibling of flame_sheep.runtime.wallpaper_vk._genome_to_chaos_kwargs
-    — same conversion; if we get a third caller we should extract this
-    to a shared module."""
-    arrays = genome.to_gpu_arrays()
-    av = arrays['active_vars'].reshape(7, 8, 10)
-    pv = arrays['pre_active_vars'].reshape(7, 8, 10)
-    return dict(
-        affines=arrays['affines'],
-        post_affines=arrays['post_affines'],
-        active_vars=av, pre_vars=pv,
-        colors=arrays['colors'],
-        color_speeds=arrays['color_speeds'],
-        weights=arrays['weights'],
-        n_transforms=len(genome.transforms),
-        has_final_xform=arrays['has_final_xform'],
-    )
+from . import genome_to_chaos_kwargs as _genome_to_chaos_kwargs
 
 
 def _render_main(db_path: str,

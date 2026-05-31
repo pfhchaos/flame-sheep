@@ -30,7 +30,34 @@ from ..variations import (
 )
 
 if TYPE_CHECKING:
-    from ..rendering import FlameRenderer
+    # Renderer protocol — historically FlameRenderer (GL). With the
+    # Vulkan port, viz_authoring.vk.headless.HeadlessVkRenderer
+    # implements the same upload_genome / dispatch_chaos_game /
+    # histogram_data surface. Either works.
+    from typing import Any as FlameRenderer  # noqa: F401
+
+
+def genome_to_chaos_kwargs(genome) -> dict:
+    """Convert an in-memory Genome to the kwarg dict
+    HeadlessVkRenderer.set_genome() (and ChaosGame.set_genome()) expect.
+
+    Single source of truth — used by wallpaper_vk, render_worker,
+    scoring/gpu, catalog, and any other consumer that drives the
+    Vulkan chaos game from a Genome object.
+    """
+    arrays = genome.to_gpu_arrays()
+    av = arrays['active_vars'].reshape(7, 8, 10)
+    pv = arrays['pre_active_vars'].reshape(7, 8, 10)
+    return dict(
+        affines=arrays['affines'],
+        post_affines=arrays['post_affines'],
+        active_vars=av, pre_vars=pv,
+        colors=arrays['colors'],
+        color_speeds=arrays['color_speeds'],
+        weights=arrays['weights'],
+        n_transforms=len(genome.transforms),
+        has_final_xform=arrays['has_final_xform'],
+    )
 
 # Re-export for backwards compatibility
 _PARAMETRIC_VARIATIONS = PARAMETRIC_VARIATIONS

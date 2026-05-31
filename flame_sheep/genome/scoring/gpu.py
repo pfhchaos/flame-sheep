@@ -3,10 +3,11 @@
 Renders genomes headlessly on the GPU and scores them using the full
 histogram, color, and per-transform hit data. Much higher quality than
 the CPU background scorer (128x128 / 50K iterations) — uses the same
-FlameRenderer pipeline as the live wallpaper.
+chaos game pipeline as the live wallpaper, via the headless Vulkan
+renderer.
 
 Run standalone:
-    python -m flame_sheep.gpu_scorer [--size 512] [--frames 60] [--all]
+    python -m flame_sheep.genome.scoring.gpu [--size 512] [--frames 60] [--all]
 
 Or import and call score_genome_gpu() directly.
 """
@@ -34,10 +35,14 @@ DEFAULT_SWEPT_STEPS = 36  # full 2π in 10° increments
 
 
 def _create_context():
-    os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
-    import moderngl
-    ctx = moderngl.create_context(standalone=True, backend='egl')
-    log.info('GL context: %s', ctx.info['GL_RENDERER'])
+    """Open a headless Vulkan context. Ported from moderngl+EGL —
+    same rationale as render_worker (subprocess+EGL crashed sway in
+    the past; Vulkan stack has been stable across our subprocess
+    consumers all session)."""
+    from viz_authoring.vk.context import VkContext
+    ctx = VkContext(instance_extensions=[])
+    ctx.select_device()
+    log.info('Vk context: %s', ctx.device_name)
     return ctx
 
 
@@ -45,30 +50,25 @@ def _swept_histogram(genome, renderer, n_steps: int = DEFAULT_SWEPT_STEPS):
     """Render genome at n_steps rotation angles, accumulating into one histogram.
 
     Returns (hit_counts, color_accs) as uint32 arrays, same as
-    renderer.histogram_data().
+    renderer.download_histogram().
     """
     import math
-    from ...rendering import N_ITERS
-    from flame_sheep_audio import N_BINS
+    from ...render_params import N_ITERS
+    from .. import genome_to_chaos_kwargs
 
-    renderer.upload_genome(genome)
+    renderer.set_genome(**genome_to_chaos_kwargs(genome))
     renderer.reset_walkers()
-    renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
-
-    # Single clear, then accumulate across all rotation steps
+    # Single clear, then accumulate across all rotation steps. The Vk
+    # path uses fence syncs in render_frame() so no explicit
+    # memory_barrier needed between dispatches.
     renderer.clear_histogram()
 
     base_rotation = genome.rotation
     for i in range(n_steps):
         angle = base_rotation + (2.0 * math.pi * i / n_steps)
-        renderer.set_rotation(angle)
-        renderer.dispatch_chaos_game(iterations=N_ITERS)
-        renderer.ctx.memory_barrier()
+        renderer.dispatch_chaos_game(iterations=N_ITERS, rotation=angle)
 
-    # Restore original rotation
-    renderer.set_rotation(base_rotation)
-
-    return renderer.histogram_data()
+    return renderer.download_histogram()
 
 
 def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
@@ -82,28 +82,27 @@ def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
 
     Args:
         genome: Genome object.
-        renderer: FlameRenderer instance (already created with desired size).
+        renderer: HeadlessVkRenderer instance (already created with
+            desired size).
         n_frames: Number of frames to accumulate for static pass.
         swept_steps: Rotation steps for swept pass (0 to skip).
 
     Returns:
         Dict of all score columns.
     """
-    from .. import _score_from_histogram, _score_symmetry
+    from .. import _score_from_histogram, _score_symmetry, \
+        genome_to_chaos_kwargs
     from .cluster_scorer import score_from_clusters, score_from_transform_hits
-    from ...rendering import N_ITERS
-    from flame_sheep_audio import N_BINS
+    from ...render_params import N_ITERS
 
     # --- Pass 1: Static render (unchanged) ---
-    renderer.upload_genome(genome)
+    renderer.set_genome(**genome_to_chaos_kwargs(genome))
     renderer.reset_walkers()
-    renderer.upload_audio(np.zeros(N_BINS, dtype=np.float32))
     renderer.clear_transform_hits()
 
     for _ in range(n_frames):
         renderer.clear_histogram()
         renderer.dispatch_chaos_game(iterations=N_ITERS)
-        renderer.ctx.memory_barrier()
 
     # Snapshot static render with rainbow palette (genome doesn't own a palette)
     scores_extra = {}
@@ -119,12 +118,12 @@ def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
         elif hi == 3: _rainbow[i] = [0, x, c]
         elif hi == 4: _rainbow[i] = [x, 0, c]
         else:         _rainbow[i] = [c, 0, x]
-    renderer.upload_palette(_rainbow)
+    renderer.set_palette(_rainbow)
     scores_extra['render_static'] = renderer.snapshot_png()
 
     # Read back raw data
-    hit_counts, color_accs = renderer.histogram_data()
-    transform_hits = renderer.transform_hits_data()
+    hit_counts, color_accs = renderer.download_histogram()
+    transform_hits = renderer.download_transform_hits()
 
     hit_grid = hit_counts.astype(np.float64)
 
@@ -161,10 +160,10 @@ def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
         # Snapshot swept render with grayscale palette (color is meaningless
         # in swept — averaged across rotation angles)
         _gray_palette = np.tile(np.linspace(0, 1, 256, dtype=np.float32), (3, 1)).T.copy()
-        renderer.upload_palette(_gray_palette)
+        renderer.set_palette(_gray_palette)
         scores_extra['render_swept'] = renderer.snapshot_png()
         # Restore genome palette
-        renderer.upload_palette(genome.palette)
+        renderer.set_palette(genome.palette)
 
         swept_hit_grid = swept_hits.astype(np.float64)
 
@@ -280,7 +279,7 @@ def main():
     )
 
     from ...storage import _genome_from_json, _ensure_schema
-    from ...rendering import FlameRenderer, GpuContext
+    from viz_authoring.vk.headless import HeadlessVkRenderer
 
     db = _db_path()
     conn = sqlite3.connect(str(db))
@@ -308,7 +307,7 @@ def main():
              len(rows), total, args.size, args.size, args.frames)
 
     ctx = _create_context()
-    renderer = FlameRenderer(GpuContext(ctx, args.size, args.size), scoring=True)
+    renderer = HeadlessVkRenderer(ctx, args.size, args.size)
 
     scored = 0
     t0 = time.monotonic()
@@ -341,7 +340,8 @@ def main():
     log.info('Done: %d genomes in %.1fs (%.1f/s)', scored, elapsed,
              scored / elapsed if elapsed > 0 else 0)
 
-    ctx.release()
+    renderer.cleanup()
+    ctx.cleanup()
     conn.close()
 
 

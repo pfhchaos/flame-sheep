@@ -50,24 +50,7 @@ log = logging.getLogger(__name__)
 # Genome → ChaosGame.set_genome kwarg adapter
 # ---------------------------------------------------------------------------
 
-def _genome_to_chaos_kwargs(genome: Genome) -> dict:
-    """Convert an in-memory Genome to the kwarg dict ChaosGame.set_genome
-    expects. Mirror of viz_authoring.vk.wallpaper_demo._genome_from_catalog
-    minus the DB load step — used here for the per-frame genome refresh
-    coming out of FlameSheepCore.tick()."""
-    arrays = genome.to_gpu_arrays()
-    av = arrays['active_vars'].reshape(7, 8, 10)
-    pv = arrays['pre_active_vars'].reshape(7, 8, 10)
-    return dict(
-        affines=arrays['affines'],
-        post_affines=arrays['post_affines'],
-        active_vars=av, pre_vars=pv,
-        colors=arrays['colors'],
-        color_speeds=arrays['color_speeds'],
-        weights=arrays['weights'],
-        n_transforms=len(genome.transforms),
-        has_final_xform=arrays['has_final_xform'],
-    )
+from ..genome import genome_to_chaos_kwargs as _genome_to_chaos_kwargs
 
 
 def _palette_to_rgba8(palette_f32: np.ndarray) -> np.ndarray:
