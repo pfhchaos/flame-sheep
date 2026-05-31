@@ -801,36 +801,43 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                     perf_iters.clear()
                 continue  # skip normal render path
 
-            # --- Genome upload (only on change — saves per-frame buffer churn)
+            # --- Genome upload. Note: frame.genome is a fresh object every
+            # frame (lerp + rotated produce new instances), so id()-based
+            # change detection here is essentially "always" — but the
+            # underlying ChaosGame.set_genome dispatches cheap dict-lookup
+            # pipeline-binds for the common case (variation key unchanged)
+            # and only compiles on a true key change.
             gid = id(frame.genome)
             _ts = time.perf_counter()
             if gid != last_genome_id:
-                # require_warm=True: skip the swap if the spec-const
-                # pipeline cache key isn't already warm. Keeps the
-                # render thread off cold compile paths (200-400ms).
-                # When skipped, we keep the OLD genome's pipeline bound
-                # — wallpaper slightly misses the beat for a frame or
-                # two while precompile catches up, instead of freezing.
+                # require_warm=True: ChaosGame ALWAYS uploads buffers
+                # (rotation animation lives in affine matrices) but
+                # refuses to swap to a cold pipeline. Caller-visible
+                # effect on cold: the old pipeline renders the new
+                # buffer state for a few frames during morph — slight
+                # visual mismatch where variation sets differ, but no
+                # freeze. Precompile worker warms the new key in the
+                # background; next frame's swap attempt picks it up.
                 #
-                # EXCEPT for the very first genome of a session: nothing
-                # is warm yet and rejecting it would leave us rendering
-                # the placeholder pipeline indefinitely. One up-front
-                # cold compile is a tolerable startup cost (the user
-                # already paid for it on the very first launch ever via
-                # SPIR-V cache); subsequent swaps go through the
-                # require_warm gate.
+                # First genome of the session: nothing is warm; let
+                # the compile happen in-line one time (200-400ms hit
+                # at startup, then steady-state require_warm wins).
                 kwargs = _genome_to_chaos_kwargs(frame.genome)
                 first_swap = last_genome_id is None
                 swapped = chaos.set_genome(
                     **kwargs, require_warm=not first_swap)
                 if swapped:
                     last_genome_id = gid
-                    # New genome → re-randomize walkers (matches GL upload_genome
-                    # path's reset on change behavior).
+                    # New pipeline bound → re-randomize walkers so the
+                    # old attractor's positions don't pollute the new.
                     chaos.reset_walkers()
                 else:
-                    # Cold key — push a single-tuple precompile request
-                    # at HIGHEST priority and try again next frame.
+                    # Pipeline was cold; buffers ARE uploaded (rotation
+                    # animates). Don't reset_walkers (old pipeline still
+                    # bound, walker positions remain valid for it).
+                    # Don't advance last_genome_id either — every frame
+                    # produces a new gid anyway, so retry happens
+                    # naturally on the next tick.
                     if precompile_driver is not None:
                         from ..scheduler.precompile_warm import _genome_tuple
                         try:
