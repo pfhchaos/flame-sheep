@@ -853,10 +853,21 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                         log.exception('[precompile] loop hint failed')
             _accum('upload_genome', time.perf_counter() - _ts)
 
-            # --- Palette upload (small, do every frame; cheap memcpy)
+            # --- Palette upload (only on change — the palette image
+            # is HOST_VISIBLE + GENERAL layout and the tonemap fragment
+            # shader samples from it directly. Uploading every frame
+            # races against the previous frame's tonemap reads still
+            # in flight on the GPU (visible as vertical-barcode-stripe
+            # artifacts in tonemapped output). Palettes actually change
+            # only every few seconds when the palette axis swaps, so
+            # skipping the upload when id() matches eliminates the
+            # race window in the common case.
             _ts = time.perf_counter()
-            upload_image_rgba8(ctx, palette_img,
-                                _palette_to_rgba8(frame.palette))
+            palette_id = id(frame.palette)
+            if palette_id != last_palette_id:
+                upload_image_rgba8(ctx, palette_img,
+                                    _palette_to_rgba8(frame.palette))
+                last_palette_id = palette_id
             _accum('upload_palette', time.perf_counter() - _ts)
 
             # --- Chaos game pass (decay 0.3 matches GL wallpaper).
