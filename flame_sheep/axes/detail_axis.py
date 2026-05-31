@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from flame_sheep_audio import AudioState, HOP_SIZE, SAMPLE_RATE
 from flame_sheep_audio.response import AsymmetricEnvelope
 from flame_sheep.runtime.role_mapper import RoleMapper, ENERGY
-from flame_sheep.rendering import LIVE_ITER_MIN, LIVE_ITER_MAX
+from flame_sheep.render_params import LIVE_ITER_MIN, LIVE_ITER_MAX
 
 if TYPE_CHECKING:
     from flame_sheep.runtime import FlameSheepCore

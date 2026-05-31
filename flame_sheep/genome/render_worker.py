@@ -118,7 +118,7 @@ def _render_main(db_path: str,
         log.error(f'Failed to create Vulkan context: {e}')
         return
 
-    from ..rendering import N_ITERS, LIVE_ITER_MIN, LIVE_ITER_MAX
+    from ..render_params import N_ITERS, LIVE_ITER_MIN, LIVE_ITER_MAX
     from ..storage import _genome_from_json, _ensure_schema
     from ..genome import _score_from_histogram
 
