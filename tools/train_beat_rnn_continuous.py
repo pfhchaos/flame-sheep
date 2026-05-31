@@ -866,6 +866,35 @@ def _resolve_head_pos_weights(spec: str, data_dir: Path,
                           f'comma-separated floats. ({e})')
 
 
+def _scheduler_yield(pause_reader, dropped_counter: list[int]) -> None:
+    """If a scheduler pause flag is bound and signaling PAUSE/SLOW,
+    sleep to yield CPU+GPU back to the wallpaper. Mirrors
+    render_worker._yield_to_scheduler's tier semantics — PAUSE blocks
+    until the next sample, SLOW just adds a small breath. Returns
+    when the flag is RUN (or no pause-reader is bound).
+
+    dropped_counter[0] is incremented each time we paused, for log.
+    """
+    if pause_reader is None:
+        return
+    from flame_sheep.scheduler.policy import BatchState
+    # PAUSE: spin-sleep until we leave PAUSE. The 0.2s grain matches the
+    # render_worker; small enough that we resume promptly when the
+    # wallpaper finishes its busy patch, large enough that we don't
+    # eat CPU polling.
+    paused_once = False
+    while pause_reader.state is BatchState.PAUSE:
+        paused_once = True
+        time.sleep(0.2)
+    if paused_once:
+        dropped_counter[0] += 1
+    if pause_reader.state is BatchState.SLOW:
+        # Gentler — don't fully stop, just slow down. 50ms is one or
+        # two wallpaper frames, enough headroom without starving the
+        # training rate.
+        time.sleep(0.05)
+
+
 def train_epoch_multidepth(model: MultiDepthBeatRNN, gpu, batches,
                            lr: float, chunk_len: int,
                            dataset, cache,
@@ -882,7 +911,8 @@ def train_epoch_multidepth(model: MultiDepthBeatRNN, gpu, batches,
                            prep_workers: int = 8,
                            schema: CorpusSchema | None = None,
                            ckpt_dims: dict | None = None,
-                           head_pos_weights: list[float] | None = None):
+                           head_pos_weights: list[float] | None = None,
+                           pause_reader=None):
     """Train one epoch of the multi-depth model.
 
     Per batch:
@@ -909,7 +939,11 @@ def train_epoch_multidepth(model: MultiDepthBeatRNN, gpu, batches,
     n_batches = len(batches)
 
     prep_iter = iter(prep)
+    pause_count = [0]  # mutable container; _scheduler_yield bumps it
     for batch_idx in range(n_batches):
+        # Yield to wallpaper if the scheduler pause flag is set.
+        # No-op when no flag is bound (standalone runs).
+        _scheduler_yield(pause_reader, pause_count)
         try:
             inputs_TBF, targets_TBC = next(prep_iter)
         except StopIteration:
@@ -1067,6 +1101,19 @@ def main():
     parser.add_argument('--head-pos-weights-sample', type=int, default=200,
                         help='Number of files to sample when '
                              '--head-pos-weights auto/sqrt-auto (default 200).')
+    parser.add_argument('--pause-flag', type=str, default=None,
+                        help='Path to a flame-sheep scheduler pause flag '
+                             '(e.g. $XDG_RUNTIME_DIR/flame-sheep/scheduler/'
+                             'render_worker.flag). When set, training yields '
+                             'GPU+CPU to the wallpaper whenever the flag '
+                             'reads SLOW or PAUSE. Without this, training '
+                             'competes 1:1 with the wallpaper. The render_'
+                             'worker.flag is the right choice for training '
+                             '(LOW-priority background work).')
+    parser.add_argument('--nice', type=int, default=None,
+                        help='os.nice() value applied at startup (e.g. 19 = '
+                             'lowest CPU priority). When --pause-flag is set, '
+                             'defaults to 19; otherwise no change.')
     args = parser.parse_args()
 
     if args.architecture == 'multidepth':
@@ -1089,6 +1136,31 @@ def main():
               f'--batch-size ({args.batch_size}); bumping cache to batch size.',
               file=sys.stderr)
         args.file_cache_size = args.batch_size
+
+    # Scheduler integration: nice + ionice + pause-flag reader.
+    # When launched without --pause-flag (standalone bench mode),
+    # all three are no-ops and training runs at full speed.
+    nice_value = args.nice
+    if nice_value is None and args.pause_flag is not None:
+        nice_value = 19  # default to lowest CPU priority when throttled
+    if nice_value is not None:
+        try:
+            import os as _os
+            _os.nice(nice_value)
+            print(f'os.nice({nice_value}) applied', file=sys.stderr)
+        except OSError as e:
+            print(f'WARN: os.nice({nice_value}) failed: {e}', file=sys.stderr)
+    pause_reader = None
+    if args.pause_flag:
+        from flame_sheep.scheduler.pause_flag import PauseFlagReader
+        try:
+            pause_reader = PauseFlagReader(args.pause_flag)
+            print(f'Yielding to scheduler pause flag: {args.pause_flag}',
+                  file=sys.stderr)
+        except OSError as e:
+            print(f'WARN: could not open --pause-flag {args.pause_flag!r}: '
+                  f'{e}; running without scheduler integration',
+                  file=sys.stderr)
 
     # Resolve per-head pos_weights from CLI. Only consulted by the
     # multidepth path; ignored for --architecture single.
@@ -1250,6 +1322,7 @@ def main():
                 prep_workers=args.prep_workers,
                 schema=schema, ckpt_dims=ckpt_dims,
                 head_pos_weights=head_pos_weights,
+                pause_reader=pause_reader,
             )
             val_loss, val_f1, val_metrics = validate_multidepth(
                 model, gpu, val_batches, args.chunk_len, input_seq_buf,
