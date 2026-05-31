@@ -950,6 +950,14 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                     chaos_ms=chaos_dt * 1000.0)
 
             # --- Tonemap + present per output ---
+            # Sub-stage timing (tm_wait / tm_acq / tm_sub / tm_pres)
+            # isolates where the per-output loop spends its time. Vk
+            # presents serialize through one queue; this tells us if
+            # the cost is in fence waits (GPU still busy with prior
+            # frame's tonemap), acquire (compositor not done with prev
+            # image), submit (command queue overhead), or present
+            # itself (sway compositing pacing).
+            #
             # NOTE: brightness is not yet wired into the pre-recorded command
             # buffers' push constants — gamma stays at 1.0. Hooking it up
             # cleanly means either re-recording per-frame or using a
@@ -958,10 +966,15 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
             _ts = time.perf_counter()
             for name in output_names:
                 sc = swapchains[name]
+                _ts_sub = time.perf_counter()
                 vk.vkWaitForFences(ctx.device, 1, [in_flight[name]],
                                     vk.VK_TRUE, 0xFFFFFFFFFFFFFFFF)
                 vk.vkResetFences(ctx.device, 1, [in_flight[name]])
+                _accum('tm_wait', time.perf_counter() - _ts_sub)
+                _ts_sub = time.perf_counter()
                 img_idx = sc.acquire_next_image(image_available[name])
+                _accum('tm_acq', time.perf_counter() - _ts_sub)
+                _ts_sub = time.perf_counter()
                 submit = vk.VkSubmitInfo(
                     waitSemaphoreCount=1,
                     pWaitSemaphores=[image_available[name]],
@@ -974,7 +987,10 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 )
                 vk.vkQueueSubmit(ctx.graphics_queue, 1, [submit],
                                   in_flight[name])
+                _accum('tm_sub', time.perf_counter() - _ts_sub)
+                _ts_sub = time.perf_counter()
                 sc.present(img_idx, render_finished[name])
+                _accum('tm_pres', time.perf_counter() - _ts_sub)
             _accum('tonemap+present', time.perf_counter() - _ts)
             _pet_watchdog()
 
