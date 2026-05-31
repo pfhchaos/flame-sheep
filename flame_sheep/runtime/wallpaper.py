@@ -156,6 +156,82 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     orch = Orchestrator(audio_device=audio_device, test_audio=test_audio)
     core = FlameSheepCore(orchestrator=orch, lib=lib)
 
+    # --- Wallpaper-signal scheduler + GL precompile worker ---
+    # Same architecture as wallpaper_vk: a shared mmap signal file
+    # publishes per-frame budget usage; Policy throttles batch
+    # workers (precompile + render) based on it; PrecompileDriver
+    # spawns a subprocess that pre-warms Mesa's GL shader cache for
+    # upcoming variation sets so the render thread never compiles
+    # inline. Compile-starved system → GenomeAxis defers genome
+    # swaps until the next-shader is ready (upstream gate).
+    from ..scheduler.policy import Policy
+    from ..scheduler.precompile_driver import PrecompileDriver
+    # GL doesn't have a useful per-frame busy signal: the chaos
+    # dispatch returns to the CPU immediately (driver queues async)
+    # and only `eglSwapBuffers` actually waits, which is vsync-locked
+    # to ~16.7ms even when nothing's happening on the GPU. Using
+    # frame_time as the policy signal would keep busy_fraction ≈ 1.0
+    # forever and the worker would never run. Skip the signal entirely
+    # on GL — _child_preexec already applies nice +19 + ionice idle
+    # to the worker subprocess, so OS scheduling handles contention.
+    # If GL later grows GPU timing telemetry we can revisit and feed
+    # the wallpaper signal again.
+    wallpaper_signal_writer = None
+    precompile_driver = None
+    class _NoSignal:
+        available = False
+        def sample(self): return None
+    try:
+        # Policy with unavailable sampler stays in RUN forever — see
+        # Policy.__init__: state = RUN if not sampler.available.
+        precompile_policy = Policy(
+            _NoSignal(), sample_interval_s=0.25,
+            slow_threshold=0.55, pause_threshold=0.80,
+            pause_hold_s=2.0)
+        precompile_driver = PrecompileDriver(
+            canvas_w=0, canvas_h=0,  # GL worker ignores canvas dims
+            policy=precompile_policy,
+            worker_module='flame_sheep.scheduler.precompile_worker_gl')
+        precompile_driver.start()
+        log.info('[precompile-gl] driver started (no signal — runs at '
+                 'nice +19, OS handles contention)')
+    except Exception:
+        log.exception('[precompile-gl] init failed; continuing without')
+        precompile_driver = None
+
+    # Upstream gate: GenomeAxis filters target candidates through
+    # the predicate. Cold candidate → defer swap + request compile +
+    # stay on current genome. Same shape as the Vk side.
+    def _genome_is_ready(g) -> bool:
+        try:
+            gpu = g.to_gpu_arrays()
+            keep_vars = renderer._extract_keep_vars(gpu)
+            return renderer.is_shader_warm(keep_vars)
+        except Exception:
+            log.exception('[axis-gate] readiness probe failed')
+            return True  # fail open — don't deadlock the axis
+
+    def _genome_request_precompile(g) -> None:
+        if precompile_driver is None:
+            return
+        try:
+            from ..scheduler.precompile_warm import _genome_tuple
+            n_added = precompile_driver.enqueue(
+                [_genome_tuple(g)], priority=-100)
+            if n_added:
+                log.debug(
+                    f'[axis-gate] requested compile for genome '
+                    f'#{getattr(g, "db_id", "?")} (axis deferred swap)')
+        except Exception:
+            log.exception('[axis-gate] precompile enqueue failed')
+
+    # renderer was constructed earlier (above); predicate closures
+    # bind it via late lookup. Wire into the axis now so the very
+    # first genome-swap decision the axis makes goes through us.
+    core._genome_axis.set_pipeline_readiness(
+        is_ready=_genome_is_ready,
+        on_request=_genome_request_precompile)
+
     # --- background workers ---
     # GPU render worker is NOT started here — it competes for the GPU and
     # kills desktop performance. Run separately:
@@ -214,6 +290,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     MAIN_PERF_INTERVAL = 60
     _main_perf_frames = 0
     _main_perf_accum: dict[str, float] = {}
+    # Loop-change detection drives precompile_driver.enqueue.
+    last_loop_id: int | None = None
 
     def _main_accum(stage: str, dt: float) -> None:
         _main_perf_accum[stage] = _main_perf_accum.get(stage, 0.0) + dt
@@ -375,6 +453,42 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                 renderer.reduce_histogram_max()
                 _main_accum('reduce_max', time.perf_counter() - _ts)
 
+                # Loop-change precompile hint: when GenomeAxis picks
+                # a new loop, enqueue the loop's members + 2-hop
+                # graph-flood neighborhood so the precompile worker
+                # warms shaders for likely-soon-played genomes. Same
+                # bounded-flood pattern as the Vk wallpaper.
+                if precompile_driver is not None:
+                    try:
+                        loop_id = core._genome_axis.active_loop_id
+                        if loop_id != last_loop_id:
+                            last_loop_id = loop_id
+                            from ..scheduler.precompile_warm import (
+                                _genome_tuple, near_tuples)
+                            loop_genomes = (
+                                core._genome_axis._loop.loop_genomes)
+                            loop_tuples = [_genome_tuple(g)
+                                           for g in loop_genomes]
+                            n_med = precompile_driver.enqueue(
+                                loop_tuples, priority=0)
+                            seed_ids = [g.db_id for g in loop_genomes
+                                         if g.db_id is not None]
+                            n_low = 0
+                            if seed_ids and lib is not None:
+                                flood = near_tuples(lib, seed_ids,
+                                                      hops=2,
+                                                      fan_per_node=5)
+                                n_low = precompile_driver.enqueue(
+                                    flood, priority=10)
+                            if n_med or n_low:
+                                log.info(
+                                    f'[precompile-gl] loop #{loop_id}: '
+                                    f'MED={n_med} (loop members) '
+                                    f'LOW={n_low} (2-hop flood)')
+                    except Exception:
+                        log.exception(
+                            '[precompile-gl] loop hint failed')
+
                 _main_perf_frames += 1
                 if _main_perf_frames >= MAIN_PERF_INTERVAL:
                     n = _main_perf_frames
@@ -439,6 +553,18 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         log.debug(f'[render] exiting render loop (commands.quit_requested={commands.quit_requested})')
         if feature_logger:
             feature_logger.close()
+        # Stop precompile first so its worker isn't competing during
+        # the GPU teardown.
+        if precompile_driver is not None:
+            try:
+                precompile_driver.stop()
+            except Exception:
+                log.exception('[precompile-gl] stop failed')
+        if wallpaper_signal_writer is not None:
+            try:
+                wallpaper_signal_writer.close()
+            except Exception:
+                log.exception('[scheduler] signal writer close failed')
         cpu_scorer.stop()
         transition_scorer.stop()
         pruner.stop()

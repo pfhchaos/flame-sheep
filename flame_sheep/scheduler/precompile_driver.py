@@ -40,10 +40,17 @@ log = logging.getLogger(__name__)
 class PrecompileDriver:
     """Manages one precompile worker subprocess + its input queue."""
 
-    def __init__(self, canvas_w: int, canvas_h: int, policy: Policy):
+    def __init__(self, canvas_w: int, canvas_h: int, policy: Policy,
+                 worker_module: str = 'flame_sheep.scheduler.precompile_worker'):
+        """worker_module: dotted path to the subprocess entry point.
+        Default is the Vk worker. Pass 'flame_sheep.scheduler.
+        precompile_worker_gl' for the GL backend. The protocol
+        (READY/DONE tags on stdout, tuple JSON on stdin) is the same
+        for both — only the actual compile target differs."""
         self.canvas_w = canvas_w
         self.canvas_h = canvas_h
         self.policy = policy
+        self._worker_module = worker_module
         # Counter breaks priority ties FIFO — heapq is stable-on-tuple,
         # so this prevents comparison of the dict/frozenset payloads
         # which would TypeError.
@@ -68,10 +75,14 @@ class PrecompileDriver:
 
     def start(self) -> None:
         argv = [sys.executable, '-u',
-                 '-m', 'flame_sheep.scheduler.precompile_worker',
-                 '--pause-flag', str(self._flag.path),
-                 '--canvas-w', str(self.canvas_w),
-                 '--canvas-h', str(self.canvas_h)]
+                 '-m', self._worker_module,
+                 '--pause-flag', str(self._flag.path)]
+        # Vk worker needs canvas dims (SC_width/SC_height spec
+        # constants); GL worker doesn't. Pass when supported, omit
+        # otherwise — gl worker would reject the unknown flag.
+        if self._worker_module.endswith('precompile_worker'):
+            argv += ['--canvas-w', str(self.canvas_w),
+                     '--canvas-h', str(self.canvas_h)]
         log.info(f'[precompile] spawning: {" ".join(argv)}')
         self._proc = subprocess.Popen(
             argv,

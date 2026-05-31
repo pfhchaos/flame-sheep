@@ -175,26 +175,62 @@ class FlameRenderer:
             SHADER_DIR / 'tonemap.vert', SHADER_DIR / 'tonemap_flam3.frag'
         )
 
-    def _get_chaos_shader_for_genome(self, gpu: dict
-                                      ) -> "moderngl.ComputeShader":
-        """Compile-or-cache lookup keyed on the genome's variation set.
-
-        The 7×8×10 active_vars / pre_active_vars buffers encode each
-        slot as (var_idx, weight, p0..p7); the union of var_idx >= 0
-        across both gives the cases the chaos shader's switch needs
-        to keep. Trimming the other ~120 cases tightens the compiled
-        program — measured ~1.5-1.8× gpu_chaos reduction on Mesa-Iris
-        Arc A770.
-
-        Cold compile is blocking and ~600ms. Steady state is dict
-        lookup. Plan commit 3 (KHR_parallel_shader_compile) moves
-        cold compiles off the render thread; commit 4 adds a
-        cross-session ARB_get_program_binary cache.
-        """
+    @staticmethod
+    def _extract_keep_vars(gpu: dict) -> frozenset[int]:
+        """Genome → set of variation indices the chaos shader's switch
+        needs to keep. Shared between render-time upload_genome (which
+        has gpu arrays in hand) and the precompile worker (which also
+        derives keep_vars from a genome's gpu arrays for tuple match)."""
         av = gpu['active_vars'].reshape(7, 8, 10)
         pv = gpu['pre_active_vars'].reshape(7, 8, 10)
         var_ids = np.concatenate([av[..., 0].ravel(), pv[..., 0].ravel()])
-        keep_vars = frozenset(int(v) for v in var_ids if v >= 0)
+        return frozenset(int(v) for v in var_ids if v >= 0)
+
+    def is_shader_warm(self, keep_vars: frozenset[int]) -> bool:
+        """Predicate for the GenomeAxis upstream gate. True iff the
+        chaos shader for this variation set will swap in fast — either
+        already in our in-memory cache, or disk-warm via Mesa's
+        implicit cache (a marker file means we OR the precompile
+        worker compiled it at least once this filesystem-lifetime).
+        """
+        if keep_vars in self._chaos_shader_cache:
+            return True
+        # Reuse the cross-process warm-marker convention from the Vk
+        # side. The marker is just "this key has been compiled to
+        # Mesa's cache by SOMEONE" — backend-agnostic.
+        try:
+            from viz_authoring.vk import pipeline_warm
+            # n_transforms + has_final_xform don't change the GL shader
+            # (only keep_vars does), so synthesize neutral values for
+            # the marker key. The marker is informational; misses just
+            # cause an inline compile, which produces a hit anyway.
+            return pipeline_warm.is_warm(0, False, keep_vars)
+        except Exception:
+            return False
+
+    def _get_chaos_shader_for_genome(self, gpu: dict
+                                      ) -> "moderngl.ComputeShader":
+        """Render-thread entry: extract keep_vars from gpu arrays,
+        then delegate to _get_chaos_shader_for_keep_vars."""
+        return self._get_chaos_shader_for_keep_vars(
+            self._extract_keep_vars(gpu))
+
+    def _get_chaos_shader_for_keep_vars(self, keep_vars: frozenset[int]
+                                          ) -> "moderngl.ComputeShader":
+        """Compile-or-cache lookup keyed on the variation set.
+
+        Trimming the universal 127-case switch in variations.glsl down
+        to just the cases the genome uses tightens the compiled
+        program. Measured ~1.5-1.8× gpu_chaos reduction on Mesa-Iris
+        Arc A770 (see experiment/gl-chaos-trim tag).
+
+        Cold compile is blocking and ~600ms. Steady state is dict
+        lookup. The precompile worker (flame_sheep.scheduler.
+        precompile_worker_gl) runs this method in a separate process
+        to pre-warm Mesa's GL shader cache for upcoming genomes — so
+        when the wallpaper hits the same key, the compile completes
+        in ~5ms (cache hit) instead of 600ms (cold).
+        """
         cached = self._chaos_shader_cache.get(keep_vars)
         if cached is not None:
             return cached
@@ -208,11 +244,19 @@ class FlameRenderer:
             source_transform=_transform,
         )
         self._chaos_shader_cache[keep_vars] = prog
+        dt_ms = (_time.perf_counter() - _t0) * 1000
         log.info(
             f'[gl-chaos-trim] compiled shader for '
-            f'|vars|={len(keep_vars)} in '
-            f'{(_time.perf_counter() - _t0)*1000:.0f}ms '
+            f'|vars|={len(keep_vars)} in {dt_ms:.0f}ms '
             f'(cache size={len(self._chaos_shader_cache)})')
+        # Mark warm so peer processes (precompile worker, future
+        # FlameRenderer instances) know this compile populated Mesa's
+        # implicit cache.
+        try:
+            from viz_authoring.vk import pipeline_warm
+            pipeline_warm.mark_warm(0, False, keep_vars)
+        except Exception:
+            pass  # marker write is informational; failure non-fatal
         return prog
 
     def _create_resources(self) -> None:
