@@ -200,28 +200,54 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         precompile_driver = None
 
     # Upstream gate: GenomeAxis filters target candidates through
-    # the predicate. Cold candidate → defer swap + request compile +
-    # stay on current genome. Same shape as the Vk side.
-    def _genome_is_ready(g) -> bool:
+    # the predicate. Cold candidate (target itself OR the union(
+    # current, target) lerp-intermediate shader) → defer swap +
+    # request both compiles + stay on current genome.
+    #
+    # In practice the flood-fill on loop change (see render-loop
+    # near_tuples enqueue below) already pre-warms transitions as
+    # well as endpoints, so this predicate is the fallback for
+    # unanticipated target picks (centroid swaps, random graph
+    # walks) where the union shader wasn't in the flood.
+    def _union_keep_vars(a, b):
+        a_gpu = a.to_gpu_arrays()
+        b_gpu = b.to_gpu_arrays()
+        return (renderer._extract_keep_vars(a_gpu)
+                | renderer._extract_keep_vars(b_gpu))
+
+    def _genome_is_ready(candidate, current) -> bool:
         try:
-            gpu = g.to_gpu_arrays()
-            keep_vars = renderer._extract_keep_vars(gpu)
-            return renderer.is_shader_warm(keep_vars)
+            cand_gpu = candidate.to_gpu_arrays()
+            cand_vars = renderer._extract_keep_vars(cand_gpu)
+            if not renderer.is_shader_warm(cand_vars):
+                return False
+            if current is not None and current is not candidate:
+                union_vars = _union_keep_vars(current, candidate)
+                if not renderer.is_shader_warm(union_vars):
+                    return False
+            return True
         except Exception:
             log.exception('[axis-gate] readiness probe failed')
             return True  # fail open — don't deadlock the axis
 
-    def _genome_request_precompile(g) -> None:
+    def _genome_request_precompile(candidate, current) -> None:
         if precompile_driver is None:
             return
         try:
             from ..scheduler.precompile_warm import _genome_tuple
-            n_added = precompile_driver.enqueue(
-                [_genome_tuple(g)], priority=-100)
+            tuples = [_genome_tuple(candidate)]
+            if current is not None and current is not candidate:
+                # Synthetic tuple for the union (lerp intermediate)
+                # shader. Worker only reads the `vars` list, so
+                # neutral n_transforms/has_final values are fine.
+                union_vars = _union_keep_vars(current, candidate)
+                tuples.append((0, 0, frozenset(union_vars)))
+            n_added = precompile_driver.enqueue(tuples, priority=-100)
             if n_added:
                 log.debug(
-                    f'[axis-gate] requested compile for genome '
-                    f'#{getattr(g, "db_id", "?")} (axis deferred swap)')
+                    f'[axis-gate] requested {n_added} compile(s) for '
+                    f'genome #{getattr(candidate, "db_id", "?")} '
+                    f'(axis deferred swap; flood-fill missed)')
         except Exception:
             log.exception('[axis-gate] precompile enqueue failed')
 

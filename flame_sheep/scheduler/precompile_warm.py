@@ -15,7 +15,12 @@ import logging
 
 import numpy as np
 
+from typing import TYPE_CHECKING
+
 from flame_sheep.storage.library import Library
+
+if TYPE_CHECKING:
+    from flame_sheep.genome import Genome
 
 log = logging.getLogger(__name__)
 
@@ -84,21 +89,32 @@ def near_tuples(lib: Library,
                  ) -> set[tuple[int, int, frozenset[int]]]:
     """BFS flood-fill in the genome transition graph from `seed_genome_ids`,
     return the deduped pipeline cache keys for everything within
-    `hops` graph distance.
+    `hops` graph distance — PLUS the transition-union keys for every
+    graph edge we'd cross.
 
-    Replaces the catalog-dump model: instead of compiling every
-    shader in the library at startup, we only compile what's likely
-    to actually play soon (current loop members + their N-hop graph
-    neighborhood via the genome_transitions table). Re-run on each
-    loop change to flood from the new location.
+    Why include transitions: the wallpaper renders
+    frame.genome = current.lerp(target, t) during morph. The lerp'd
+    intermediate has keep_vars = UNION of both endpoints'
+    variations — a third shader, not just one of the two endpoints.
+    Pre-warming only the genome endpoints leaves the morph itself
+    cold, causing a ~500-800ms inline compile stall on the render
+    thread at morph start. Including the union covers the actual
+    workload the wallpaper produces.
 
-    Bounded growth: at most hops * fan_per_node ** hops genomes
-    visited per call. With defaults (2 hops × 5 fan) that's ≤25
-    genomes added per seed before dedup; in practice much less due
-    to graph overlap. Total per loop change is typically 30-80
-    genomes vs the 2200 from enumerate_catalog_tuples.
+    Order emitted (for caller's priority-ordered enqueue):
+      pass 1: the seeds themselves + their immediate transition
+              unions to nearest neighbors (= the very next morph
+              the wallpaper will perform)
+      pass 2: those neighbors + transitions from them
+      ... etc
+
+    Bounded growth: still O(hops * fan_per_node ** hops) on genome
+    count; transition unions are at most one per BFS edge, so
+    bounded by the same product.
     """
     visited: set[int] = set(seed_genome_ids)
+    # (parent_id, child_id) edges to materialize union tuples for.
+    edges: list[tuple[int, int]] = []
     frontier = list(seed_genome_ids)
     for _ in range(hops):
         next_frontier: list[int] = []
@@ -109,6 +125,11 @@ def near_tuples(lib: Library,
                 log.debug(f'nearest_transitions({gid}) failed: {e}')
                 continue
             for neighbor_id, _dist in neighbors:
+                # Edge for transition pre-warm regardless of whether
+                # neighbor is already visited (we want the union shader
+                # for this pair compiled even if neighbor came in via
+                # another path).
+                edges.append((gid, neighbor_id))
                 if neighbor_id not in visited:
                     visited.add(neighbor_id)
                     next_frontier.append(neighbor_id)
@@ -116,18 +137,57 @@ def near_tuples(lib: Library,
         if not frontier:
             break
 
-    tuples: set[tuple[int, int, frozenset[int]]] = set()
+    # Load all visited genomes once for keep_vars extraction.
+    genome_by_id: dict[int, 'Genome'] = {}
     for gid in visited:
         try:
-            g = lib.load_genome(gid)
+            genome_by_id[gid] = lib.load_genome(gid)
         except Exception as e:
             log.debug(f'skip genome {gid}: {e}')
-            continue
+
+    tuples: set[tuple[int, int, frozenset[int]]] = set()
+    # Genome-endpoint tuples (used when current_genome == target_genome
+    # or when caller wants the steady-state shader).
+    for g in genome_by_id.values():
         tuples.add(_genome_tuple(g))
+
+    # Transition-union tuples. Synthetic (n_transforms=0, has_final=0)
+    # because the precompile worker only consults the `vars` list for
+    # GL; Vk uses n_transforms/has_final but transition unions aren't
+    # a meaningful Vk concept (Vk-side warm-gate at chaos_game level
+    # catches them differently).
+    union_count = 0
+    for parent_id, child_id in edges:
+        parent = genome_by_id.get(parent_id)
+        child = genome_by_id.get(child_id)
+        if parent is None or child is None:
+            continue
+        _, _, parent_vars = _genome_tuple(parent)
+        _, _, child_vars = _genome_tuple(child)
+        union_vars = parent_vars | child_vars
+        # Skip if it equals one of the endpoints (no extra shader needed).
+        if union_vars == parent_vars or union_vars == child_vars:
+            continue
+        before = len(tuples)
+        tuples.add((0, 0, union_vars))
+        if len(tuples) > before:
+            union_count += 1
     log.debug(f'flood from {len(seed_genome_ids)} seeds, {hops}-hop, '
               f'fan={fan_per_node} → {len(visited)} genomes / '
-              f'{len(tuples)} unique tuples')
+              f'{len(tuples)} unique tuples ({union_count} transition unions)')
     return tuples
+
+
+def _genome_pair_to_union_tuple(a: 'Genome', b: 'Genome'
+                                  ) -> tuple[int, int, frozenset[int]]:
+    """Synthetic precompile tuple for the lerp(a, b, t) intermediate
+    shader. Used by callers that already know the specific transition
+    they're about to start (orchestrator-side morph-start hook), as a
+    complement to the near_tuples flood-fill which anticipates many
+    pairs at once."""
+    _, _, va = _genome_tuple(a)
+    _, _, vb = _genome_tuple(b)
+    return (0, 0, va | vb)
 
 
 def tuple_to_json_line(t: tuple[int, int, frozenset[int]]) -> str:

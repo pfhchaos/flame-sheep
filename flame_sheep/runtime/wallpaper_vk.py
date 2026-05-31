@@ -523,10 +523,15 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
     # out the unready candidate. If precompile is starved (e.g. saw
     # the scheduler pinned PAUSE for hours), we just stay on the
     # current genome — better than rendering with the wrong shader.
-    def _genome_is_ready(g) -> bool:
+    def _genome_is_ready(candidate, current) -> bool:
+        # Vk wallpaper isn't the production path anymore (GL is
+        # default after the Mesa-Xe regression) but keep the
+        # predicate signature in sync with GenomeAxis. Vk's
+        # warm-gate at chaos_game level catches lerp-intermediate
+        # cold cases too, so we don't need the union check here.
         try:
             from ..scheduler.precompile_warm import _genome_tuple
-            t = _genome_tuple(g)
+            t = _genome_tuple(candidate)
             n_tx, has_final, keep_vars = t
             # In-process cache hit OR disk warm marker — both are
             # cheap to re-create (~ms).
@@ -540,17 +545,17 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
             log.exception('[axis-gate] readiness probe failed')
             return True
 
-    def _genome_request_precompile(g) -> None:
+    def _genome_request_precompile(candidate, current) -> None:
         if precompile_driver is None:
             return
         try:
             from ..scheduler.precompile_warm import _genome_tuple
             n_added = precompile_driver.enqueue(
-                [_genome_tuple(g)], priority=-100)
+                [_genome_tuple(candidate)], priority=-100)
             if n_added:
                 log.debug(
                     f'[axis-gate] requested compile for genome '
-                    f'#{getattr(g, "db_id", "?")} (axis deferred swap)')
+                    f'#{getattr(candidate, "db_id", "?")} (axis deferred swap)')
         except Exception:
             log.exception('[axis-gate] precompile enqueue failed')
 

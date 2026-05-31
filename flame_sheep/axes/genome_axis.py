@@ -72,8 +72,8 @@ class GenomeAxis:
                  role: RoleMapper,
                  lib: Library | None = None,
                  rng: np.random.Generator | None = None,
-                 is_pipeline_ready: Callable[[Genome], bool] | None = None,
-                 on_pipeline_request: Callable[[Genome], None] | None = None,
+                 is_pipeline_ready: Callable[[Genome, Genome], bool] | None = None,
+                 on_pipeline_request: Callable[[Genome, Genome], None] | None = None,
                  ) -> None:
         """is_pipeline_ready: optional predicate the axis consults
         before committing to a new target_genome. If supplied and the
@@ -372,8 +372,8 @@ class GenomeAxis:
     def set_pipeline_readiness(
             self,
             *,
-            is_ready: Callable[[Genome], bool],
-            on_request: Callable[[Genome], None] | None = None) -> None:
+            is_ready: Callable[[Genome, Genome], bool],
+            on_request: Callable[[Genome, Genome], None] | None = None) -> None:
         """Late-bind the pipeline-readiness predicate + (optional)
         not-ready callback. Used by wallpaper_vk after FlameSheepCore
         construction (the renderer's pipeline cache + precompile
@@ -389,6 +389,13 @@ class GenomeAxis:
         leave target_genome unchanged — render continues on the current
         genome until precompile catches up.
 
+        The predicate is called with BOTH current and candidate. This
+        lets the wallpaper check not just target's own shader but also
+        the union(current, candidate) shader needed during the morph
+        (lerp intermediates have keep_vars = union of both endpoints).
+        Skipping union check leaves a 500-800ms inline compile stall
+        on the render thread at morph start.
+
         No fallback to "compile inline anyway" — if the system is
         compile-starved, staying on the current genome forever is the
         correct behavior (user-confirmed). Avoids the silent wrong-
@@ -398,11 +405,11 @@ class GenomeAxis:
             return True
         if candidate is None:
             return True
-        if self._is_pipeline_ready(candidate):
+        if self._is_pipeline_ready(candidate, self.current_genome):
             return True
         if self._on_pipeline_request is not None:
             try:
-                self._on_pipeline_request(candidate)
+                self._on_pipeline_request(candidate, self.current_genome)
             except Exception:
                 log.exception('[genome-axis] pipeline request failed')
         log.debug(f'[genome-axis] deferring swap; candidate '
