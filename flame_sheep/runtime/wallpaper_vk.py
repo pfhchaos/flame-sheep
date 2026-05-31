@@ -805,11 +805,47 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
             gid = id(frame.genome)
             _ts = time.perf_counter()
             if gid != last_genome_id:
-                chaos.set_genome(**_genome_to_chaos_kwargs(frame.genome))
-                last_genome_id = gid
-                # New genome → re-randomize walkers (matches GL upload_genome
-                # path's reset on change behavior).
-                chaos.reset_walkers()
+                # require_warm=True: skip the swap if the spec-const
+                # pipeline cache key isn't already warm. Keeps the
+                # render thread off cold compile paths (200-400ms).
+                # When skipped, we keep the OLD genome's pipeline bound
+                # — wallpaper slightly misses the beat for a frame or
+                # two while precompile catches up, instead of freezing.
+                #
+                # EXCEPT for the very first genome of a session: nothing
+                # is warm yet and rejecting it would leave us rendering
+                # the placeholder pipeline indefinitely. One up-front
+                # cold compile is a tolerable startup cost (the user
+                # already paid for it on the very first launch ever via
+                # SPIR-V cache); subsequent swaps go through the
+                # require_warm gate.
+                kwargs = _genome_to_chaos_kwargs(frame.genome)
+                first_swap = last_genome_id is None
+                swapped = chaos.set_genome(
+                    **kwargs, require_warm=not first_swap)
+                if swapped:
+                    last_genome_id = gid
+                    # New genome → re-randomize walkers (matches GL upload_genome
+                    # path's reset on change behavior).
+                    chaos.reset_walkers()
+                else:
+                    # Cold key — push a single-tuple precompile request
+                    # at HIGHEST priority and try again next frame.
+                    if precompile_driver is not None:
+                        from ..scheduler.precompile_warm import _genome_tuple
+                        try:
+                            t = _genome_tuple(frame.genome)
+                            n_added = precompile_driver.enqueue(
+                                [t], priority=-100)
+                            if n_added:
+                                log.info(
+                                    f'[precompile] cold-genome miss; '
+                                    f'enqueued tuple at TOP priority '
+                                    f'(n_tx={t[0]}, final={t[1]}, '
+                                    f'|vars|={len(t[2])})')
+                        except Exception:
+                            log.exception(
+                                '[precompile] cold-miss enqueue failed')
 
                 # Precompile hints on loop change:
                 #   MED — current loop's own members (small, focused)
