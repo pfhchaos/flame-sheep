@@ -1,0 +1,252 @@
+#version 430 core
+
+// ============================================================
+// flame.comp — chaos game compute shader
+// ============================================================
+// Each invocation is one "walker" running the chaos game.
+// Walkers are independent — no communication needed (unlike
+// some CUDA workloads). This is embarrassingly parallel.
+//
+// CUDA equivalent mental model:
+//   gridDim  = gl_NumWorkGroups      (how many blocks)
+//   blockDim = gl_WorkGroupSize      (threads per block) = local_size below
+//   blockIdx = gl_WorkGroupID
+//   threadIdx= gl_LocalInvocationID
+//   global thread id = gl_GlobalInvocationID
+// ============================================================
+
+// 64 threads per workgroup — like CUDA blockDim.x = 64
+// renderer.py dispatches (N_WALKERS / 64) workgroups
+layout(local_size_x = 64) in;
+
+// ------------------------------------------------------------
+// Histogram SSBO
+// Two parallel uint arrays — we use uints so we can atomicAdd.
+// Floats don't support atomics in base OpenGL.
+//
+// hit_count[i]    — how many times pixel i was hit
+// color_acc[i]    — color accumulator (scaled to uint, 0..1 → 0..1000000)
+//
+// Pixel index: i = py * width + px
+// ------------------------------------------------------------
+// Packed as a single unsized array — only the last member of an SSBO
+// can be unsized. Layout:
+//   [0          .. n_pixels-1] = hit_count
+//   [n_pixels   .. 2*n_pixels-1] = color_acc
+// where n_pixels = u_width * u_height
+layout(std430, binding = 0) buffer Histogram {
+    uint histogram[];  // length = width * height * 2
+};
+
+// Per-pixel per-transform hit counts for cluster scoring.
+// Layout: [pixel_0_t0, pixel_0_t1, ..., pixel_0_t5, pixel_1_t0, ...]
+// Length = width * height * MAX_TRANSFORMS
+layout(std430, binding = 7) buffer TransformHits {
+    uint transform_hits[];
+};
+
+// ------------------------------------------------------------
+// Walker state SSBO — each walker has its own (x, y, color)
+// Persists between dispatches so walkers stay on the attractor
+// ------------------------------------------------------------
+layout(std430, binding = 1) buffer Walkers {
+    // Packed: [x, y, color] per walker, stride 3
+    float walker_data[];
+};
+
+// ------------------------------------------------------------
+// Genome uniforms
+// ------------------------------------------------------------
+#define MAX_TRANSFORMS 6
+#define MAX_ACTIVE_VARS 8   // max variations per transform (for tight loop)
+
+// All buffers have MAX_TRANSFORMS+1 slots — slot MAX_TRANSFORMS is for final xform.
+
+// Affines: [a,b,c,d,e,f] per transform, flat — index as [tidx*6 + coeff]
+layout(std430, binding = 2) readonly buffer Affines {
+    float u_affines[];   // length = (MAX_TRANSFORMS+1) * 6
+};
+
+// Active variations with inline params:
+// Each slot = (var_idx, weight, p0, p1, p2, p3, p4, p5, p6, p7)
+// var_idx < 0 marks end of active variations for this transform
+#define SLOT_SIZE 10
+#define PARAM_OFFSET 2
+
+layout(std430, binding = 3) readonly buffer ActiveVariations {
+    float u_active_vars[];  // length = (MAX_TRANSFORMS+1) * MAX_ACTIVE_VARS * SLOT_SIZE
+};
+
+// Color index per transform (0..1)
+layout(std430, binding = 4) readonly buffer Colors {
+    float u_colors[];    // length = MAX_TRANSFORMS+1
+};
+
+// Probability weights (pre-normalized on CPU, only MAX_TRANSFORMS entries)
+layout(std430, binding = 5) readonly buffer Weights {
+    float u_weights[];
+};
+
+// Color blend speed per transform: color = speed * xform.color + (1-speed) * prev
+layout(std430, binding = 6) readonly buffer ColorSpeeds {
+    float u_color_speeds[];  // length = MAX_TRANSFORMS+1
+};
+
+// Post-affines: applied after variations. Identity [1,0,0,0,1,0] when unused.
+layout(std430, binding = 9) readonly buffer PostAffines {
+    float u_post_affines[];  // length = (MAX_TRANSFORMS+1) * 6
+};
+
+// Pre-variations: applied before main affine. All slots -1 when unused.
+layout(std430, binding = 10) readonly buffer PreVariations {
+    float u_pre_active_vars[];  // length = (MAX_TRANSFORMS+1) * MAX_ACTIVE_VARS * SLOT_SIZE
+};
+
+uniform int   u_n_transforms;
+uniform vec2  u_zoom;
+uniform float u_cos_rot;      // precomputed cos(rotation)
+uniform float u_sin_rot;      // precomputed sin(rotation)
+uniform vec2  u_center;
+uniform int   u_width;
+uniform int   u_height;
+uniform int   u_iterations;   // chaos game steps per invocation
+uniform int   u_has_final_xform;  // 0 or 1
+uniform uint  u_rng_seed;    // changes each dispatch for different random sequences
+uniform uint  u_hist_offset;  // offset into histogram[] for compare mode (0 = normal)
+uniform uint  u_hist_stride;  // distance from hits to colors (n_pixels normal, 2*n_pixels compare)
+
+// Color scaling factor for uint accumulator
+#define COLOR_SCALE 1000000u
+
+#include "rng.glsl"
+#include "variations.glsl"
+
+// ------------------------------------------------------------
+// Select transform index by weighted random choice
+// ------------------------------------------------------------
+int pick_transform(float rand_val) {
+    float cumulative = 0.0;
+    for (int i = 0; i < u_n_transforms; i++) {
+        cumulative += u_weights[i];
+        if (rand_val < cumulative) return i;
+    }
+    return u_n_transforms - 1;  // fallback for float precision edge
+}
+
+// ------------------------------------------------------------
+// World → screen pixel mapping
+// ------------------------------------------------------------
+ivec2 world_to_pixel(vec2 p) {
+    // Apply global zoom and rotation (cos/sin precomputed on CPU)
+    vec2 rotated = vec2(u_cos_rot * p.x - u_sin_rot * p.y,
+                        u_sin_rot * p.x + u_cos_rot * p.y);
+    vec2 scaled = (rotated - u_center) * u_zoom;
+
+    // Map (-1..1) world space → pixel coords
+    int px = int((scaled.x + 1.0) * 0.5 * float(u_width));
+    int py = int((scaled.y + 1.0) * 0.5 * float(u_height));
+    return ivec2(px, py);
+}
+
+// ============================================================
+// Main — each invocation is one walker
+// ============================================================
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+
+    // Seed RNG from invocation ID + frame seed — different randomness each dispatch
+    rng_seed(gid * 1973u + 9277u + u_rng_seed);
+
+    // Load this walker's state from SSBO
+    // Layout: [x0, y0, c0,  x1, y1, c1, ...]
+    uint base = gid * 3u;
+    float px = walker_data[base + 0u];
+    float py = walker_data[base + 1u];
+    float pc = walker_data[base + 2u];
+
+    // Chaos game
+    for (int iter = 0; iter < u_iterations; iter++) {
+
+        // 1. Pick a transform
+        int tidx = pick_transform(rng_float());
+
+        // 2. Pre-variations (empty slots = loop breaks immediately)
+        vec2 pre = apply_pre_variations(vec2(px, py), tidx);
+
+        // 3. Apply affine transform
+        //    x' = a*x + b*y + c
+        //    y' = d*x + e*y + f
+        int abase = tidx * 6;
+        float nx = u_affines[abase+0]*pre.x + u_affines[abase+1]*pre.y + u_affines[abase+2];
+        float ny = u_affines[abase+3]*pre.x + u_affines[abase+4]*pre.y + u_affines[abase+5];
+
+        // 4. Apply variation functions
+        vec2 warped = apply_variations(vec2(nx, ny), tidx);
+
+        // 5. Post-affine (identity = same point out)
+        int pbase = tidx * 6;
+        px = u_post_affines[pbase+0]*warped.x + u_post_affines[pbase+1]*warped.y + u_post_affines[pbase+2];
+        py = u_post_affines[pbase+3]*warped.x + u_post_affines[pbase+4]*warped.y + u_post_affines[pbase+5];
+
+        // Respawn walker if it escaped to infinity
+        if (isinf(px) || isinf(py) || isnan(px) || isnan(py) ||
+            abs(px) > 1e6 || abs(py) > 1e6) {
+            px = rng_float() * 2.0 - 1.0;
+            py = rng_float() * 2.0 - 1.0;
+            pc = rng_float();
+            continue;  // skip plotting this iteration (fuse)
+        }
+
+        // 7. Blend color toward this transform's color
+        float cs = u_color_speeds[tidx];
+        pc = cs * u_colors[tidx] + (1.0 - cs) * pc;
+
+        // 5. Plot — skip first 20 iterations (fuse, not on attractor yet)
+        if (iter < 20) continue;
+
+        // 6. Apply final xform for PLOTTING ONLY (does not affect walker state).
+        //    In flam3, the final xform is a viewing transform — the walker
+        //    continues from the pre-final position on the next iteration.
+        float plot_x = px;
+        float plot_y = py;
+        float plot_c = pc;
+        if (u_has_final_xform != 0) {
+            int ftidx = MAX_TRANSFORMS;
+            vec2 fp = apply_pre_variations(vec2(plot_x, plot_y), ftidx);
+            int fabase = ftidx * 6;
+            float fnx = u_affines[fabase+0]*fp.x + u_affines[fabase+1]*fp.y + u_affines[fabase+2];
+            float fny = u_affines[fabase+3]*fp.x + u_affines[fabase+4]*fp.y + u_affines[fabase+5];
+            vec2 fwarped = apply_variations(vec2(fnx, fny), ftidx);
+            int fpbase = ftidx * 6;
+            plot_x = u_post_affines[fpbase+0]*fwarped.x + u_post_affines[fpbase+1]*fwarped.y + u_post_affines[fpbase+2];
+            plot_y = u_post_affines[fpbase+3]*fwarped.x + u_post_affines[fpbase+4]*fwarped.y + u_post_affines[fpbase+5];
+            // Blend color toward final xform's color
+            float fcs = u_color_speeds[ftidx];
+            plot_c = fcs * u_colors[ftidx] + (1.0 - fcs) * plot_c;
+        }
+
+        // 7. Map to pixel
+        ivec2 pixel = world_to_pixel(vec2(plot_x, plot_y));
+
+        // Bounds check — point may be outside viewport
+        if (pixel.x < 0 || pixel.x >= u_width ||
+            pixel.y < 0 || pixel.y >= u_height) continue;
+
+        // 7. Accumulate into histogram (atomic — safe from all threads)
+        uint px_idx = uint(pixel.y * u_width + pixel.x);
+        // u_hist_offset: 0 for left/normal, n_pixels for right in compare mode
+        // u_hist_stride: n_pixels normal, 2*n_pixels compare (gap between hits and colors)
+        uint hit_idx = u_hist_offset + px_idx;
+        uint col_idx = u_hist_stride + u_hist_offset + px_idx;
+        atomicAdd(histogram[hit_idx], 1u);
+        atomicAdd(histogram[col_idx], uint(plot_c * float(COLOR_SCALE)));
+#ifdef SCORING_MODE
+        atomicAdd(transform_hits[px_idx * uint(MAX_TRANSFORMS) + uint(tidx)], 1u);
+#endif
+    }
+
+    // Save walker state for next dispatch
+    walker_data[base + 0u] = px;
+    walker_data[base + 1u] = py;
+    walker_data[base + 2u] = pc;
+}

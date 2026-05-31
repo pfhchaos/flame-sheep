@@ -1,0 +1,39 @@
+#version 430 core
+// Downsample the hit_count portion of the histogram SSBO into a smaller buffer.
+// Each output pixel sums a block_w x block_h region of input pixels.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) readonly buffer Histogram {
+    uint histogram[];  // [hit_count | color_acc], each canvas_w * canvas_h
+};
+
+layout(std430, binding = 6) writeonly buffer DownsampledHist {
+    uint downsampled[];
+};
+
+uniform int u_canvas_w;
+uniform int u_canvas_h;
+uniform int u_out_w;
+uniform int u_out_h;
+
+void main() {
+    ivec2 out_pos = ivec2(gl_GlobalInvocationID.xy);
+    if (out_pos.x >= u_out_w || out_pos.y >= u_out_h) return;
+
+    // Compute input block bounds
+    int block_w = (u_canvas_w + u_out_w - 1) / u_out_w;
+    int block_h = (u_canvas_h + u_out_h - 1) / u_out_h;
+    int x0 = out_pos.x * block_w;
+    int y0 = out_pos.y * block_h;
+    int x1 = min(x0 + block_w, u_canvas_w);
+    int y1 = min(y0 + block_h, u_canvas_h);
+
+    uint total = 0u;
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            total += histogram[y * u_canvas_w + x];
+        }
+    }
+
+    downsampled[out_pos.y * u_out_w + out_pos.x] = total;
+}
