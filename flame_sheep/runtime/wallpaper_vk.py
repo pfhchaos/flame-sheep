@@ -515,6 +515,113 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
     transition_scorer.start()
     pruner.start()
 
+    # --- Compare mode (Vk port) ------------------------------------
+    # Lazily created on first `compare` ctl command. CompareMode (pair
+    # selection logic) lives in ui/compare.py and is reused unchanged.
+    # CompareRendererVk owns two ChaosGames + tonemap pipelines.
+    #
+    # Threading discipline: command handlers (which run on the
+    # orchestrator's tick thread) do NO Vulkan work — they only do
+    # Python and enqueue precompile hints. ALL Vulkan resource
+    # creation (CompareRendererVk init, set_pair) happens on the
+    # render thread via the `pending_compare_pair` handoff. Mesa-Xe
+    # has had threaded-Vulkan crash modes; keep all vkCreate* in
+    # one thread.
+    compare_renderer = None    # CompareRendererVk | None
+    compare_mode_obj = None    # ui.compare.CompareMode | None
+    compare_cbs: dict = {}     # per-output reusable command buffer
+    comparing = [False]        # list for closure write
+    compare_rotation = [0.0]   # animates the rendered orientation
+    pending_compare_pair = [None]  # (left_genome, right_genome) handoff
+
+    def _ensure_compare_renderer():
+        """Called from the render thread only — creates Vulkan
+        resources. Cheap once Mesa cache is warm; first ever invocation
+        takes ~500ms for the default chaos pipeline compile."""
+        nonlocal compare_renderer
+        if compare_renderer is None:
+            from ..ui.compare_vk import CompareRendererVk
+            compare_renderer = CompareRendererVk(
+                ctx, canvas_w, canvas_h, swapchain_pass)
+            for name in output_names:
+                compare_cbs[name] = ctx.allocate_command_buffers(1)[0]
+
+    def _enqueue_pair_precompile(left_g, right_g):
+        """Drop the pair's chaos tuples on the precompile queue at
+        HIGH priority so the precompile subprocess warms Mesa's cache
+        before the render thread tries to materialize them. No-op if
+        precompile isn't running."""
+        if precompile_driver is None:
+            return
+        try:
+            from ..scheduler.precompile_warm import _genome_tuple
+            tuples = [_genome_tuple(left_g), _genome_tuple(right_g)]
+            precompile_driver.enqueue(tuples, priority=-10)
+        except Exception:
+            log.exception('[compare] precompile enqueue failed')
+
+    def _pick_and_hand_off_next():
+        """Pick a new pair from CompareMode, queue its precompile
+        hints, and hand the pair off to the render thread. Runs on
+        the orchestrator thread — no Vulkan work."""
+        if compare_mode_obj is None:
+            return
+        pair = compare_mode_obj.pick_pair()
+        if pair.left is None or pair.right is None:
+            return
+        _enqueue_pair_precompile(pair.left, pair.right)
+        pending_compare_pair[0] = (pair.left, pair.right)
+
+    def _handle_compare(event):
+        nonlocal compare_mode_obj
+        if comparing[0]:
+            return
+        # No Vulkan work in this handler — runs on the orchestrator
+        # tick thread. Initialize the (pure-Python) CompareMode here,
+        # then queue the first pair's precompile hints. The render
+        # thread picks up pending_compare_pair on its next iter and
+        # does the Vulkan setup (CompareRendererVk init + set_pair)
+        # — by then the precompile subprocess should have warmed
+        # Mesa's cache so it's fast.
+        try:
+            from ..ui.compare import CompareMode
+            if compare_mode_obj is None:
+                t0 = time.perf_counter()
+                compare_mode_obj = CompareMode(lib)
+                log.info(f'[compare] CompareMode init: '
+                         f'{(time.perf_counter()-t0)*1000:.0f}ms')
+            _pick_and_hand_off_next()
+            log.info('[ctl] compare requested; render thread will '
+                     'finalize setup on next iter')
+        except Exception:
+            log.exception('[compare] handler failed')
+
+    def _handle_left(event):
+        if comparing[0] and compare_mode_obj is not None:
+            compare_mode_obj.on_left_wins()
+            _pick_and_hand_off_next()
+
+    def _handle_right(event):
+        if comparing[0] and compare_mode_obj is not None:
+            compare_mode_obj.on_right_wins()
+            _pick_and_hand_off_next()
+
+    def _handle_skip(event):
+        if comparing[0] and compare_mode_obj is not None:
+            compare_mode_obj.on_skip()
+            _pick_and_hand_off_next()
+
+    def _handle_unshow(event):
+        if comparing[0]:
+            comparing[0] = False
+            log.info('[ctl] exited compare mode')
+
+    orch.on_command('compare', _handle_compare)
+    orch.on_command('left',    _handle_left)
+    orch.on_command('right',   _handle_right)
+    orch.on_command('skip',    _handle_skip)
+    orch.on_command('unshow',  _handle_unshow)
+
     orch.start()
 
     # Feature logger (optional)
@@ -585,6 +692,101 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
 
             frame = core.tick(frame_time)
             _pet_watchdog()
+
+            # Compare-mode handoff: command handler dropped a (left,
+            # right) here. Render thread (us) does the Vulkan setup —
+            # safe single-threaded access to the device + Mesa cache
+            # warmed by precompile so the resource creation is fast.
+            if pending_compare_pair[0] is not None:
+                left_g, right_g = pending_compare_pair[0]
+                pending_compare_pair[0] = None
+                try:
+                    _t0 = time.perf_counter()
+                    _ensure_compare_renderer()
+                    compare_renderer.set_pair(left_g, right_g)
+                    if not comparing[0]:
+                        comparing[0] = True
+                        log.info(f'[ctl] entered compare mode (vk) — '
+                                 f'render-thread setup '
+                                 f'{(time.perf_counter()-_t0)*1000:.0f}ms')
+                except Exception:
+                    log.exception('[compare] render-thread setup failed')
+
+            # Compare mode short-circuits the normal genome / chaos /
+            # tonemap path. We still tick core() so audio + brightness
+            # advance, but skip uploading the wallpaper genome and run
+            # the compare renderer's own dispatch / tonemap instead.
+            if comparing[0] and compare_renderer is not None:
+                _ts = time.perf_counter()
+                compare_renderer.set_palette(frame.palette)
+                _accum('upload_palette', time.perf_counter() - _ts)
+                _ts = time.perf_counter()
+                # Slow rotation animates the rendered orientation so the
+                # symmetry of each genome shows. Matches GL behavior.
+                compare_rotation[0] += frame_time * 0.2
+                compare_renderer.tick(frame,
+                                        rotation_phase=compare_rotation[0])
+                chaos_dt = time.perf_counter() - _ts
+                _accum('chaos_game', chaos_dt)
+                if wallpaper_signal_writer is not None:
+                    wallpaper_signal_writer.update(
+                        frame_ms=frame_time * 1000.0,
+                        chaos_ms=chaos_dt * 1000.0)
+
+                # Per-output: acquire image, record + submit a fresh
+                # split-tonemap cb (compare mode isn't perf-critical;
+                # per-frame allocation is fine).
+                _ts = time.perf_counter()
+                for name in output_names:
+                    sc = swapchains[name]
+                    vk.vkWaitForFences(ctx.device, 1, [in_flight[name]],
+                                        vk.VK_TRUE, 0xFFFFFFFFFFFFFFFF)
+                    vk.vkResetFences(ctx.device, 1, [in_flight[name]])
+                    img_idx = sc.acquire_next_image(image_available[name])
+                    cb = compare_cbs[name]
+                    vk.vkResetCommandBuffer(cb, 0)
+                    vk.vkBeginCommandBuffer(cb, vk.VkCommandBufferBeginInfo(
+                        sType=vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                        flags=vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                    ))
+                    compare_renderer.record_split_tonemap(
+                        cb, swapchain_pass,
+                        sc.framebuffers[img_idx],
+                        sc.extent.width, sc.extent.height,
+                        brightness=frame.brightness)
+                    vk.vkEndCommandBuffer(cb)
+                    submit = vk.VkSubmitInfo(
+                        waitSemaphoreCount=1,
+                        pWaitSemaphores=[image_available[name]],
+                        pWaitDstStageMask=[
+                            vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT],
+                        commandBufferCount=1, pCommandBuffers=[cb],
+                        signalSemaphoreCount=1,
+                        pSignalSemaphores=[render_finished[name]],
+                    )
+                    vk.vkQueueSubmit(ctx.graphics_queue, 1, [submit],
+                                      in_flight[name])
+                    sc.present(img_idx, render_finished[name])
+                _accum('tonemap+present', time.perf_counter() - _ts)
+                perf_iters.append(frame.iterations)
+                _pet_watchdog()
+                perf_frames += 1
+                if perf_frames >= PERF_INTERVAL:
+                    ft = perf_accum.pop('frame_total', 0.0) / perf_frames * 1000
+                    parts = sorted(perf_accum.items(),
+                                    key=lambda kv: -kv[1])
+                    s = '  '.join(f'{k}={v/perf_frames*1000:.2f}ms'
+                                    for k, v in parts)
+                    iters_avg = sum(perf_iters) / len(perf_iters)
+                    log.info(
+                        f'[vk perf {perf_frames} frames]  '
+                        f'frame={ft:.2f}ms  {s}  '
+                        f'iters={min(perf_iters)}/{iters_avg:.0f}'
+                        f'/{max(perf_iters)} [compare]')
+                    perf_frames = 0
+                    perf_accum.clear()
+                    perf_iters.clear()
+                continue  # skip normal render path
 
             # --- Genome upload (only on change — saves per-frame buffer churn)
             gid = id(frame.genome)
@@ -709,6 +911,11 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 render_supervisor.stop()
             except Exception:
                 log.exception('[render-supervisor] stop failed')
+        if compare_renderer is not None:
+            try:
+                compare_renderer.cleanup()
+            except Exception:
+                log.exception('[compare] cleanup failed')
         if wallpaper_signal_writer is not None:
             try:
                 wallpaper_signal_writer.close()
