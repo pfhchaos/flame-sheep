@@ -826,11 +826,16 @@ def _run_wallpaper_vk(audio_device: str | int | None, test_audio: bool,
                 first_swap = last_genome_id is None
                 swapped = chaos.set_genome(
                     **kwargs, require_warm=not first_swap)
+                # Reset walkers EVERY frame regardless of swap. The
+                # morph produces a new attractor each frame; walkers
+                # left at the previous attractor would converge to a
+                # tight cluster and hammer the atomicMax on max_buf
+                # (we measured chaos_game climbing from 35ms → 91ms
+                # over 30s when this was skipped). Reset cost is ~ms;
+                # benefit is preventing this contention spiral.
+                chaos.reset_walkers()
                 if swapped:
                     last_genome_id = gid
-                    # New pipeline bound → re-randomize walkers so the
-                    # old attractor's positions don't pollute the new.
-                    chaos.reset_walkers()
                 else:
                     # Pipeline was cold; buffers ARE uploaded (rotation
                     # animates). Don't reset_walkers (old pipeline still
