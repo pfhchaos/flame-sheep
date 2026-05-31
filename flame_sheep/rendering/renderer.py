@@ -261,24 +261,51 @@ class FlameRenderer:
         self._sync_chaos_program_uniforms(prog)
         return prog
 
-    def _sync_chaos_program_uniforms(self, prog) -> None:
-        """Apply the renderer's current histogram offset/stride to a
-        per-genome chaos program. Each program has its own uniform
-        storage; swapping self.compute_shader to a different program
-        means uniforms set externally (set_histogram_offset,
-        ensure_double_histogram) don't carry over. We've seen this
-        manifest as one side of compare mode rendering blank because
-        the swapped-in program had u_hist_stride at the single-mode
-        default — its colors writes then overlapped the other side's
-        hits region. Re-applying on every swap is cheap and keeps
-        the per-program state consistent."""
-        if not hasattr(self, '_hist_offset'):
-            return  # init order — sync_program before _create_resources
+    def _set_sticky_chaos_uniform(self, name: str, value) -> None:
+        """Update a sticky chaos-shader uniform: stash in the dict
+        (source of truth for shader swaps) AND apply to the currently-
+        active program for immediate effect. Use this instead of
+        `self.compute_shader[name] = value` for any uniform that
+        needs to persist across per-genome program swaps."""
+        self._sticky_chaos_uniforms[name] = value
         try:
-            prog['u_hist_offset'] = self._hist_offset
-            prog['u_hist_stride'] = self._hist_stride
+            self.compute_shader[name] = value
         except KeyError:
-            pass  # uniform optimized out or program doesn't use it
+            pass
+
+    def _sync_chaos_program_uniforms(self, prog) -> None:
+        """Apply the renderer's sticky-uniform state + re-bind SSBOs
+        to a per-genome chaos program. Each program has its OWN
+        uniform storage AND its own driver-side SSBO binding cache
+        (Mesa per-program binding cache — see
+        CompareRenderer.reclaim_bindings for the same workaround on
+        the cross-renderer side). Swapping self.compute_shader to a
+        different program means:
+          - uniforms set externally don't carry over
+          - SSBO bindings haven't been "seen" by the new program, so
+            its first dispatch may use null/stale binding entries
+        Both have manifested as silent half-blank rendering in
+        compare mode. Re-syncing is cheap; do it on every swap.
+
+        Generic over the sticky-uniforms dict — adding a new sticky
+        uniform requires no change here, just register it in
+        self._sticky_chaos_uniforms (typically via
+        _set_sticky_chaos_uniform)."""
+        if not hasattr(self, '_sticky_chaos_uniforms'):
+            return  # init order — sync called before _create_resources
+        for name, value in self._sticky_chaos_uniforms.items():
+            try:
+                prog[name] = value
+            except KeyError:
+                pass  # uniform optimized out or program doesn't use it
+        # Re-bind SSBOs so the new program's binding cache is populated.
+        # bind_buffers walks all chaos-shader buffers and re-binds via
+        # bind_to_storage_buffer. Cheap and idempotent.
+        if hasattr(self, 'histogram_buf'):
+            try:
+                self.chaos.bind_buffers()
+            except Exception:
+                pass
 
     def _create_resources(self) -> None:
         w, h = self.canvas_w, self.canvas_h
@@ -386,13 +413,26 @@ class FlameRenderer:
         # Temporal decay tracking for tonemap normalization
         self._decay = 0.0  # set by clear_histogram()
 
-        # Histogram offset/stride for compare mode (default: normal single-genome)
-        # Tracked on self so the per-genome trimmed shader cache can
-        # re-apply them when it swaps in a new program (a different
-        # program has its own uniform values; without re-applying we'd
-        # write to wrong histogram regions and overlap the other side
-        # in compare mode).
+        # Sticky chaos-shader uniforms: name → current value. These
+        # need to persist across per-genome shader swaps because each
+        # moderngl ComputeShader has its OWN uniform storage — when
+        # upload_genome rebinds self.compute_shader to a different
+        # cached program, that program's uniforms are at whatever
+        # they were last set to on IT, not whatever's currently
+        # logically active. The sticky dict is the source of truth;
+        # _sync_chaos_program_uniforms re-applies it to any swapped-in
+        # program.
+        #
+        # Adding a new "sticky" uniform = add it here + use
+        # _set_sticky_chaos_uniform to update it. That's the entire
+        # contract — no special-case sync code needed per-uniform.
         n_pixels = self.canvas_w * self.canvas_h
+        self._sticky_chaos_uniforms: dict[str, object] = {
+            'u_hist_offset': 0,
+            'u_hist_stride': n_pixels,
+        }
+        # Convenience scalar accessors (callers read these for the
+        # current value; we keep them as cached mirrors of the dict).
         self._hist_offset = 0
         self._hist_stride = n_pixels
         self.compute_shader['u_hist_offset'] = 0

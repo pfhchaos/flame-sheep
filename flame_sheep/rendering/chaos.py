@@ -59,14 +59,14 @@ class ChaosGame:
         new_buf = r.gpu.allocate_storage_buffer(n_pixels * 4 * 4)  # uint32 zero-init
         new_buf.bind_to_storage_buffer(0)
         r.histogram_buf = new_buf
-        # Update stride to account for doubled hits region. Persist on
-        # the renderer so the per-genome shader cache can re-apply it
-        # to swapped-in programs (each program has its own uniform
-        # storage; without re-apply the per-genome shader would use
-        # the single-mode default and corrupt the other side's region).
+        # Update stride to account for doubled hits region. Routes
+        # through the sticky-uniform mechanism so the per-genome
+        # shader cache re-applies it on every swap.
         stride = n_pixels * 2
         r._hist_stride = stride
-        r.compute_shader['u_hist_stride'] = stride
+        r._set_sticky_chaos_uniform('u_hist_stride', stride)
+        # Non-swapped programs get set directly — they have one
+        # instance for the renderer's whole lifetime.
         r.clear_shader['u_hist_offset'] = 0
         r.reduce_max_shader['u_hist_offset'] = 0
         r.tonemap_program['u_hist_stride'] = stride
@@ -76,7 +76,8 @@ class ChaosGame:
         n_pixels = right)."""
         r = self._r
         r._hist_offset = offset
-        r.compute_shader['u_hist_offset'] = offset
+        r._set_sticky_chaos_uniform('u_hist_offset', offset)
+        # Non-swapped programs get set directly.
         r.clear_shader['u_hist_offset'] = offset
         r.reduce_max_shader['u_hist_offset'] = offset
         r.tonemap_program['u_hist_offset'] = offset
