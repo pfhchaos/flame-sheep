@@ -199,6 +199,54 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         log.exception('[precompile-gl] init failed; continuing without')
         precompile_driver = None
 
+    # Compare-mode pair pre-warm. Compare mode is static — it shows
+    # two genomes side-by-side without lerping — so it needs the two
+    # individual shaders warm (no union shader). pick_pair is
+    # deterministic given the same DB state, so a CompareMode we
+    # build here will pick the same first pair as the on-demand
+    # CompareMode that _handle_compare builds later. Run in a
+    # background thread because pick_pair takes ~2s of DB queries +
+    # CNN-score loads. No GPU access, just DB + math, so threading
+    # is safe (the kernel-panic risk the user keeps flagging is
+    # GPU-context-in-thread, not Python-thread-in-general).
+    if precompile_driver is not None and lib is not None:
+        def _prewarm_compare_pair():
+            try:
+                import time as _t
+                _t0 = _t.perf_counter()
+                from ..ui.compare import CompareMode
+                from ..scheduler.precompile_warm import _genome_tuple
+                from ..storage import Library as _Library
+                # SQLite connections are thread-local — opening a
+                # fresh Library here gives this thread its own conn.
+                thread_lib = _Library()
+                try:
+                    cm = CompareMode(thread_lib)
+                    state = cm.pick_pair()
+                    if state.left_id is None or state.right_id is None:
+                        log.info('[compare-prewarm] no pair available')
+                        return
+                    left = thread_lib.load_genome(state.left_id)
+                    right = thread_lib.load_genome(state.right_id)
+                finally:
+                    thread_lib.close()
+                tuples = [_genome_tuple(left), _genome_tuple(right)]
+                # Priority 10 — lower than loop-MED (0) and cold-miss
+                # (-100), higher than 2-hop flood (10). Compare is
+                # speculative; let real-time wallpaper needs jump it.
+                n_added = precompile_driver.enqueue(tuples, priority=10)
+                log.info(
+                    f'[compare-prewarm] pre-picked pair '
+                    f'#{state.left_id} vs #{state.right_id}; '
+                    f'enqueued {n_added} tuple(s) in '
+                    f'{(_t.perf_counter() - _t0)*1000:.0f}ms')
+            except Exception:
+                log.exception('[compare-prewarm] failed')
+        import threading as _threading
+        _threading.Thread(target=_prewarm_compare_pair,
+                          name='compare-prewarm',
+                          daemon=True).start()
+
     # Upstream gate: GenomeAxis filters target candidates through
     # the predicate. Cold candidate (target itself OR the union(
     # current, target) lerp-intermediate shader) → defer swap +
