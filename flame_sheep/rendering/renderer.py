@@ -233,6 +233,7 @@ class FlameRenderer:
         """
         cached = self._chaos_shader_cache.get(keep_vars)
         if cached is not None:
+            self._sync_chaos_program_uniforms(cached)
             return cached
         _t0 = _time.perf_counter()
         def _transform(src: str) -> str:
@@ -257,7 +258,27 @@ class FlameRenderer:
             pipeline_warm.mark_warm(0, False, keep_vars)
         except Exception:
             pass  # marker write is informational; failure non-fatal
+        self._sync_chaos_program_uniforms(prog)
         return prog
+
+    def _sync_chaos_program_uniforms(self, prog) -> None:
+        """Apply the renderer's current histogram offset/stride to a
+        per-genome chaos program. Each program has its own uniform
+        storage; swapping self.compute_shader to a different program
+        means uniforms set externally (set_histogram_offset,
+        ensure_double_histogram) don't carry over. We've seen this
+        manifest as one side of compare mode rendering blank because
+        the swapped-in program had u_hist_stride at the single-mode
+        default — its colors writes then overlapped the other side's
+        hits region. Re-applying on every swap is cheap and keeps
+        the per-program state consistent."""
+        if not hasattr(self, '_hist_offset'):
+            return  # init order — sync_program before _create_resources
+        try:
+            prog['u_hist_offset'] = self._hist_offset
+            prog['u_hist_stride'] = self._hist_stride
+        except KeyError:
+            pass  # uniform optimized out or program doesn't use it
 
     def _create_resources(self) -> None:
         w, h = self.canvas_w, self.canvas_h
@@ -366,8 +387,14 @@ class FlameRenderer:
         self._decay = 0.0  # set by clear_histogram()
 
         # Histogram offset/stride for compare mode (default: normal single-genome)
+        # Tracked on self so the per-genome trimmed shader cache can
+        # re-apply them when it swaps in a new program (a different
+        # program has its own uniform values; without re-applying we'd
+        # write to wrong histogram regions and overlap the other side
+        # in compare mode).
         n_pixels = self.canvas_w * self.canvas_h
         self._hist_offset = 0
+        self._hist_stride = n_pixels
         self.compute_shader['u_hist_offset'] = 0
         self.compute_shader['u_hist_stride'] = n_pixels
         self.clear_shader['u_hist_offset'] = 0

@@ -59,8 +59,13 @@ class ChaosGame:
         new_buf = r.gpu.allocate_storage_buffer(n_pixels * 4 * 4)  # uint32 zero-init
         new_buf.bind_to_storage_buffer(0)
         r.histogram_buf = new_buf
-        # Update stride to account for doubled hits region
+        # Update stride to account for doubled hits region. Persist on
+        # the renderer so the per-genome shader cache can re-apply it
+        # to swapped-in programs (each program has its own uniform
+        # storage; without re-apply the per-genome shader would use
+        # the single-mode default and corrupt the other side's region).
         stride = n_pixels * 2
+        r._hist_stride = stride
         r.compute_shader['u_hist_stride'] = stride
         r.clear_shader['u_hist_offset'] = 0
         r.reduce_max_shader['u_hist_offset'] = 0
