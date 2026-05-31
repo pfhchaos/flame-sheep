@@ -76,7 +76,17 @@ class CompareMode:
                  votes_per_strategy: int = 5,
                  skip_progress_weight: float = 0.5,
                  diversity_weight: float = 0.3,
-                 candidate_pool: int = 40):
+                 candidate_pool: int = 40,
+                 on_pair_set=None):
+        """on_pair_set: optional callback(left_genome, right_genome)
+        invoked every time the active pair changes. Wallpaper hooks
+        this to enqueue both genomes into the precompile worker so
+        their chaos shaders are warm by the time the user looks at
+        them — otherwise each vote → pick_pair → cold compile on
+        first frame of the new pair (~400-700ms each side, visible
+        as a pause). Callback runs in whatever thread invoked the
+        vote (typically the ctl-pipe reader); caller is responsible
+        for not blocking it."""
         """
         Args:
             votes_per_strategy: rotation budget per strategy, measured
@@ -98,6 +108,7 @@ class CompareMode:
                 diversity choices, higher per-pick cost
         """
         self.lib = lib
+        self._on_pair_set = on_pair_set
         self._score_fn = score_fn  # legacy callable: Genome -> float
         self.pair = PairState()
 
@@ -266,6 +277,11 @@ class CompareMode:
         self.pair.right = self.lib.load_genome(gid_b)
         self.pair.left_id = gid_a
         self.pair.right_id = gid_b
+        if self._on_pair_set is not None:
+            try:
+                self._on_pair_set(self.pair.left, self.pair.right)
+            except Exception:
+                log.exception('[compare] on_pair_set callback failed')
 
     def _is_fresh(self, gid_a: int, gid_b: int) -> bool:
         key = (min(gid_a, gid_b), max(gid_a, gid_b))
@@ -435,6 +451,66 @@ class CompareMode:
 
         log.warning('[compare] all strategies exhausted — no fresh pairs')
         return self.pair
+
+    def look_ahead_next_pair(self, progress_delta: float = 1.0
+                               ) -> 'PairState | None':
+        """Simulate a hypothetical vote-or-skip outcome and return the
+        pair pick_pair() WOULD pick next, without committing the
+        vote to DB or persistent state.
+
+        progress_delta: how much to advance _strategy_progress for the
+        hypothetical. 1.0 mirrors on_left_wins / on_right_wins (winner
+        direction doesn't change next-pair selection — strategies
+        consume only the compared set, which gets (min, max) of the
+        pair regardless of winner). 0.5 mirrors on_skip (skip_progress_
+        weight default). Differing the delta exposes the strategy-
+        rotation-boundary case where vote-next and skip-next differ.
+
+        Used by the wallpaper to pre-warm next-pair shaders via the
+        precompile worker while the user is still looking at the
+        current pair. Without this, every vote → pick_pair → cold
+        compile of the next pair's two shaders (~400-700ms each =
+        visible pause).
+
+        NOT thread-safe vs concurrent pick_pair / vote handlers —
+        callers must serialize. We use state snapshot+restore on
+        self.pair / self._compared / self._strategy_progress /
+        self._strategy_idx; concurrent mutation would corrupt the
+        restore.
+        """
+        if self.pair.left_id is None or self.pair.right_id is None:
+            return None
+        # Snapshot mutable state pick_pair touches.
+        saved_compared = set(self._compared)
+        saved_progress = self._strategy_progress
+        saved_strategy_idx = self._strategy_idx
+        saved_pair = PairState(
+            left=self.pair.left, right=self.pair.right,
+            left_id=self.pair.left_id, right_id=self.pair.right_id)
+        # Disable the on_pair_set callback during simulation —
+        # otherwise the simulated pick_pair → _set_pair fires
+        # on_pair_set which would re-enter look_ahead_next_pair →
+        # infinite recursion (the callback's whole purpose IS to
+        # call this function back).
+        saved_on_pair_set = self._on_pair_set
+        self._on_pair_set = None
+        try:
+            # Apply hypothetical effect (matches _record + the
+            # progress bump in on_*).
+            self._compared.add((min(saved_pair.left_id, saved_pair.right_id),
+                                max(saved_pair.left_id, saved_pair.right_id)))
+            self._strategy_progress += progress_delta
+            self.pick_pair()
+            # Capture result before restore overwrites self.pair.
+            return PairState(
+                left=self.pair.left, right=self.pair.right,
+                left_id=self.pair.left_id, right_id=self.pair.right_id)
+        finally:
+            self._compared = saved_compared
+            self._strategy_progress = saved_progress
+            self._strategy_idx = saved_strategy_idx
+            self.pair = saved_pair
+            self._on_pair_set = saved_on_pair_set
 
     def on_left_wins(self) -> None:
         """Record left genome as winner, advance to next pair."""

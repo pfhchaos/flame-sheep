@@ -339,6 +339,7 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         viewports=viewports, surfaces=surfaces, first_surf=first_surf,
         canvas_ppmm=canvas_ppmm,
         pet_watchdog=_pet_watchdog,
+        precompile_driver=precompile_driver,
     )
     commands.register_all()
 

@@ -44,11 +44,18 @@ class WallpaperCommands:
                  surfaces: dict,
                  first_surf,
                  canvas_ppmm: float,
-                 pet_watchdog: 'Callable[[], None] | None' = None):
+                 pet_watchdog: 'Callable[[], None] | None' = None,
+                 precompile_driver=None):
         self.core = core
         self.lib = lib
         self.orch = orch
         self.renderer = renderer
+        # Optional: precompile driver (PrecompileDriver). When set,
+        # compare-mode pair-pick hooks enqueue next-pair lookaheads
+        # so the next pair's shaders are warm by the time the user
+        # votes. None = no pre-warm (compare mode still works, just
+        # pays inline compile cost per pair switch).
+        self.precompile_driver = precompile_driver
         # Callback that bumps the render-loop watchdog. Used by handlers
         # whose synchronous setup (compare-mode init) would otherwise
         # block the render thread long enough to trip the watchdog.
@@ -221,7 +228,42 @@ class WallpaperCommands:
             self.compare.ensure_renderer(self.renderer)
             _t1 = time.perf_counter()
             log.info(f'[compare] renderer: {(_t1-_t0)*1000:.0f}ms')
-            self.compare_mode = CompareMode(self.lib)
+            # on_pair_set fires every time the displayed pair changes
+            # (from this _handle_compare's pick_pair AND from every
+            # subsequent vote/skip). Use look_ahead_next_pair to
+            # anticipate vote-next + skip-next and enqueue both pairs'
+            # genomes to the precompile worker. By the time the user
+            # finishes evaluating the current pair, the next pair's
+            # shaders are warm in Mesa's cache — vote → next pair
+            # appears with no cold-compile stall.
+            def _enqueue_next_pair_lookaheads(left, right):
+                pcd = getattr(self, 'precompile_driver', None)
+                if pcd is None:
+                    return
+                try:
+                    from ..scheduler.precompile_warm import _genome_tuple
+                    tuples_to_enqueue = []
+                    for delta in (1.0, 0.5):  # vote, skip
+                        try:
+                            la = self.compare_mode.look_ahead_next_pair(delta)
+                        except Exception:
+                            log.exception('[compare-warm] look_ahead failed')
+                            continue
+                        if la is None or la.left is None or la.right is None:
+                            continue
+                        tuples_to_enqueue.append(_genome_tuple(la.left))
+                        tuples_to_enqueue.append(_genome_tuple(la.right))
+                    if tuples_to_enqueue:
+                        n = pcd.enqueue(tuples_to_enqueue, priority=10)
+                        if n:
+                            log.debug(
+                                f'[compare-warm] enqueued {n} look-ahead '
+                                f'tuple(s) for next pair')
+                except Exception:
+                    log.exception('[compare-warm] enqueue failed')
+
+            self.compare_mode = CompareMode(
+                self.lib, on_pair_set=_enqueue_next_pair_lookaheads)
             _t2 = time.perf_counter()
             log.info(f'[compare] CompareMode init: {(_t2-_t1)*1000:.0f}ms')
             self.compare_mode.pick_pair()
