@@ -1,5 +1,6 @@
 # Generated artifacts — large + reproducible via dump_chaos_isa.py +
-# measure_spill_threshold.py + measure_spec_const_threshold.py
+# measure_spill_threshold.py + measure_spec_const_threshold.py +
+# measure_gru_backward_spill.py
 dump_*.txt
 dump_*.spv
 dump_*.spvdis
@@ -8,3 +9,4 @@ spill_threshold_*.comp
 spill_threshold.csv
 spec_const_threshold_*.dump
 spec_const_threshold.csv
+gru_backward_isa.dump
