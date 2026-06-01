@@ -98,12 +98,35 @@ def _pick_test_genomes(lib, n: int = 5) -> list[int]:
     return [r[0] for r in rows]
 
 
+def _genome_from_catalog(genome_id: int):
+    """Load a real genome from the catalog and shape it into
+    ChaosGame.set_genome kwargs. Inlined here (was previously in
+    viz_authoring.vk.wallpaper_demo, deleted when the Vk wallpaper
+    surface was pruned in favor of the GL wallpaper)."""
+    from flame_sheep.storage.library import Library
+    lib = Library()
+    g = lib.load_genome(genome_id)
+    arrays = g.to_gpu_arrays()
+    av = arrays['active_vars'].reshape(7, 8, 10)
+    pv = arrays['pre_active_vars'].reshape(7, 8, 10)
+    kwargs = dict(
+        affines=arrays['affines'],
+        post_affines=arrays['post_affines'],
+        active_vars=av, pre_vars=pv,
+        colors=arrays['colors'],
+        color_speeds=arrays['color_speeds'],
+        weights=arrays['weights'],
+        n_transforms=len(g.transforms),
+        has_final_xform=arrays['has_final_xform'],
+    )
+    return kwargs, (g.zoom, g.zoom), g.rotation, tuple(g.center)
+
+
 def _render_vulkan(vk_chaos, genome_id: int) -> tuple[np.ndarray, np.ndarray]:
     """Render `genome_id` through the Vulkan chaos game at catalog params,
     return (hits, colors) numpy arrays matching the stored shape."""
-    from viz_authoring.vk.wallpaper_demo import _genome_from_catalog
     ctx, cg = vk_chaos
-    kwargs, _palette, zoom, rotation, center = _genome_from_catalog(genome_id)
+    kwargs, zoom, rotation, center = _genome_from_catalog(genome_id)
     cg.set_genome(**kwargs)
     cg.reset_walkers(seed=42)  # deterministic across test runs
     cg.clear_histogram()

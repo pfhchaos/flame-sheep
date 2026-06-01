@@ -7,7 +7,7 @@ Contains the components that orchestrate the running wallpaper:
   - session.py: SessionMonitor (login session presence/idle)
   - mpris.py: MprisListener (media player metadata)
   - role_mapper.py: RoleMapper + role constants (DOWNBEAT/BACKBEAT/...)
-  - wallpaper_vk.py: _run_wallpaper_vk (the wallpaper's main loop)
+  - wallpaper.py: _run_wallpaper (the wallpaper's main loop, GL backend)
   - wayland_outputs.py: monitor discovery + singleton lock
 
 This __init__.py re-exports the public API. External code should

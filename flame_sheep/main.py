@@ -71,17 +71,13 @@ def main() -> None:
     parser.add_argument('--blur-radius', type=float, default=0.6,
                         help='wallpaper blur strength (0=off, 1=light, 2+=heavy; default: 1.0)')
     parser.add_argument('--sync-chaos', action='store_true',
-                        help='force synchronous chaos.frame() (debug only; '
-                             'default is async — one frame CPU-ahead of GPU)')
-    # --backend: gl is the production default (Mesa-Xe Vulkan compiler
-    # is ~3-4× slower than Mesa-Iris GL on this Arc A770 for our chaos
-    # shader; see tools/vk_perf_diag/README.md for the open Mesa bug).
-    # vk is kept available for the bug reproducer + future reassessment
-    # when Mesa-Xe compiler improves.
-    parser.add_argument('--backend', choices=['gl', 'vk'], default='gl',
-                        help='rendering backend (default: gl). vk is '
-                             'available for testing but currently slower '
-                             'than gl on Mesa-Xe — see Mesa bug.')
+                        help='retained for back-compat; no-op (the GL '
+                             'wallpaper does not have async-chaos plumbing). '
+                             'The Vk wallpaper that used this flag was '
+                             'removed; the Vk compute path lives on via '
+                             'the bench reproducer (see tools/vk_perf_diag/'
+                             'README.md). Future restoration would need '
+                             'GL_NV_command_list or equivalent.')
     parser.add_argument('--log-features', action='store_true',
                         help='log audio features as JSON lines for offline analysis')
     parser.add_argument('--log-file', type=str, default=None,
@@ -170,21 +166,12 @@ def main() -> None:
         if audio_device is None:
             from .config import cfg
             audio_device = cfg.audio_device
-        if args.backend == 'vk':
-            from .runtime.wallpaper_vk import _run_wallpaper_vk
-            _run_wallpaper_vk(audio_device, args.test_audio,
-                              blur_radius=args.blur_radius,
-                              log_features=args.log_features,
-                              log_file=args.log_file,
-                              test_pattern=args.test_pattern,
-                              sync_chaos=args.sync_chaos)
-        else:
-            from .runtime.wallpaper import _run_wallpaper
-            _run_wallpaper(audio_device, args.test_audio,
-                           blur_radius=args.blur_radius,
-                           log_features=args.log_features,
-                           log_file=args.log_file,
-                           test_pattern=args.test_pattern)
+        from .runtime.wallpaper import _run_wallpaper
+        _run_wallpaper(audio_device, args.test_audio,
+                       blur_radius=args.blur_radius,
+                       log_features=args.log_features,
+                       log_file=args.log_file,
+                       test_pattern=args.test_pattern)
         return
 
     # No mode given — print help. flame-sheep is a wallpaper system; running
