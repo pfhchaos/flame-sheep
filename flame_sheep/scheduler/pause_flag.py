@@ -54,20 +54,34 @@ class PauseFlag:
     """Writer side. Scheduler creates one of these per managed worker;
     passes `path` to the worker so the worker can open the read side.
 
-    The flag lives for the lifetime of the PauseFlag instance — close()
-    unmaps and deletes the file. Re-creating with the same name resets
-    the flag (which is fine).
+    File persists across writer instances — close() unmaps + closes
+    the fd but does NOT unlink. This decouples lifecycle from the
+    scheduler-owning process: workers can open readers before the
+    writer exists (default RUN), survive a writer restart, etc.
+    Files live in tmpfs ($XDG_RUNTIME_DIR/flame-sheep/) so they go
+    away on reboot regardless.
+
+    Re-creating with the same name re-initializes the flag (back to
+    RUN — fail-open default; the policy will flip to PAUSE on the
+    first tick once there's signal data, so a brief RUN-then-PAUSE
+    transition at writer startup is fine).
     """
 
     def __init__(self, name: str):
         self.path = _runtime_dir() / f'{name}.flag'
-        # Truncate to 1 byte and initialize to PAUSE (workers start
-        # paused; scheduler ticks the policy and flips to RUN once
-        # there's data to act on).
-        with open(self.path, 'wb') as f:
-            f.write(bytes([_STATE_TO_BYTE[BatchState.PAUSE]]))
+        # Ensure file exists with at least 1 byte (RUN default).
+        # CRITICAL: don't truncate — pre-existing readers may already
+        # hold mmaps on this file, and truncating would break their
+        # views (their mmap reads past-EOF as zero, which decodes to
+        # RUN regardless of what we write next; the writer's later
+        # writes don't propagate to the reader's stale mapping).
+        # Just create-if-missing + initialize-if-empty.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        if os.fstat(self._fd).st_size < 1:
+            os.write(self._fd, bytes([_STATE_TO_BYTE[BatchState.RUN]]))
+            os.lseek(self._fd, 0, os.SEEK_SET)
         # mmap for fast writes from the policy loop.
-        self._fd = os.open(self.path, os.O_RDWR)
         self._mm = mmap.mmap(self._fd, 1, mmap.MAP_SHARED,
                               mmap.PROT_READ | mmap.PROT_WRITE)
 
@@ -89,10 +103,10 @@ class PauseFlag:
             os.close(self._fd)
         except OSError:
             pass
-        try:
-            self.path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        # File is NOT unlinked — lifecycle decoupled from writer.
+        # The tmpfs path goes away on reboot; in-session staleness is
+        # fine (next writer init re-initializes the byte, readers
+        # default to RUN until then).
 
     def __enter__(self):
         return self
@@ -111,6 +125,16 @@ class PauseFlagReader:
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
+        # Create the flag file with RUN default if it doesn't exist
+        # yet. Lets a worker start BEFORE its corresponding writer
+        # (or run standalone with no writer at all — useful for
+        # tests + ad-hoc bench runs). When the writer eventually
+        # appears it'll mmap the same file and start updating the
+        # byte; the reader picks up the new values automatically.
+        if not self.path.exists():
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path, 'wb') as f:
+                f.write(bytes([_STATE_TO_BYTE[BatchState.RUN]]))
         self._fd = os.open(self.path, os.O_RDONLY)
         self._mm = mmap.mmap(self._fd, 1, mmap.MAP_SHARED,
                               mmap.PROT_READ)
