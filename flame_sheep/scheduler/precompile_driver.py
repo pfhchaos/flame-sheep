@@ -112,19 +112,34 @@ class PrecompileDriver:
                  priority: int = 0) -> int:
         """Add tuples to the queue at given priority. Lower priority
         number = served first (matches heapq semantics).
-        Returns the number actually enqueued (dedup'd against seen).
+        Returns the number actually enqueued (dedup'd against seen
+        AND against the disk warm-marker convention — tuples whose
+        Mesa shader cache has already been populated in any prior
+        session are silently skipped, since re-compiling them via
+        the worker would just dutifully re-touch the same disk cache
+        for no real benefit).
         """
+        from viz_authoring.vk import pipeline_warm
         added = 0
+        skipped_warm = 0
         with self._seen_lock:
             for t in tuples:
                 if t in self._seen:
                     continue
                 self._seen.add(t)
+                n_tx, has_final, keep_vars = t
+                if pipeline_warm.is_warm(n_tx, bool(has_final), keep_vars):
+                    skipped_warm += 1
+                    continue
                 with self._counter_lock:
                     n = self._counter
                     self._counter += 1
                 self._q.put((priority, n, t))
                 added += 1
+        if skipped_warm:
+            log.debug(
+                f'[precompile] enqueue: added={added} '
+                f'skipped_warm={skipped_warm} (already in Mesa cache)')
         return added
 
     def _send_loop(self):
