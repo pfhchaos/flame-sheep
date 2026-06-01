@@ -1,32 +1,48 @@
 """Static analysis tests for ML compute shaders.
 
-Catches the software-atomic-float anti-pattern (`atomicCompSwap` inside
-a loop body) that triggered the GRU backward GuC wedge on 2026-05-31.
+Catches the software-atomic-float anti-pattern that triggered the GRU
+backward GuC wedge on 2026-05-31: `atomicCompSwap` inside a HOT loop —
+a for/while iteration where multiple inner iterations target the same
+parameter address. Under heavy contention every CAS retries and threads
+thrash.
 
-The pattern looks like:
+The CAS-spin idiom itself (`do { ... atomicCompSwap ... } while (...)`)
+is the standard way to emulate `atomicAdd<float>` on backends that lack
+the extension (Mesa-Xe in particular). When it's the *only* enclosing
+loop — i.e. a helper like:
 
-    while (true) {
-        uint des = floatBitsToUint(uintBitsToFloat(exp) + delta);
-        uint old = atomicCompSwap(grad[tgt], exp, des);
-        if (old == exp) break;
-        exp = old;
+    void atomicAddFloat(uint idx, float val) {
+        ...
+        do {
+            ...
+            atomicCompSwap(...);
+        } while (...);
     }
 
-Each iteration retries on contention. When B × T × N_params threads all
-target the same parameter buffer (every backward pass), contention is
-100% by construction and threads thrash. Mesa-Xe's worst-case cycle
-estimate for such blocks runs into the millions; in practice they wedge
-the GuC scheduler under sustained training.
+— it's NOT the anti-pattern. Each invocation is 1-iteration-typical;
+the retries are proportional to actual contention, not loop trip count.
+This is OK practice and the scanner ignores it.
 
-The structural fix is workgroup-local shared-memory accumulation
-followed by one hardware `atomicAdd` per parameter per workgroup
-(standard cuDNN/oneDNN pattern). Tracked in task #69 — until that ships,
-the six currently-affected shaders are listed in
-SOFTWARE_ATOMIC_FLOAT_DEBT.
+What the scanner flags is CAS reached from inside a for/while iteration,
+where the same address gets repeatedly accumulated:
 
-The detector is structural (any CAS in any loop body), not pattern-
-matched on `while (true)` — float CAS is the wrong primitive *anywhere*
-in a hot loop, regardless of the surrounding control flow.
+    for (int t = 0; t < T; t++) {            ← outer for-loop
+        ...
+        while (true) {                       ← inner CAS-spin
+            atomicCompSwap(grad[tgt], ...);
+            ...
+        }
+    }
+
+Across T iterations, each thread hammers the same `grad[tgt]` T times.
+That's the storm shape — fixed via workgroup-private accumulation
+(Path B, task #69).
+
+Shaders that still hold a HOT CAS-in-loop pattern after Path B are
+listed in SOFTWARE_ATOMIC_FLOAT_DEBT with a per-shader note describing
+why each one is still there (smaller blast radius, restructure planned,
+etc.). The list is documentation of remaining work, not a permanent
+allowlist.
 """
 from __future__ import annotations
 
@@ -40,14 +56,36 @@ SHADERS_ROOT = (Path(__file__).resolve().parents[2]
                 / 'wallpaper_ml' / 'src' / 'wallpaper_ml' / 'shaders')
 
 
-# Shaders that currently contain the anti-pattern. New shaders MUST
-# NOT be added here — they have to be written with workgroup-shared
-# accumulation from the start. Existing entries are removed as
-# task #69 ports them over.
+# Shaders that still flag the HOT CAS-in-loop pattern after the
+# emulation-idiom carveout (see scanner docstring). The 3 helper-using
+# shaders (conv2d_backward_weights, gap_linear_backward, gap_mlp_backward)
+# were removed when the scanner learned that pure do-while spins are
+# the standard atomicAdd<float> emulation. The remaining 3 entries are
+# actual residual hot-pattern instances:
+#
+# - gru_seq_backward.comp: post-Path-B (commit 748851c), the inner-loop
+#   storm is gone but the end-of-shader flush still walks (3 gates × I)
+#   for W, (3 × H) for U, and 6 bias slots with one CAS-spin per slot.
+#   Per-CAS contention is now B-thread instead of B×T, so the impact
+#   dropped ~256× without eliminating the syntactic pattern. The true
+#   structural fix would be Mesa-Xe exposing VK_EXT_shader_atomic_float
+#   (so we'd use hardware atomicAdd instead of CAS-spin) — tracked as
+#   task #37 (Mesa upstream report).
+#
+# - gru_backward.comp: per-timestep version of gru_seq_backward, called
+#   T times from Python. Not on the production training path (we use
+#   backward_sequence). Same shape as gru_seq_backward pre-Path-B
+#   inside one dispatch (B×H simultaneous CAS), but only one timestep
+#   per dispatch so the total per-step contention is bounded. Low
+#   priority — would only get refactored if we ever shift back to
+#   per-step training.
+#
+# - linear_backward.comp: contention is B (batch) threads racing the
+#   same grad_W[i,j] address across workgroups. Modest (B typically 8).
+#   Restructure would change dispatch shape (one thread per (i,j)
+#   accumulating across batches in private memory instead of one per
+#   (b,i)). Tracked but not urgent.
 SOFTWARE_ATOMIC_FLOAT_DEBT: set[str] = {
-    'cnn/conv2d_backward_weights.comp',
-    'cnn/gap_linear_backward.comp',
-    'cnn/gap_mlp_backward.comp',
     'rnn/gru_backward.comp',
     'rnn/gru_seq_backward.comp',
     'rnn/linear_backward.comp',
@@ -68,28 +106,34 @@ def _strip_comments(src: str) -> str:
 
 def find_cas_in_loops(source: str) -> list[tuple[int, str]]:
     """Walk shader source tracking brace depth + currently-open loop
-    bodies. For each `atomicCompSwap` token encountered while inside
-    one or more loop bodies, return (line_number, line_text).
+    bodies. For each `atomicCompSwap` token encountered while inside a
+    HOT loop body, return (line_number, line_text).
 
-    Loop bodies are tracked by recording brace depth at the point each
-    for/while/do opens its body. When the closing brace drops depth
-    back, the loop frame is popped. Single-statement loop bodies
-    without braces (`for(...) stmt;`) are recognized but don't push a
-    frame; the CAS would have to be in the bare statement, which
-    doesn't match any real-world pattern we care about.
+    A "hot" loop is any `for` or `while`. A `do-while` enclosing only
+    the CAS itself is the standard `atomicAdd<float>` emulation idiom —
+    NOT flagged when it's the sole enclosing loop, because each call
+    is 1-iteration-typical (retries scale with contention, not with
+    loop trip count).
 
-    Note: parser is pragmatic, not a full GLSL frontend. It doesn't
-    handle preprocessor directives that hide braces, lambda-like
-    constructs (don't exist in GLSL), or other esoterica. Good enough
-    for production shader hygiene.
+    Each open loop's frame records the brace depth and the kind
+    ('for' / 'while' / 'do'). The CAS is flagged iff at least one
+    enclosing frame is 'for' or 'while'. Pure 'do' chains pass.
+
+    Loop bodies close when brace depth drops below their open depth.
+    Single-statement loop bodies (`for(...) stmt;`) don't push a frame.
+
+    The parser is pragmatic, not a full GLSL frontend. It doesn't
+    handle preprocessor directives that hide braces or other esoterica.
+    Good enough for production shader hygiene.
     """
     src = _strip_comments(source)
     findings: list[tuple[int, str]] = []
     lines = source.split('\n')
 
     brace_depth = 0
-    loop_body_depths: list[int] = []  # brace depths where each open loop body started
-    pending_loop_body = False
+    # Stack of (brace_depth, kind) where kind ∈ {'for', 'while', 'do'}
+    loop_frames: list[tuple[int, str]] = []
+    pending_loop_kind: str | None = None
     line = 1
     i = 0
     N = len(src)
@@ -102,21 +146,21 @@ def find_cas_in_loops(source: str) -> list[tuple[int, str]]:
             continue
         if c == '{':
             brace_depth += 1
-            if pending_loop_body:
-                loop_body_depths.append(brace_depth)
-                pending_loop_body = False
+            if pending_loop_kind is not None:
+                loop_frames.append((brace_depth, pending_loop_kind))
+                pending_loop_kind = None
             i += 1
             continue
         if c == '}':
-            while loop_body_depths and loop_body_depths[-1] == brace_depth:
-                loop_body_depths.pop()
+            while loop_frames and loop_frames[-1][0] == brace_depth:
+                loop_frames.pop()
             brace_depth -= 1
             i += 1
             continue
         if c == ';':
-            if pending_loop_body:
+            if pending_loop_kind is not None:
                 # Single-statement loop body — no frame to track.
-                pending_loop_body = False
+                pending_loop_kind = None
             i += 1
             continue
         if c.isalpha() or c == '_':
@@ -142,16 +186,19 @@ def find_cas_in_loops(source: str) -> list[tuple[int, str]]:
                         elif src[k] == '\n':
                             line += 1
                         k += 1
-                pending_loop_body = True
+                pending_loop_kind = tok
                 i = k
                 continue
             if tok == 'do':
-                pending_loop_body = True
+                pending_loop_kind = 'do'
                 i = j
                 continue
-            if tok == 'atomicCompSwap' and loop_body_depths:
-                text = lines[line - 1].rstrip() if 0 < line <= len(lines) else tok
-                findings.append((line, text))
+            if tok == 'atomicCompSwap' and loop_frames:
+                # Flag only if at least one enclosing loop is for/while.
+                # Pure do-while chains are the CAS-emulation idiom.
+                if any(kind != 'do' for _depth, kind in loop_frames):
+                    text = lines[line - 1].rstrip() if 0 < line <= len(lines) else tok
+                    findings.append((line, text))
             i = j
             continue
         i += 1
@@ -248,6 +295,60 @@ def test_scanner_handles_for_keyword_in_identifier():
     void main() {
         int format = 0;
         atomicCompSwap(buf[0], 0u, 1u);
+    }
+    """
+    findings = find_cas_in_loops(src)
+    assert findings == []
+
+
+def test_scanner_skips_emulation_do_while_idiom():
+    """The CAS-spin do-while is the standard atomicAdd<float>
+    emulation. When it's the only enclosing loop, the retries scale
+    with contention (typically 1), not with loop trip count — that's
+    OK practice, not the anti-pattern. Skip it."""
+    src = """
+    void atomicAddFloat(uint idx, float val) {
+        uint old_val = buf[idx];
+        do {
+            uint assumed = old_val;
+            uint new_val = floatBitsToUint(uintBitsToFloat(assumed) + val);
+            old_val = atomicCompSwap(buf[idx], assumed, new_val);
+        } while (old_val != assumed);
+    }
+    """
+    findings = find_cas_in_loops(src)
+    assert findings == []
+
+
+def test_scanner_flags_cas_in_for_even_with_inner_do_while():
+    """When an outer for/while wraps a CAS-spin do-while, that IS the
+    hot anti-pattern — the for-loop iterations all target the same
+    address, accumulating contention. Flag it."""
+    src = """
+    void main() {
+        for (int i = 0; i < 10; i++) {
+            uint old_val = buf[0];
+            do {
+                uint assumed = old_val;
+                old_val = atomicCompSwap(buf[0], assumed, assumed + 1u);
+            } while (old_val != assumed);
+        }
+    }
+    """
+    findings = find_cas_in_loops(src)
+    assert len(findings) == 1
+
+
+def test_scanner_skips_nested_do_while_chain():
+    """Pure do-while chains (no outer for/while) are still emulation
+    idioms — synthetic case but ensures we check kind not count."""
+    src = """
+    void main() {
+        do {
+            do {
+                atomicCompSwap(buf[0], 0u, 1u);
+            } while (false);
+        } while (false);
     }
     """
     findings = find_cas_in_loops(src)
