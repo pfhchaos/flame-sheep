@@ -38,7 +38,8 @@ class TestShapeValidation:
     @pytest.mark.skipif(not HAS_GPU, reason='No Vulkan GPU context')
     def test_wrong_shape_raises(self):
         layer = VkConv2d(_gpu, in_channels=3, out_channels=8,
-                          kernel_size=3, in_h=32, in_w=32)
+                          kernel_size=3, stride=1, padding=1,
+                          batch_size=1, in_h=32, in_w=32)
         # in_channels=3 → mults must be shape (3,)
         with pytest.raises(ValueError, match=r'Expected shape \(3,\)'):
             layer.set_per_input_channel_lr_mult(np.array([1.0, 1.0]))
@@ -46,7 +47,8 @@ class TestShapeValidation:
     @pytest.mark.skipif(not HAS_GPU, reason='No Vulkan GPU context')
     def test_too_many_dims_raises(self):
         layer = VkConv2d(_gpu, in_channels=3, out_channels=8,
-                          kernel_size=3, in_h=32, in_w=32)
+                          kernel_size=3, stride=1, padding=1,
+                          batch_size=1, in_h=32, in_w=32)
         with pytest.raises(ValueError):
             layer.set_per_input_channel_lr_mult(
                 np.array([[1.0, 1.0, 1.0]]))  # (1, 3) not (3,)
@@ -54,7 +56,8 @@ class TestShapeValidation:
     @pytest.mark.skipif(not HAS_GPU, reason='No Vulkan GPU context')
     def test_correct_shape_no_error(self):
         layer = VkConv2d(_gpu, in_channels=4, out_channels=8,
-                          kernel_size=3, in_h=32, in_w=32)
+                          kernel_size=3, stride=1, padding=1,
+                          batch_size=1, in_h=32, in_w=32)
         # Should not raise
         layer.set_per_input_channel_lr_mult(np.array([1.0, 1.0, 1.0, 1.0]))
 
@@ -73,7 +76,8 @@ class TestAllOnesShortcircuit:
     @pytest.mark.skipif(not HAS_GPU, reason='No Vulkan GPU context')
     def test_all_ones_leaves_inactive(self):
         layer = VkConv2d(_gpu, in_channels=4, out_channels=8,
-                          kernel_size=3, in_h=32, in_w=32)
+                          kernel_size=3, stride=1, padding=1,
+                          batch_size=1, in_h=32, in_w=32)
         # Initial state: not active, no buffer
         assert layer._grad_mult_active is False
         assert layer._grad_mult_buf is None
@@ -87,7 +91,8 @@ class TestAllOnesShortcircuit:
         # Caller might pass an int array; the function casts to float32
         # internally. np.allclose with int 1s should still short-circuit.
         layer = VkConv2d(_gpu, in_channels=4, out_channels=8,
-                          kernel_size=3, in_h=32, in_w=32)
+                          kernel_size=3, stride=1, padding=1,
+                          batch_size=1, in_h=32, in_w=32)
         layer.set_per_input_channel_lr_mult(np.ones(4, dtype=np.int32))
         assert layer._grad_mult_active is False
 
@@ -97,7 +102,8 @@ class TestAllOnesShortcircuit:
         wouldn't have any practical effect should also short-circuit
         rather than triggering the dispatch overhead."""
         layer = VkConv2d(_gpu, in_channels=4, out_channels=8,
-                          kernel_size=3, in_h=32, in_w=32)
+                          kernel_size=3, stride=1, padding=1,
+                          batch_size=1, in_h=32, in_w=32)
         layer.set_per_input_channel_lr_mult(
             np.array([1.0, 1.0 + 1e-9, 1.0, 1.0 - 1e-9], dtype=np.float32))
         assert layer._grad_mult_active is False
@@ -107,7 +113,8 @@ class TestAllOnesShortcircuit:
         """Setting a mask then setting all-ones should disable masking
         (idempotent — caller can re-disable without checking state)."""
         layer = VkConv2d(_gpu, in_channels=4, out_channels=8,
-                          kernel_size=3, in_h=32, in_w=32)
+                          kernel_size=3, stride=1, padding=1,
+                          batch_size=1, in_h=32, in_w=32)
         # Activate masking
         layer.set_per_input_channel_lr_mult(
             np.array([0.0, 1.0, 1.0, 1.0], dtype=np.float32))
@@ -129,7 +136,8 @@ class TestActiveMasking:
     @pytest.mark.skipif(not HAS_GPU, reason='No Vulkan GPU context')
     def test_non_uniform_activates(self):
         layer = VkConv2d(_gpu, in_channels=4, out_channels=8,
-                          kernel_size=3, in_h=32, in_w=32)
+                          kernel_size=3, stride=1, padding=1,
+                          batch_size=1, in_h=32, in_w=32)
         layer.set_per_input_channel_lr_mult(
             np.array([0.0, 1.0, 1.0, 0.5], dtype=np.float32))
         assert layer._grad_mult_active is True
@@ -138,18 +146,20 @@ class TestActiveMasking:
     @pytest.mark.skipif(not HAS_GPU, reason='No Vulkan GPU context')
     def test_buffer_size_matches_in_channels(self):
         layer = VkConv2d(_gpu, in_channels=7, out_channels=8,
-                          kernel_size=3, in_h=32, in_w=32)
+                          kernel_size=3, stride=1, padding=1,
+                          batch_size=1, in_h=32, in_w=32)
         layer.set_per_input_channel_lr_mult(
             np.array([0.0, 1.0, 1.0, 0.5, 0.5, 0.0, 1.0], dtype=np.float32))
         # 7 floats × 4 bytes/float = 28 bytes
-        assert layer._grad_mult_buf.size_bytes == 28
+        assert layer._grad_mult_buf.size == 28
 
     @pytest.mark.skipif(not HAS_GPU, reason='No Vulkan GPU context')
     def test_uploaded_values_roundtrip(self):
         """The mask we upload should be what we get back. Catches any
         byte-order / dtype-cast bug in the upload path."""
         layer = VkConv2d(_gpu, in_channels=4, out_channels=8,
-                          kernel_size=3, in_h=32, in_w=32)
+                          kernel_size=3, stride=1, padding=1,
+                          batch_size=1, in_h=32, in_w=32)
         mults = np.array([0.1, 0.9, 0.0, 1.0], dtype=np.float32)
         layer.set_per_input_channel_lr_mult(mults)
         readback = _gpu.download(layer._grad_mult_buf, np.float32, 4)
@@ -162,7 +172,8 @@ class TestActiveMasking:
         new one) — that buffer-allocation churn would mirror exactly
         the leak shape that motivated the test_vk_leaks suite."""
         layer = VkConv2d(_gpu, in_channels=4, out_channels=8,
-                          kernel_size=3, in_h=32, in_w=32)
+                          kernel_size=3, stride=1, padding=1,
+                          batch_size=1, in_h=32, in_w=32)
         layer.set_per_input_channel_lr_mult(
             np.array([0.0, 1.0, 1.0, 0.5], dtype=np.float32))
         buf_first = layer._grad_mult_buf

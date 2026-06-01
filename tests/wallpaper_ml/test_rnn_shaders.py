@@ -466,3 +466,105 @@ class TestVkGRUBackward:
         np.testing.assert_allclose(vk_dW, pt_dW, atol=1e-4, rtol=1e-3)
         np.testing.assert_allclose(vk_dU, pt_dU, atol=1e-4, rtol=1e-3)
         np.testing.assert_allclose(vk_dbias, pt_dbias, atol=1e-4, rtol=1e-3)
+
+
+class TestVkGRUBackwardSequence:
+    """VkGRU.backward_sequence (gru_seq_backward.comp) must match
+    PyTorch autograd over the full BPTT sequence. This is the path
+    used in production training (one big dispatch per layer); a wrong
+    output would silently corrupt training without any error signal,
+    so a numerical regression test is essential before refactoring."""
+
+    def test_full_sequence_bptt(self):
+        from wallpaper_ml import VkGRU
+
+        # Dimensions chosen to be small enough for fast PyTorch
+        # autograd but rich enough to exercise multi-timestep
+        # recurrent gradient flow.
+        B, I, H, T = 2, 8, 4, 5
+        rng = np.random.default_rng(456)
+
+        x = rng.standard_normal((T, B, I)).astype(np.float32)
+        h0 = rng.standard_normal((B, H)).astype(np.float32)
+        upstream_dh = rng.standard_normal((T, B, H)).astype(np.float32)
+
+        # PyTorch GRU reference
+        gru = torch.nn.GRU(I, H, num_layers=1, batch_first=True, bias=True)
+        with torch.no_grad():
+            wih = gru.weight_ih_l0.numpy()
+            whh = gru.weight_hh_l0.numpy()
+            bih = gru.bias_ih_l0.numpy()
+            bhh = gru.bias_hh_l0.numpy()
+
+        # Convert PyTorch (r,z,n) weight layout to ours (z,r,n)
+        perm = [1, 0, 2]
+        W = np.zeros((3, I, H), dtype=np.float32)
+        U = np.zeros((3, H, H), dtype=np.float32)
+        bias = np.zeros(6 * H, dtype=np.float32)
+        for g in range(3):
+            pg = perm[g]
+            W[g] = wih[pg*H:(pg+1)*H, :].T
+            U[g] = whh[pg*H:(pg+1)*H, :].T
+            bias[g * H:(g+1) * H] = bih[pg*H:(pg+1)*H]
+            bias[(g+3) * H:(g+4) * H] = bhh[pg*H:(pg+1)*H]
+
+        # --- Vulkan: forward_sequence then backward_sequence ---
+        layer = VkGRU(gpu, I, H, batch_size=B, max_seq_len=T)
+        gpu.upload(layer.W_buf, W.ravel())
+        gpu.upload(layer.U_buf, U.ravel())
+        gpu.upload(layer.bias_buf, bias)
+        gpu.upload(layer.hidden_buf, h0.ravel())
+
+        input_seq_buf = gpu.create_buffer(T * B * I * 4)
+        output_seq_buf = gpu.create_buffer(T * B * H * 4)
+        upstream_seq_buf = gpu.create_buffer(T * B * H * 4)
+
+        gpu.upload(input_seq_buf, x.ravel())
+        gpu.upload(upstream_seq_buf, upstream_dh.ravel())
+
+        layer.forward_sequence(input_seq_buf, output_seq_buf, B, T)
+        layer.zero_grad()
+        grad_in_buf = layer.backward_sequence(upstream_seq_buf, B, T)
+
+        vk_dx = gpu.download(grad_in_buf, np.float32, T * B * I).reshape(T, B, I)
+        vk_dW = gpu.download(layer.grad_W_buf, np.uint32,
+                              3 * I * H).view(np.float32).reshape(3, I, H)
+        vk_dU = gpu.download(layer.grad_U_buf, np.uint32,
+                              3 * H * H).view(np.float32).reshape(3, H, H)
+        vk_dbias = gpu.download(layer.grad_bias_buf, np.uint32,
+                                 6 * H).view(np.float32)
+
+        # --- PyTorch reference (full-sequence autograd) ---
+        # PyTorch GRU with batch_first=True takes (B, T, I); we have
+        # (T, B, I), so transpose for the reference call.
+        x_t = torch.from_numpy(x.transpose(1, 0, 2)).contiguous().requires_grad_(True)
+        h0_t = torch.from_numpy(h0).unsqueeze(0).requires_grad_(True)
+        out, hn = gru(x_t, h0_t)
+        # Upstream: (T, B, H) → (B, T, H) for PyTorch's batch_first
+        upstream_t = torch.from_numpy(upstream_dh.transpose(1, 0, 2)).contiguous()
+        out.backward(upstream_t)
+
+        # Transpose PyTorch's grad back to our (T, B, I) layout
+        pt_dx = x_t.grad.transpose(0, 1).contiguous().numpy()
+
+        pt_dWih = gru.weight_ih_l0.grad.numpy()
+        pt_dWhh = gru.weight_hh_l0.grad.numpy()
+        pt_dbih = gru.bias_ih_l0.grad.numpy()
+        pt_dbhh = gru.bias_hh_l0.grad.numpy()
+
+        pt_dW = np.zeros((3, I, H), dtype=np.float32)
+        pt_dU = np.zeros((3, H, H), dtype=np.float32)
+        pt_dbias = np.zeros(6 * H, dtype=np.float32)
+        for g in range(3):
+            pg = perm[g]
+            pt_dW[g] = pt_dWih[pg*H:(pg+1)*H, :].T
+            pt_dU[g] = pt_dWhh[pg*H:(pg+1)*H, :].T
+            pt_dbias[g * H:(g+1) * H] = pt_dbih[pg*H:(pg+1)*H]
+            pt_dbias[(g+3) * H:(g+4) * H] = pt_dbhh[pg*H:(pg+1)*H]
+
+        # Tolerances slightly looser than single-step (T-step BPTT
+        # accumulates rounding from per-timestep float ops).
+        np.testing.assert_allclose(vk_dx, pt_dx, atol=2e-4, rtol=2e-3)
+        np.testing.assert_allclose(vk_dW, pt_dW, atol=2e-4, rtol=2e-3)
+        np.testing.assert_allclose(vk_dU, pt_dU, atol=2e-4, rtol=2e-3)
+        np.testing.assert_allclose(vk_dbias, pt_dbias, atol=2e-4, rtol=2e-3)

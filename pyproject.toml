@@ -31,7 +31,12 @@ exclude = ["tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "flame_sheep_audio/tests", "viz_authoring/tests"]
-addopts = "--tb=short -m 'not slow'"
+# --import-mode=importlib: don't auto-prepend test directories to sys.path.
+# Prevents the silent-shadowing class where tests/wallpaper_ml/__init__.py
+# would mask the installed wallpaper_ml package and cause every numerical-
+# correctness test to skip with no error signal. See tests/conftest.py for
+# the runtime verification that backs this up.
+addopts = "--tb=short -m 'not slow' --import-mode=importlib --strict-markers"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
