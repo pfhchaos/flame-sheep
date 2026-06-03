@@ -36,6 +36,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from flame_sheep.eval.detectors import (
     BeatDetector, CurrentSystemDetector, BeatRNNDetector, BeatNetDetector,
+    MultiDepthBeatRNNDetector,
 )
 from flame_sheep.eval.metrics import evaluate
 from flame_sheep.eval.osu_parser import parse_osu_file
@@ -52,6 +53,11 @@ def _build_detector(name: str, **kwargs) -> BeatDetector:
         if not weights:
             raise SystemExit('beat_rnn detector requires --weights PATH')
         return BeatRNNDetector(weights)
+    if name == 'beat_rnn_multidepth':
+        weights = kwargs.get('weights')
+        if not weights:
+            raise SystemExit('beat_rnn_multidepth detector requires --weights PATH')
+        return MultiDepthBeatRNNDetector(weights)
     if name == 'beatnet':
         return BeatNetDetector(model_index=kwargs.get('beatnet_model', 1))
     raise SystemExit(f'Unknown detector: {name!r}')
@@ -116,7 +122,7 @@ def main():
         help='Directory of osu beatmap sets (one subdir per map)')
     parser.add_argument(
         '--detector', default='current_system',
-        choices=['current_system', 'beat_rnn', 'beatnet'],
+        choices=['current_system', 'beat_rnn', 'beat_rnn_multidepth', 'beatnet'],
         help='Detector to evaluate')
     parser.add_argument(
         '--weights', type=Path, default=None,

@@ -315,3 +315,93 @@ class BeatNetDetector(BeatDetector):
         peaks = peak_pick(scores, threshold=self._threshold,
                            min_distance=self._min_distance)
         return peaks.astype(np.float64) / self._fps
+
+
+# ============================================================================
+# MultiDepthBeatRNNDetector — wraps the production runtime detector so
+# the eval measures EXACTLY what the wallpaper sees, including the
+# 770× CQT scale correction, the per-head threshold cascade, the
+# refractory peak-picker, and the lookahead buffer.
+#
+# The legacy BeatRNNDetector above handles single-arch checkpoints with
+# its own numpy forward pass. For multidepth we go through the same
+# `load_beat_rnn` factory the daemon uses — both because reproducing
+# the forward logic here would drift, and because we want the eval
+# to surface bugs in the runtime path, not just in the algorithm.
+# ============================================================================
+
+class MultiDepthBeatRNNDetector(BeatDetector):
+    """Production multidepth beat-RNN, exercised via the runtime detector.
+
+    `kinds` selects which event kinds count as 'beats' for F1 scoring:
+        ('low',)         → downbeats only
+        ('low', 'mid')   → all beats (downbeat + beat heads)   ← default
+        ('low','mid','high') → any onset
+
+    The default matches what we use for tempo reconciliation: the
+    'beat-level' event stream (cascade tier 1 + 2). For pure beat F1
+    against osu beat times, ('low', 'mid') is the right thing.
+    """
+
+    name = 'beat_rnn_multidepth'
+
+    def __init__(self, weights_path,
+                 downbeat_threshold: float = 0.80,
+                 beat_threshold: float = 0.55,
+                 onset_threshold: float = 0.15,
+                 min_distance_frames: int = 9,
+                 lookahead_frames: int = 9,
+                 kinds: tuple[str, ...] = ('low', 'mid')):
+        import hashlib
+        self._weights_path = Path(weights_path)
+        if not self._weights_path.exists():
+            raise FileNotFoundError(self._weights_path)
+        self._downbeat_th = float(downbeat_threshold)
+        self._beat_th = float(beat_threshold)
+        self._onset_th = float(onset_threshold)
+        self._min_distance = int(min_distance_frames)
+        self._lookahead = int(lookahead_frames)
+        self._kinds = frozenset(kinds)
+
+        # Version = checkpoint content hash + threshold tuple.
+        # Cache invalidates when weights change OR when we change the
+        # per-head thresholds (since those are part of "what produced
+        # these beats").
+        content_hash = hashlib.sha256(
+            self._weights_path.read_bytes()).hexdigest()[:12]
+        thr_tag = f'd{int(self._downbeat_th*100):02d}b{int(self._beat_th*100):02d}o{int(self._onset_th*100):02d}'
+        kind_tag = ''.join(sorted(self._kinds))
+        self.version = f'mdrnn_{content_hash}_{thr_tag}_k{kind_tag}'
+
+    def detect(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        from flame_sheep_audio import SAMPLE_RATE, HOP_SIZE
+        from flame_sheep_audio._cqt_engine import CqtEngine
+        from flame_sheep_audio.beat_rnn import load_beat_rnn
+
+        audio = _ensure_mono_float32(audio)
+        if sr != SAMPLE_RATE:
+            audio = _resample(audio, sr, SAMPLE_RATE)
+        cqt = CqtEngine()
+        detector = load_beat_rnn(
+            str(self._weights_path),
+            threshold=0.3,
+            downbeat_threshold=self._downbeat_th,
+            beat_threshold=self._beat_th,
+            onset_threshold=self._onset_th,
+            min_peak_distance_frames=self._min_distance,
+            lookahead_frames=self._lookahead,
+        )
+
+        hop_dur = HOP_SIZE / SAMPLE_RATE
+        t = 0.0
+        beat_times: list[float] = []
+        for pos in range(0, len(audio) - HOP_SIZE, HOP_SIZE):
+            chunk = audio[pos:pos + HOP_SIZE]
+            frame = cqt.push_hop(chunk)
+            events = detector.detect(frame)
+            for ev in events:
+                if ev.kind in self._kinds:
+                    beat_times.append(t)
+            t += hop_dur
+
+        return np.asarray(beat_times, dtype=np.float64)
