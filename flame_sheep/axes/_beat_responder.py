@@ -140,20 +140,14 @@ class BeatResponder:
         self._last_downbeat_time = clock
         self._recent_downbeat_energy = self._recent_downbeat_energy * 0.8 + event.energy * 0.2
 
-        backbeat_density = self._role.band_state(audio, BACKBEAT).onset_density
-        density_scale = 1.0 / (1.0 + backbeat_density * cfg.genome.density_damping)
-
         # Section change pending → consume
         if self._section_change_pending and has_lib:
             self._section_change_pending = False
             self._section_cooldown = 0
             return BeatAction.SECTION_CHANGE
 
-        bpm = max(audio.effective_bpm, 60.0)
-        kick = event.energy * density_scale
-
         # Morph nudge + rotation boost (rotation handled by caller)
-        self._last_morph_nudge = kick * 0.05
+        self._last_morph_nudge = event.energy * 0.05
         log.debug(f"[backbeat] energy={event.energy:.2f}")
         return None
 
