@@ -53,12 +53,19 @@ def _resample(audio: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
 
 
 class CurrentSystemDetector(BeatDetector):
-    """Wraps the in-tree PercentileBeatDetector for offline eval.
+    """Wraps the in-tree PercentileBeatDetector for offline eval —
+    **matched to the live daemon's pipeline**.
 
-    Matches the live wallpaper's audio pipeline at construction time
-    (same SpectrumEngine fallback chain, same detector class + config).
-    Streams the audio through one hop at a time and records every
-    frame at which any non-`song_start` BeatEvent is emitted.
+    The daemon applies a Complex Spectral Difference transform to each
+    raw CQT frame BEFORE feeding it to PercentileBeatDetector (see
+    `flame_sheep_audio/processor.py`: `csd_frame = self._csd(raw_frame);
+    self._detector.detect(csd_frame)`). Before 2026-06-03 this wrapper
+    skipped the CSD step and measured F1 against raw flux, producing
+    a ~0.06 artifact gap vs the deployed pipeline.
+
+    Streams audio through one hop at a time, transforms each frame
+    via CSD, then records every frame at which any non-`song_start`
+    BeatEvent fires.
     """
 
     name = 'current_system'
@@ -74,15 +81,18 @@ class CurrentSystemDetector(BeatDetector):
         self._detector_cls = PercentileBeatDetector
         self._percentile = percentile
 
-        # Version: bake the engine + detector identity into a stable hash so
-        # any code change to either invalidates the eval cache.
+        # Version: bake the engine + detector + CSD transform identity
+        # into a stable hash so any code change to any of them
+        # invalidates the eval cache.
         import hashlib
         from flame_sheep_audio import beat_detector as _bd
         from flame_sheep_audio import _spectrum as _spec
+        from flame_sheep_audio import hpss as _hpss
         src = (Path(_bd.__file__).read_text()
-               + Path(_spec.__file__).read_text())
+               + Path(_spec.__file__).read_text()
+               + Path(_hpss.__file__).read_text())
         self.version = (
-            'current_system_' + hashlib.sha256(src.encode()).hexdigest()[:12]
+            'current_system_csd_' + hashlib.sha256(src.encode()).hexdigest()[:12]
         )
 
     def _make_engine(self):
@@ -91,10 +101,13 @@ class CurrentSystemDetector(BeatDetector):
         return CqtEngine()
 
     def detect(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        from flame_sheep_audio.hpss import ComplexSpectralDiffTransform
+
         audio = _ensure_mono_float32(audio)
         audio = _resample(audio, sr, self._SAMPLE_RATE)
 
         engine = self._make_engine()
+        csd = ComplexSpectralDiffTransform()
         freqs = getattr(engine, 'bin_centers', None)
         detector = self._detector_cls(percentile=self._percentile,
                                       freqs=freqs)
@@ -105,8 +118,12 @@ class CurrentSystemDetector(BeatDetector):
         last_frame = -1
         for i in range(n_hops):
             start = i * hop
-            frame = engine.push_hop(audio[start:start + hop])
-            events = detector.detect(frame)
+            raw_frame = engine.push_hop(audio[start:start + hop])
+            # Match the live daemon: detector consumes the CSD-transformed
+            # frame, not the raw CQT frame. Phase-aware flux is what
+            # PercentileBeatDetector is calibrated against.
+            csd_frame = csd(raw_frame)
+            events = detector.detect(csd_frame)
             # Any non-`song_start` event counts as a beat. Dedupe across
             # bands within the same frame (don't double-count when low
             # and mid fire on the same kick).
