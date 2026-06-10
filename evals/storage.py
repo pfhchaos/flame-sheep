@@ -95,3 +95,17 @@ def read_runs(path: Path = RESULTS_PATH) -> list[RunEntry]:
                 continue
             runs.append(RunEntry.from_json(json.loads(line)))
     return runs
+
+
+def latest_metric_values(path: Path = RESULTS_PATH) -> dict[str, float]:
+    """Return the most-recent value for each metric across all runs.
+
+    Used by meta-evals (see `registry.meta_eval`) to derive
+    cross-corpus or cross-detector consistency checks without
+    re-running the underlying evals. "Most recent" = order in the
+    JSONL file, which is append-only.
+    """
+    latest: dict[str, float] = {}
+    for entry in read_runs(path):
+        latest.update(entry.metrics)
+    return latest

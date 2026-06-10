@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Iterable
 
 from .registry import REGISTRY, EvalSpec
-from .storage import RunEntry, append_run, git_snapshot, now_iso
+from .storage import (RunEntry, append_run, git_snapshot, now_iso,
+                       latest_metric_values)
 
 
 def _flatten_metrics(eval_name: str, sub_metrics: dict) -> dict[str, float]:
@@ -22,6 +23,9 @@ def run(notes: str = '', only: Iterable[str] | None = None,
     changed since the last run). `skip_slow` skips evals marked
     `slow=True` in their registration. `dry_run` runs everything but
     doesn't append to results.jsonl.
+
+    Meta-evals (registry.meta_eval) always run after regular evals so
+    they see today's freshly computed values, not just stale history.
     """
     selected: list[EvalSpec] = []
     for name, spec in REGISTRY.items():
@@ -34,19 +38,34 @@ def run(notes: str = '', only: Iterable[str] | None = None,
     if not selected:
         raise SystemExit('No evals selected. Check --only filter or registry.')
 
+    regulars = [s for s in selected if not s.is_meta]
+    metas = [s for s in selected if s.is_meta]
+
     metrics: dict[str, float] = {}
     contexts: dict[str, dict] = {}
 
-    for spec in selected:
+    for spec in regulars:
         print(f'>>> {spec.name}: {spec.description or "(no description)"}')
         result = spec.fn()
-        # An eval may return either a flat dict (just metrics) or a
-        # tuple/dict with separate context. Support both shapes:
         if isinstance(result, dict) and '__context__' in result:
             ctx = result.pop('__context__')
             contexts[spec.name] = ctx
         metrics.update(_flatten_metrics(spec.name, result))
         print(f'    {len(result)} metric(s) recorded')
+
+    if metas:
+        # Build the latest-metric view meta-evals see: history ∪ today,
+        # with today taking precedence.
+        latest = latest_metric_values()
+        latest.update(metrics)
+        for spec in metas:
+            print(f'>>> {spec.name} [meta]: {spec.description or "(no description)"}')
+            result = spec.fn(latest)
+            if isinstance(result, dict) and '__context__' in result:
+                ctx = result.pop('__context__')
+                contexts[spec.name] = ctx
+            metrics.update(_flatten_metrics(spec.name, result))
+            print(f'    {len(result)} metric(s) recorded')
 
     sha, dirty, branch = git_snapshot()
     entry = RunEntry(

@@ -33,12 +33,14 @@ scorecard visible every time.
 """
 from __future__ import annotations
 
-from .registry import register, REGISTRY, EvalSpec
-from .storage import append_run, read_runs, RunEntry, RESULTS_PATH
+from .registry import register, meta_eval, REGISTRY, EvalSpec
+from .storage import (append_run, read_runs, latest_metric_values,
+                       RunEntry, RESULTS_PATH)
 from .runner import run, run_report
 
 __all__ = [
-    'register', 'REGISTRY', 'EvalSpec',
-    'append_run', 'read_runs', 'RunEntry', 'RESULTS_PATH',
+    'register', 'meta_eval', 'REGISTRY', 'EvalSpec',
+    'append_run', 'read_runs', 'latest_metric_values',
+    'RunEntry', 'RESULTS_PATH',
     'run', 'run_report',
 ]

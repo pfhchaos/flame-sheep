@@ -20,7 +20,11 @@ import numpy as np
 
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-x))
+    # Preserve input dtype (float32 stays float32). The Python `1.0`
+    # would otherwise upcast to float64 and break bit-exact tests
+    # against torch float32 forwards.
+    one = np.asarray(1.0, dtype=x.dtype)
+    return one / (one + np.exp(-x))
 
 
 def linear_forward(x: np.ndarray, W: np.ndarray, b: np.ndarray,
@@ -29,6 +33,28 @@ def linear_forward(x: np.ndarray, W: np.ndarray, b: np.ndarray,
     if relu:
         np.maximum(y, 0.0, out=y)
     return y
+
+
+def lstm_forward_step(x: np.ndarray, h_prev: np.ndarray, c_prev: np.ndarray,
+                       W_ih: np.ndarray, W_hh: np.ndarray,
+                       b_ih: np.ndarray, b_hh: np.ndarray
+                       ) -> tuple[np.ndarray, np.ndarray]:
+    """One LSTM step in PyTorch's layout (split input/hidden biases).
+
+    Gate order in W_ih / W_hh / biases: (input, forget, cell, output).
+    W_ih: (4H, in)   W_hh: (4H, H)   b_ih, b_hh: (4H,)
+
+    Returns (h_new, c_new).
+    """
+    H = h_prev.shape[0]
+    gates = W_ih @ x + b_ih + W_hh @ h_prev + b_hh  # (4H,)
+    i = sigmoid(gates[0:H])
+    f = sigmoid(gates[H:2 * H])
+    g = np.tanh(gates[2 * H:3 * H])
+    o = sigmoid(gates[3 * H:4 * H])
+    c_new = f * c_prev + i * g
+    h_new = o * np.tanh(c_new)
+    return h_new, c_new
 
 
 def gru_forward_step(x: np.ndarray, h_prev: np.ndarray,
