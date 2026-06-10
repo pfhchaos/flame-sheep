@@ -70,11 +70,15 @@ def _pack_one(args: tuple[Path, Path]) -> tuple[str, str]:
         if labels.shape != (T, 3):
             return ('err', f'{src.name}: labels shape {labels.shape} != ({T}, 3)')
 
-        # BeatNet label order: col 0 = downbeat, col 1 = beat (non-downbeat),
-        # col 2 = non-beat. The two non-non-beat columns are mutually
-        # exclusive and become independent BCE targets.
-        downbeat = labels[:, 0]
-        beat_nondownbeat = labels[:, 1]
+        # BeatNet label order (verified in upstream
+        # `particle_filtering_cascade.py:97-99`):
+        #   col 0 = beat, col 1 = downbeat, col 2 = non-beat.
+        # Previously documented backwards; existing packed files produced
+        # before this fix carry beat activations in their downbeat slot.
+        # Regenerate via `tools/pack_beat_labels.py` to land the fix.
+        # See tests/eval/test_beatnet_channels.py for the regression check.
+        downbeat = labels[:, 1]
+        beat_nondownbeat = labels[:, 0]
 
         packed = np.empty((T, 218), dtype=np.float32)
         packed[:, :108] = spec

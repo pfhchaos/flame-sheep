@@ -6,8 +6,13 @@ Requires Python 3.10 (madmom compatibility). Run with:
 
 For each audio file:
   1. Compute CQT spectrum at our native hop rate (48kHz, 512 hop)
-  2. Run BeatNet to get per-frame [downbeat, beat, non-beat] soft labels
-     (channel 0 = downbeat, 2 = non-beat; class 2 is the majority class)
+  2. Run BeatNet to get per-frame [beat, downbeat, non-beat] soft labels
+     (channel 0 = beat, 1 = downbeat, 2 = non-beat; class 2 is majority).
+     Convention verified against BeatNet's `particle_filtering_cascade.py`
+     (`new_obs[0] = observations[1]  # downbeat activation`); previously
+     documented backwards across this codebase — see
+     tests/eval/test_beatnet_channels.py for the regression check that
+     fires if upstream ever swaps channels on us.
   3. Run madmom RNNOnsetProcessor for non-beat-onset detection
      (drives the palette axis — fills, syncopation, off-beat hits)
   4. Resample all to our frame rate, build hierarchical 3-channel labels
@@ -134,18 +139,18 @@ def build_hierarchical_labels(bn_labels: np.ndarray,
                                onset_activations: np.ndarray) -> np.ndarray:
     """Build [T, 3] hierarchical labels: (downbeat, beat, onset).
 
-    bn_labels: [T, 3] BeatNet softmax (cols = downbeat, beat, non-beat).
+    bn_labels: [T, 3] BeatNet softmax (cols = beat, downbeat, non-beat).
     onset_activations: [T] madmom onset probability (already resampled).
 
     Each output channel fires on its own class PLUS broader superclasses:
-      col 0 = bn_labels[:, 0]                        — downbeat only
+      col 0 = bn_labels[:, 1]                        — downbeat only
       col 1 = bn_labels[:, 0] + bn_labels[:, 1]      — any beat
       col 2 = max(any_beat, onset_activations)       — any onset
     Both are clipped to [0, 1] since BeatNet's softmax sums to ~1 and the
     max with the onset signal can push slightly over from independent
     sources. Independent sigmoid semantics — no softmax constraint.
     """
-    downbeat = bn_labels[:, 0]
+    downbeat = bn_labels[:, 1]
     any_beat = np.clip(bn_labels[:, 0] + bn_labels[:, 1], 0.0, 1.0)
     any_onset = np.clip(np.maximum(any_beat, onset_activations), 0.0, 1.0)
     return np.stack([downbeat, any_beat, any_onset], axis=1).astype(np.float32)
