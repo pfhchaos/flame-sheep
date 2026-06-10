@@ -18,6 +18,7 @@ from .registry import register, meta_eval
 _REPO = Path(__file__).resolve().parents[1]
 _TEMPO_TOOL = _REPO / 'tools' / 'eval_tempo_reconcile.py'
 _BEAT_TOOL = _REPO / 'tools' / 'eval_beat_detection.py'
+_TEMPO_EST_TOOL = _REPO / 'tools' / 'eval_tempo_estimators.py'
 _MUSDB_ROOT = Path.home() / 'MUSDB18' / 'MUSDB18-7'
 _OSU_ROOT = Path.home() / '.cache' / 'flame-sheep' / 'corpus' / 'osu'
 _GTZAN_ROOT = Path.home() / 'datasets' / 'GTZAN'
@@ -505,3 +506,221 @@ def meta_latency_consistency_beatnet_sliding(latest: dict[str, float]) -> dict[s
            description='Cross-corpus latency consistency of pure-numpy BeatNet beat detection')
 def meta_latency_consistency_beatnet_lite(latest: dict[str, float]) -> dict[str, float]:
     return _latency_consistency_for_detector(latest, 'beat', 'beatnet_lite')
+
+
+# ---------------------------------------------------------------------------
+# Tempo estimator scorecard — unified interface for tempo trackers.
+#
+# Mirrors the beat-detection registrations: one eval per (corpus,
+# estimator) cell, with cross-corpus consistency meta-evals.
+#
+# Output format from tools/eval_tempo_estimators.py:
+#     === Aggregate (mean over tracks) ===
+#       exact:    62/100 (62.0%)
+#       oe1:      83/100 (83.0%)
+#       mae_bpm:  1.42 (over 62 correct-octave tracks)
+#     === Latency (across tracks) ===
+#       total.mean_sec:     2.354
+#       ...
+#       realtime_factor.mean: 0.078
+# ---------------------------------------------------------------------------
+
+
+def _parse_tempo_estimator_report(log: str) -> dict[str, float]:
+    """Parse `eval_tempo_estimators.py` output. Returns flat metrics
+    dict keyed by `<accuracy|latency>.<name>` so registrations can
+    surface a stable scorecard column."""
+    metrics: dict[str, float] = {}
+    mode: str | None = None
+    pat_count_pct = re.compile(
+        r'^\s*(?P<name>exact|oe1):\s*(?P<n>\d+)/(?P<d>\d+)\s+\((?P<pct>[\d.]+)%\)')
+    pat_mae = re.compile(r'^\s*mae_bpm:\s*(?P<v>[\d.]+)')
+    pat_kv = re.compile(r'^\s*(?P<key>[a-zA-Z0-9_.]+):\s*(?P<v>[\d.]+)')
+
+    for line in log.splitlines():
+        if 'Aggregate (mean' in line:
+            mode = 'accuracy'
+        elif 'Latency (across' in line:
+            mode = 'latency'
+        elif mode == 'accuracy':
+            m = pat_count_pct.match(line)
+            if m:
+                metrics[f'accuracy.{m.group("name")}_pct'] = float(m.group('pct'))
+                metrics[f'accuracy.{m.group("name")}_n'] = float(m.group('n'))
+                metrics[f'accuracy.{m.group("name")}_d'] = float(m.group('d'))
+                continue
+            m = pat_mae.match(line)
+            if m:
+                metrics['accuracy.mae_bpm'] = float(m.group('v'))
+        elif mode == 'latency':
+            m = pat_kv.match(line)
+            if m:
+                metrics[f'latency.{m.group("key")}'] = float(m.group('v'))
+    return metrics
+
+
+def _run_tempo_estimator_eval(estimator: str, *,
+                                corpus_kind: str = 'gtzan',
+                                corpus_root: Path | None = None,
+                                tracks: int | None = None) -> dict[str, float]:
+    """Invoke eval_tempo_estimators.py and parse its output."""
+    if corpus_root is None:
+        corpus_root = _GTZAN_ROOT if corpus_kind == 'gtzan' else _OSU_ROOT
+    if not corpus_root.exists():
+        return {'__context__': {
+            'skipped': f'{corpus_kind} corpus missing: {corpus_root}'}}
+    cmd = [sys.executable, str(_TEMPO_EST_TOOL),
+           '--estimator', estimator,
+           '--corpus-kind', corpus_kind,
+           '--corpus-root', str(corpus_root)]
+    if tracks is not None:
+        cmd += ['--tracks', str(tracks)]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return {'__context__': {
+            'failed': f'eval exited {result.returncode}',
+            'stderr_tail': result.stderr[-500:],
+        }}
+    return _parse_tempo_estimator_report(result.stdout)
+
+
+# Per-(corpus, estimator) registrations. Mirrors the beat layout.
+# gtzan uses tracks=9999 for full-corpus runs; osu is small (~38), runs
+# all tracks by default.
+
+@register('tempo.gtzan.acf',
+          description='ACF tempo estimator on gtzan — production streaming tracker',
+          slow=True, requires=('gtzan_corpus',))
+def eval_tempo_gtzan_acf() -> dict[str, float]:
+    return _run_tempo_estimator_eval('acf', corpus_kind='gtzan', tracks=9999)
+
+
+@register('tempo.gtzan.btrack',
+          description='BTrack tempo estimator on gtzan — production streaming tracker',
+          slow=True, requires=('gtzan_corpus', 'btrack'))
+def eval_tempo_gtzan_btrack() -> dict[str, float]:
+    return _run_tempo_estimator_eval('btrack', corpus_kind='gtzan', tracks=9999)
+
+
+@register('tempo.gtzan.beatnet_pf',
+          description='BeatNet particle-filter tempo on gtzan — deployed when detector=beatnet_lite',
+          slow=True, requires=('gtzan_corpus', 'beatnet'))
+def eval_tempo_gtzan_beatnet_pf() -> dict[str, float]:
+    return _run_tempo_estimator_eval('beatnet_pf', corpus_kind='gtzan', tracks=9999)
+
+
+@register('tempo.gtzan.madmom_comb',
+          description='madmom comb-filter tempo on gtzan — offline oracle',
+          slow=True, requires=('gtzan_corpus', 'madmom'))
+def eval_tempo_gtzan_madmom_comb() -> dict[str, float]:
+    return _run_tempo_estimator_eval('madmom_comb', corpus_kind='gtzan', tracks=9999)
+
+
+@register('tempo.gtzan.madmom_acf',
+          description='madmom ACF tempo on gtzan — offline oracle',
+          slow=True, requires=('gtzan_corpus', 'madmom'))
+def eval_tempo_gtzan_madmom_acf() -> dict[str, float]:
+    return _run_tempo_estimator_eval('madmom_acf', corpus_kind='gtzan', tracks=9999)
+
+
+@register('tempo.gtzan.madmom_dbn',
+          description='madmom DBN tempo on gtzan — offline oracle',
+          slow=True, requires=('gtzan_corpus', 'madmom'))
+def eval_tempo_gtzan_madmom_dbn() -> dict[str, float]:
+    return _run_tempo_estimator_eval('madmom_dbn', corpus_kind='gtzan', tracks=9999)
+
+
+# osu — uses tool defaults (all available tracks, ~38).
+
+@register('tempo.osu.acf',
+          description='ACF tempo estimator on osu — production streaming tracker',
+          slow=True, requires=('osu_corpus',))
+def eval_tempo_osu_acf() -> dict[str, float]:
+    return _run_tempo_estimator_eval('acf', corpus_kind='osu')
+
+
+@register('tempo.osu.btrack',
+          description='BTrack tempo estimator on osu — production streaming tracker',
+          slow=True, requires=('osu_corpus', 'btrack'))
+def eval_tempo_osu_btrack() -> dict[str, float]:
+    return _run_tempo_estimator_eval('btrack', corpus_kind='osu')
+
+
+@register('tempo.osu.beatnet_pf',
+          description='BeatNet particle-filter tempo on osu — deployed when detector=beatnet_lite',
+          slow=True, requires=('osu_corpus', 'beatnet'))
+def eval_tempo_osu_beatnet_pf() -> dict[str, float]:
+    return _run_tempo_estimator_eval('beatnet_pf', corpus_kind='osu')
+
+
+@register('tempo.osu.madmom_comb',
+          description='madmom comb-filter tempo on osu — offline oracle',
+          slow=True, requires=('osu_corpus', 'madmom'))
+def eval_tempo_osu_madmom_comb() -> dict[str, float]:
+    return _run_tempo_estimator_eval('madmom_comb', corpus_kind='osu')
+
+
+@register('tempo.osu.madmom_acf',
+          description='madmom ACF tempo on osu — offline oracle',
+          slow=True, requires=('osu_corpus', 'madmom'))
+def eval_tempo_osu_madmom_acf() -> dict[str, float]:
+    return _run_tempo_estimator_eval('madmom_acf', corpus_kind='osu')
+
+
+@register('tempo.osu.madmom_dbn',
+          description='madmom DBN tempo on osu — offline oracle',
+          slow=True, requires=('osu_corpus', 'madmom'))
+def eval_tempo_osu_madmom_dbn() -> dict[str, float]:
+    return _run_tempo_estimator_eval('madmom_dbn', corpus_kind='osu')
+
+
+# Cross-corpus consistency meta-evals — the load-bearing comparison.
+# Per `PLAN_TEMPO_METER.md` priority order: octave accuracy is what
+# matters most for the wallpaper (catastrophic if wrong), then exact,
+# then jitter. Surface both axes in the consistency view.
+
+_TEMPO_CONSISTENCY_KEY_EXACT = 'accuracy.exact_pct'
+_TEMPO_CONSISTENCY_KEY_OCTAVE = 'accuracy.oe1_pct'
+
+
+def _tempo_consistency_for_estimator(latest: dict[str, float],
+                                       estimator: str,
+                                       metric_key: str) -> dict[str, float]:
+    values: list[float] = []
+    for corpus in _CONSISTENCY_CORPORA:
+        key = f'tempo.{corpus}.{estimator}.{metric_key}'
+        v = latest.get(key)
+        if v is not None:
+            values.append(float(v))
+    if not values:
+        return {'__context__': {
+            'skipped': f'no per-corpus {metric_key} for {estimator}'}}
+    return {
+        'mean': sum(values) / len(values),
+        'min': min(values),
+        'max': max(values),
+        'spread': max(values) - min(values),
+        'n_corpora': float(len(values)),
+    }
+
+
+for _est in ('acf', 'btrack', 'beatnet_pf',
+             'madmom_comb', 'madmom_acf', 'madmom_dbn'):
+    # Bind via default-arg trick so the lambda captures the current
+    # estimator name, not the last one in the loop.
+    def _exact_consistency(latest, _est=_est):
+        return _tempo_consistency_for_estimator(
+            latest, _est, _TEMPO_CONSISTENCY_KEY_EXACT)
+    _exact_consistency.__name__ = f'meta_tempo_exact_consistency_{_est}'
+    meta_eval(f'tempo.consistency.exact.{_est}',
+              description=f'Cross-corpus exact-tempo accuracy consistency for {_est}')(
+        _exact_consistency)
+
+    def _octave_consistency(latest, _est=_est):
+        return _tempo_consistency_for_estimator(
+            latest, _est, _TEMPO_CONSISTENCY_KEY_OCTAVE)
+    _octave_consistency.__name__ = f'meta_tempo_octave_consistency_{_est}'
+    meta_eval(f'tempo.consistency.octave.{_est}',
+              description=f'Cross-corpus octave-tolerant tempo accuracy consistency for {_est}')(
+        _octave_consistency)
+
