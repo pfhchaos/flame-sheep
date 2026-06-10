@@ -137,6 +137,19 @@ class MprisListener:
                     self._last_track_time = now
                     self._write_ctl('song')
                     log.info(f'[MPRIS] track: {track_id}')
+                # Forward BPM metadata as a tempo hint if the player
+                # exposes one (Spotify and a handful of others publish
+                # `xesam:bpm`; most don't). Sent after `song` so the
+                # daemon's song-start reset has already happened.
+                bpm_raw = metadata.get('xesam:bpm')
+                if bpm_raw is not None:
+                    try:
+                        bpm = float(bpm_raw)
+                    except (TypeError, ValueError):
+                        bpm = 0.0
+                    if 30.0 <= bpm <= 400.0:
+                        self._write_ctl(f'tempo {bpm:.2f}')
+                        log.info(f'[MPRIS] tempo hint: {bpm:.1f} BPM')
 
     def _on_seeked(self, position_us: int) -> None:
         """Handle Seeked signal — user scrubbed to a new position."""
