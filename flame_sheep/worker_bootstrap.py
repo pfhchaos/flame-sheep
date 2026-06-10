@@ -30,7 +30,22 @@ def init_worker_subprocess(logger_name: str,
     """flame-sheep wrapper around viz_authoring.init_worker_subprocess
     that additionally runs flame_sheep's `_ensure_schema` on the
     returned connection. See the underlying function's docstring for
-    full bootstrap details."""
+    full bootstrap details.
+
+    Also installs PR_SET_PDEATHSIG so the kernel kills this worker
+    when its parent (the wallpaper) dies. Covers crash, kill -9, and
+    SIGSEGV restart-loop death modes that an explicit shutdown chain
+    can't reach. The 5-day-old orphan wallpaper-child processes we
+    cleaned up on 2026-06-09 are the failure mode this prevents:
+    they inherited fd 17 (Wayland connection) from their parent and
+    kept it alive long after the parent was gone.
+    """
+    # Install pdeathsig FIRST — before any work that might fail and
+    # leave us orphaned. Even if the bootstrap below raises, the
+    # signal handler is already armed.
+    from .process_util import set_pdeathsig
+    set_pdeathsig()
+
     log, conn = _generic_init(
         logger_name, db_path,
         busy_timeout_ms=busy_timeout_ms,

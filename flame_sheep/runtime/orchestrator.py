@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from flame_sheep_audio import (
-    AudioProcessor, SyntheticAudioProcessor, AudioSnapshot, BeatEvent, DEFAULT_DEVICE,
+    SyntheticAudioProcessor, AudioSnapshot, BeatEvent, DEFAULT_DEVICE,
     BandConfig,
 )
 from .control import ControlPipe, ControlEvent
@@ -48,9 +48,13 @@ class Orchestrator:
                  clock: Callable[[], float] | None = None) -> None:
         self._clock: Callable[[], float] = clock or time.perf_counter
 
-        # Audio engine — try daemon client first, fall back to in-process
-        self.audio: AudioProcessor | SyntheticAudioProcessor
-        self._using_daemon = False
+        # Audio engine. Production path is always the daemon client —
+        # it auto-reconnects on daemon restarts and starts in
+        # disconnected state if the daemon isn't running yet, so
+        # there's no in-process fallback (it was removed 2026-06-09
+        # once daemon auto-reconnect landed). `--test-audio` still
+        # uses SyntheticAudioProcessor for explicit dev/test runs.
+        self.audio: 'AudioDaemonClient | SyntheticAudioProcessor'
         if test_audio:
             self.audio = SyntheticAudioProcessor(
                 low_interval=0.5,
@@ -58,18 +62,12 @@ class Orchestrator:
                 high_interval=0.25,
                 clock=clock,
             )
+            self._using_daemon = False
         else:
-            try:
-                from ..audio.client import AudioDaemonClient
-                self.audio = AudioDaemonClient()
-                self._using_daemon = True
-                log.info('using audio daemon')
-            except Exception:
-                from flame_sheep_audio import CqtEngine
-                engine = CqtEngine()
-                log.info('spectrum engine: CQT (rt-cqt SlidingCqt)')
-                self.audio = AudioProcessor(device=audio_device, spectrum_engine=engine)
-                log.info(f'audio device: {audio_device!r}')
+            from ..audio.client import AudioDaemonClient
+            self.audio = AudioDaemonClient()
+            self._using_daemon = True
+            log.info('using audio daemon')
 
         # Shared audio state (read by consumers, overwritten each tick)
         self.audio_state = AudioSnapshot()

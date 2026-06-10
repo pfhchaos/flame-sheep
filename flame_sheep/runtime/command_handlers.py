@@ -121,9 +121,17 @@ class WallpaperCommands:
             self._votes_per_evolve = 3
         self._evolving = True
         log.info(f'[evolve] starting evolution cycle {self._evolve_count} in subprocess...')
+        # preexec_fn installs PR_SET_PDEATHSIG in the child so the
+        # evolve subprocess gets SIGTERM when the wallpaper dies (clean
+        # exit, crash, kill -9 alike). Without this, evolve cycles
+        # can outlive the wallpaper and accumulate as orphans.
+        def _child_preexec():
+            from ..process_util import set_pdeathsig
+            set_pdeathsig()
         proc = subprocess.Popen(
             [sys.executable, '-m', 'flame_sheep', '--evolve', '--loop-length', str(6)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            preexec_fn=_child_preexec,
         )
 
         def _wait_evolve():

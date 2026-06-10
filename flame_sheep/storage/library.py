@@ -942,7 +942,15 @@ class Library:
                 # Detached so the parent doesn't wait on it. stdout/stderr
                 # inherited from parent so the child's [thumbsup-breed]
                 # log line appears in the wallpaper's terminal too.
-                subprocess.Popen(args, start_new_session=True)
+                # preexec_fn installs PR_SET_PDEATHSIG so the child
+                # gets SIGTERM if the wallpaper dies before breeding
+                # completes — bounded work loss (a few seconds) is
+                # better than the orphan accumulation we saw 2026-06-09.
+                def _child_preexec():
+                    from ..process_util import set_pdeathsig
+                    set_pdeathsig()
+                subprocess.Popen(args, start_new_session=True,
+                                  preexec_fn=_child_preexec)
             except Exception:
                 log.exception('[thumbsup-breed] failed to spawn for genome #%d',
                               parent_id)
