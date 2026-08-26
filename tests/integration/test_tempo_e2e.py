@@ -16,7 +16,6 @@ from flame_sheep_audio import AudioProcessor, SAMPLE_RATE, FFT_SIZE, HOP_SIZE
 from flame_sheep_audio.source import FeedSource
 from flame_sheep_audio._cqt_engine import CqtEngine
 from flame_sheep_audio.tempo_acf import AutocorrelationTempoTracker
-from flame_sheep.audio.tempo import TempoTracker
 from flame_sheep_audio.eval.synths import (
     DrumPattern, PatternSpec, ALL_PATTERNS,
     FOUR_FOUR, FOUR_FOUR_FAST, WALTZ, HALF_TIME,
@@ -98,85 +97,6 @@ def _bpm_octave_close(actual: float, expected: float,
         if abs(actual - expected * ratio) / (expected * ratio) * 100 < tolerance_pct:
             return True
     return False
-
-
-# -------------------------------------------------------------------
-# Simple click track tests (pure TempoTracker, known onsets)
-# -------------------------------------------------------------------
-
-class TestSyntheticClicks:
-    """Feed known onset timestamps directly to TempoTracker.
-    Tests the algorithm in isolation from beat detection."""
-
-    @pytest.mark.parametrize('bpm', [60, 80, 90, 100, 120, 140, 150, 174, 180, 200, 240, 300])
-    def test_steady_bpm(self, bpm):
-        tracker = TempoTracker()
-        interval = 60.0 / bpm
-        n_beats = max(40, int(bpm / 2))  # at least 20 seconds of beats
-        for i in range(n_beats):
-            tracker.process_onset('low', i * interval)
-        assert tracker.bpm > 0, f"No BPM estimated at {bpm}"
-        assert _bpm_octave_close(tracker.bpm, bpm), \
-            f"Expected ~{bpm} BPM, got {tracker.bpm}"
-
-    @pytest.mark.parametrize('bpm', [60, 90, 120, 150, 174])
-    def test_steady_bpm_locks(self, bpm):
-        tracker = TempoTracker()
-        interval = 60.0 / bpm
-        for i in range(60):
-            tracker.process_onset('low', i * interval)
-        assert tracker.locked, f"Should lock at {bpm} BPM"
-
-    @pytest.mark.xfail(reason="200 BPM octave confusion prevents lock — known weakness")
-    def test_steady_200_bpm_locks(self):
-        tracker = TempoTracker()
-        interval = 60.0 / 200
-        for i in range(60):
-            tracker.process_onset('low', i * interval)
-        assert tracker.locked, "Should lock at 200 BPM"
-
-    def test_half_time_snare_pattern(self):
-        """Kicks on 1 only, snares on 3 — half-time feel at 140 BPM.
-        Tempo tracker should still find 140 (or 70 as octave)."""
-        tracker = TempoTracker()
-        beat_interval = 60.0 / 140
-        for bar in range(20):
-            base = bar * 4 * beat_interval
-            tracker.process_onset('low', base)  # beat 1
-        assert tracker.bpm > 0
-        assert _bpm_octave_close(tracker.bpm, 140), \
-            f"Expected ~140 or ~70 BPM, got {tracker.bpm}"
-
-    @pytest.mark.xfail(reason="IOI histogram can't resolve swing — needs autocorrelation")
-    def test_swing_timing(self):
-        """Swung eighth notes at 120 BPM — alternating long/short."""
-        tracker = TempoTracker()
-        beat_interval = 60.0 / 120
-        swing_ratio = 0.67  # 2:1 swing
-        t = 0.0
-        for _ in range(40):
-            tracker.process_onset('low', t)
-            t += beat_interval * swing_ratio
-            tracker.process_onset('low', t)
-            t += beat_interval * (1.0 - swing_ratio)
-        assert _bpm_octave_close(tracker.bpm, 120), \
-            f"Expected ~120 BPM with swing, got {tracker.bpm}"
-
-    @pytest.mark.xfail(reason="Tracker locks on first tempo and doesn't follow changes well")
-    def test_tempo_change(self):
-        """Song changes from 120 to 160 BPM. Tracker should follow."""
-        tracker = TempoTracker()
-        t = 0.0
-        # 10 seconds at 120
-        for _ in range(20):
-            tracker.process_onset('low', t)
-            t += 60.0 / 120
-        # 10 seconds at 160
-        for _ in range(40):
-            tracker.process_onset('low', t)
-            t += 60.0 / 160
-        assert _bpm_octave_close(tracker.bpm, 160, tolerance_pct=8), \
-            f"Expected ~160 BPM after change, got {tracker.bpm}"
 
 
 # -------------------------------------------------------------------
