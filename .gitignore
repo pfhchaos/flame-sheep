@@ -19,3 +19,12 @@ flame_sheep/data/*.backup_*
 
 # System-specific diagnostics
 VP_VULKANINFO_*.json
+
+# Local runtime config
+.config/
+
+# Generated eval output (regeneratable, large binaries)
+evals/results/
+
+# Editor swap files
+*.swp
