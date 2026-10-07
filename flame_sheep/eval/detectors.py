@@ -212,7 +212,7 @@ class BeatRNNDetector(BeatDetector):
 
         # Load + infer n_classes if not specified by trying the supported
         # head sizes. Continuous-reformulation models are n_classes=1.
-        from .rnn_forward import load_weights_npz, unpack_weights
+        from flame_sheep_audio.rnn_forward import load_weights_npz, unpack_weights
         self._flat = load_weights_npz(self._weights_path)
         if n_classes is None:
             for c in (1, 3):
@@ -256,7 +256,7 @@ class BeatRNNDetector(BeatDetector):
 
     def detect(self, audio: np.ndarray, sr: int) -> np.ndarray:
         import time
-        from .rnn_forward import forward_sequence, peak_pick, sigmoid
+        from flame_sheep_audio.rnn_forward import forward_sequence, peak_pick, sigmoid
         t0 = time.monotonic()
         audio = _ensure_mono_float32(audio)
         tf0 = time.monotonic()
@@ -385,7 +385,7 @@ class BeatNetDetector(BeatDetector):
         t0 = time.monotonic()
         probs = self._activation_probs(audio, sr)
         # Beat-or-downbeat = 1 - non_beat.
-        from .rnn_forward import peak_pick
+        from flame_sheep_audio.rnn_forward import peak_pick
         scores = (1.0 - probs[:, 2]).astype(np.float32)
         peaks = peak_pick(scores, threshold=self._threshold,
                            min_distance=self._min_distance)
@@ -400,7 +400,7 @@ class BeatNetDetector(BeatDetector):
         probs = self._activation_probs(audio, sr)
         # Downbeats happen at ~1/3-1/4 the rate of beats, so a slightly
         # larger min-distance reduces double-fires on adjacent frames.
-        from .rnn_forward import peak_pick
+        from flame_sheep_audio.rnn_forward import peak_pick
         scores = probs[:, 1].astype(np.float32)
         peaks = peak_pick(scores, threshold=self._threshold,
                            min_distance=max(self._min_distance * 2, 6))
@@ -569,7 +569,7 @@ class StreamingBeatNetDetector(BeatDetector):
         import time
         t0 = time.monotonic()
         probs, per_hop = self._activation_probs_streaming(audio, sr)
-        from .rnn_forward import peak_pick
+        from flame_sheep_audio.rnn_forward import peak_pick
         scores = (1.0 - probs[:, 2]).astype(np.float32)
         peaks = peak_pick(scores, threshold=self._threshold,
                            min_distance=self._min_distance)
@@ -588,7 +588,7 @@ class StreamingBeatNetDetector(BeatDetector):
         import time
         t0 = time.monotonic()
         probs, per_hop = self._activation_probs_streaming(audio, sr)
-        from .rnn_forward import peak_pick
+        from flame_sheep_audio.rnn_forward import peak_pick
         scores = probs[:, 1].astype(np.float32)
         peaks = peak_pick(scores, threshold=self._threshold,
                            min_distance=max(self._min_distance * 2, 6))
@@ -767,7 +767,7 @@ class SlidingBeatNetDetector(BeatDetector):
         import time
         t0 = time.monotonic()
         probs, per_hop = self._activation_probs_sliding(audio, sr)
-        from .rnn_forward import peak_pick
+        from flame_sheep_audio.rnn_forward import peak_pick
         scores = (1.0 - probs[:, 2]).astype(np.float32)
         peaks = peak_pick(scores, threshold=self._threshold,
                            min_distance=self._min_distance)
@@ -786,7 +786,7 @@ class SlidingBeatNetDetector(BeatDetector):
         import time
         t0 = time.monotonic()
         probs, per_hop = self._activation_probs_sliding(audio, sr)
-        from .rnn_forward import peak_pick
+        from flame_sheep_audio.rnn_forward import peak_pick
         scores = probs[:, 1].astype(np.float32)
         peaks = peak_pick(scores, threshold=self._threshold,
                            min_distance=max(self._min_distance * 2, 6))
@@ -856,7 +856,7 @@ class LiteBeatNetDetector(BeatDetector):
     def _load(self):
         if self._lite is not None:
             return
-        from .beatnet_lite import BeatNetLite
+        from flame_sheep_audio.beatnet_lite import BeatNetLite
         self._lite = BeatNetLite(self._weights_path)
         # Pull canonical rates from the weights metadata so this stays
         # honest if the export script ever ships a different config.
@@ -914,7 +914,7 @@ class LiteBeatNetDetector(BeatDetector):
         import time
         t0 = time.monotonic()
         probs, per_hop = self._features_and_probs(audio, sr)
-        from .rnn_forward import peak_pick
+        from flame_sheep_audio.rnn_forward import peak_pick
         scores = (1.0 - probs[:, 2]).astype(np.float32)
         peaks = peak_pick(scores, threshold=self._threshold,
                            min_distance=self._min_distance)
@@ -933,7 +933,7 @@ class LiteBeatNetDetector(BeatDetector):
         import time
         t0 = time.monotonic()
         probs, per_hop = self._features_and_probs(audio, sr)
-        from .rnn_forward import peak_pick
+        from flame_sheep_audio.rnn_forward import peak_pick
         scores = probs[:, 1].astype(np.float32)
         peaks = peak_pick(scores, threshold=self._threshold,
                            min_distance=max(self._min_distance * 2, 6))

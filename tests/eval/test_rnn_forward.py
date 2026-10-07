@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from flame_sheep.eval.rnn_forward import (
+from flame_sheep_audio.rnn_forward import (
     sigmoid, linear_forward, gru_forward_step, unpack_weights,
     forward_sequence, peak_pick,
 )

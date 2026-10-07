@@ -161,7 +161,7 @@ def main():
     # 5. Optionally run the model forward and compare activations.
     if not args.no_model and args.weights.exists():
         print('\n=== Model activation comparison ===')
-        from flame_sheep.eval.rnn_forward import (
+        from flame_sheep_audio.rnn_forward import (
             load_weights_npz, unpack_weights, forward_sequence, sigmoid,
         )
         flat = load_weights_npz(args.weights)

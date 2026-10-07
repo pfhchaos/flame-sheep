@@ -225,7 +225,7 @@ class BeatNetPFTempoEstimator(TempoEstimator):
         # Version: lite weights hash + PF cascade source hash so any
         # change to either invalidates the cache.
         import hashlib
-        from flame_sheep.eval import beatnet_lite as _lite_mod
+        from flame_sheep_audio import beatnet_lite as _lite_mod
         from flame_sheep_audio import beat_detector_beatnet as _adapter_mod
         from flame_sheep_audio import _pf_fast as _pf_mod
         src = (Path(_lite_mod.__file__).read_text()

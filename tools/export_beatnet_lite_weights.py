@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Export BeatNet model weights + LOG_SPECT filterbank to a torch-free
-.npz consumed by `flame_sheep.eval.beatnet_lite.BeatNetLite`.
+.npz consumed by `flame_sheep_audio.beatnet_lite.BeatNetLite`.
 
 Usage:
     python tools/export_beatnet_lite_weights.py

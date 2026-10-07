@@ -96,7 +96,7 @@ def test_lite_step_bit_exact_vs_torch_bda():
         m, torch = _torch_bda()
     except (ImportError, FileNotFoundError) as e:
         pytest.skip(f'torch BDA unavailable: {e}')
-    from flame_sheep.eval.beatnet_lite import BeatNetLite
+    from flame_sheep_audio.beatnet_lite import BeatNetLite
 
     lite = BeatNetLite(_LITE_WEIGHTS)
 
@@ -135,7 +135,7 @@ def test_lite_streaming_matches_sliding_torch_on_real_audio():
     weights, same feature math; only differences are float32 ops
     routed through numpy vs torch."""
     import librosa
-    from flame_sheep.eval.beatnet_lite import BeatNetLite
+    from flame_sheep_audio.beatnet_lite import BeatNetLite
     try:
         from flame_sheep.eval.detectors import SlidingBeatNetDetector
     except ImportError as e:
