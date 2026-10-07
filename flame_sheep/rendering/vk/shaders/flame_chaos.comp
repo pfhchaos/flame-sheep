@@ -1,0 +1,192 @@
+#version 450
+// ============================================================
+// flame_chaos.comp — chaos game compute shader (Vulkan port)
+// ============================================================
+// Direct port of flame_sheep/rendering/shaders/flame.comp. Each
+// invocation is one walker iterating the chaos game `iterations`
+// times; walkers are independent (embarrassingly parallel). Atomic
+// adds into the shared histogram are the only cross-thread state.
+//
+// Differences from the GL version:
+//   - #version 450 + push constants instead of uniforms (no global
+//     uniform state in Vulkan)
+//   - All buffer bindings renumbered to consecutive 0..9 (the GL
+//     version used 0,1,2,3,4,5,6,7,9,10 with gaps that Vulkan's
+//     descriptor-set-builder pattern doesn't need)
+//   - Push constants are 60 bytes (well under the 128-byte
+//     guaranteed minimum)
+//
+// The variations + rng include files are copied as-is from the GL
+// tree; no Vulkan-specific tweaks needed.
+// ============================================================
+
+layout(local_size_x = 64) in;
+
+// ---- Buffer bindings (consecutive, no gaps) --------------------
+// 0: histogram (R/W)
+// 1: walkers (R/W)
+// 2: affines (R)
+// 3: active variations (R)
+// 4: colors (R)
+// 5: weights (R)
+// 6: color speeds (R)
+// 7: transform hits (R/W — for SCORING_MODE)
+// 8: post affines (R)
+// 9: pre-variations (R)
+
+layout(std430, binding = 0) buffer Histogram {
+    uint histogram[];
+};
+
+layout(std430, binding = 1) buffer Walkers {
+    float walker_data[];
+};
+
+layout(std430, binding = 2) readonly buffer Affines {
+    float u_affines[];
+};
+
+layout(std430, binding = 3) readonly buffer ActiveVariations {
+    float u_active_vars[];
+};
+
+layout(std430, binding = 4) readonly buffer Colors {
+    float u_colors[];
+};
+
+layout(std430, binding = 5) readonly buffer Weights {
+    float u_weights[];
+};
+
+layout(std430, binding = 6) readonly buffer ColorSpeeds {
+    float u_color_speeds[];
+};
+
+layout(std430, binding = 7) buffer TransformHits {
+    uint transform_hits[];
+};
+
+layout(std430, binding = 8) readonly buffer PostAffines {
+    float u_post_affines[];
+};
+
+layout(std430, binding = 9) readonly buffer PreVariations {
+    float u_pre_active_vars[];
+};
+
+// ---- Constants used by the included variations --------------
+#define MAX_TRANSFORMS 6
+#define MAX_ACTIVE_VARS 8
+#define SLOT_SIZE 10
+#define PARAM_OFFSET 2
+
+// ---- Per-dispatch parameters (push constants) ----------------
+// Packed densely — 15 scalars × 4 bytes = 60 bytes.
+layout(push_constant) uniform PushConstants {
+    int   u_n_transforms;
+    vec2  u_zoom;            // 8 bytes, std430 vec2 alignment is 8
+    float u_cos_rot;
+    float u_sin_rot;
+    vec2  u_center;
+    int   u_width;
+    int   u_height;
+    int   u_iterations;
+    int   u_has_final_xform;
+    uint  u_rng_seed;
+    uint  u_hist_offset;
+    uint  u_hist_stride;
+};
+
+#define COLOR_SCALE 1000000u
+
+#include "rng.glsl"
+#include "variations.glsl"
+
+int pick_transform(float rand_val) {
+    float cumulative = 0.0;
+    for (int i = 0; i < u_n_transforms; i++) {
+        cumulative += u_weights[i];
+        if (rand_val < cumulative) return i;
+    }
+    return u_n_transforms - 1;
+}
+
+ivec2 world_to_pixel(vec2 p) {
+    vec2 rotated = vec2(u_cos_rot * p.x - u_sin_rot * p.y,
+                        u_sin_rot * p.x + u_cos_rot * p.y);
+    vec2 scaled = (rotated - u_center) * u_zoom;
+    int px = int((scaled.x + 1.0) * 0.5 * float(u_width));
+    int py = int((scaled.y + 1.0) * 0.5 * float(u_height));
+    return ivec2(px, py);
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    rng_seed(gid * 1973u + 9277u + u_rng_seed);
+
+    uint base = gid * 3u;
+    float px = walker_data[base + 0u];
+    float py = walker_data[base + 1u];
+    float pc = walker_data[base + 2u];
+
+    for (int iter = 0; iter < u_iterations; iter++) {
+        int tidx = pick_transform(rng_float());
+        vec2 pre = apply_pre_variations(vec2(px, py), tidx);
+
+        int abase = tidx * 6;
+        float nx = u_affines[abase+0]*pre.x + u_affines[abase+1]*pre.y + u_affines[abase+2];
+        float ny = u_affines[abase+3]*pre.x + u_affines[abase+4]*pre.y + u_affines[abase+5];
+
+        vec2 warped = apply_variations(vec2(nx, ny), tidx);
+
+        int pbase = tidx * 6;
+        px = u_post_affines[pbase+0]*warped.x + u_post_affines[pbase+1]*warped.y + u_post_affines[pbase+2];
+        py = u_post_affines[pbase+3]*warped.x + u_post_affines[pbase+4]*warped.y + u_post_affines[pbase+5];
+
+        if (isinf(px) || isinf(py) || isnan(px) || isnan(py) ||
+            abs(px) > 1e6 || abs(py) > 1e6) {
+            px = rng_float() * 2.0 - 1.0;
+            py = rng_float() * 2.0 - 1.0;
+            pc = rng_float();
+            continue;
+        }
+
+        float cs = u_color_speeds[tidx];
+        pc = cs * u_colors[tidx] + (1.0 - cs) * pc;
+
+        if (iter < 20) continue;
+
+        // Final xform for PLOTTING ONLY — walker continues from pre-final pos.
+        float plot_x = px, plot_y = py, plot_c = pc;
+        if (u_has_final_xform != 0) {
+            int ftidx = MAX_TRANSFORMS;
+            vec2 fp = apply_pre_variations(vec2(plot_x, plot_y), ftidx);
+            int fabase = ftidx * 6;
+            float fnx = u_affines[fabase+0]*fp.x + u_affines[fabase+1]*fp.y + u_affines[fabase+2];
+            float fny = u_affines[fabase+3]*fp.x + u_affines[fabase+4]*fp.y + u_affines[fabase+5];
+            vec2 fwarped = apply_variations(vec2(fnx, fny), ftidx);
+            int fpbase = ftidx * 6;
+            plot_x = u_post_affines[fpbase+0]*fwarped.x + u_post_affines[fpbase+1]*fwarped.y + u_post_affines[fpbase+2];
+            plot_y = u_post_affines[fpbase+3]*fwarped.x + u_post_affines[fpbase+4]*fwarped.y + u_post_affines[fpbase+5];
+            float fcs = u_color_speeds[ftidx];
+            plot_c = fcs * u_colors[ftidx] + (1.0 - fcs) * plot_c;
+        }
+
+        ivec2 pixel = world_to_pixel(vec2(plot_x, plot_y));
+        if (pixel.x < 0 || pixel.x >= u_width ||
+            pixel.y < 0 || pixel.y >= u_height) continue;
+
+        uint px_idx = uint(pixel.y * u_width + pixel.x);
+        uint hit_idx = u_hist_offset + px_idx;
+        uint col_idx = u_hist_stride + u_hist_offset + px_idx;
+        atomicAdd(histogram[hit_idx], 1u);
+        atomicAdd(histogram[col_idx], uint(plot_c * float(COLOR_SCALE)));
+#ifdef SCORING_MODE
+        atomicAdd(transform_hits[px_idx * uint(MAX_TRANSFORMS) + uint(tidx)], 1u);
+#endif
+    }
+
+    walker_data[base + 0u] = px;
+    walker_data[base + 1u] = py;
+    walker_data[base + 2u] = pc;
+}

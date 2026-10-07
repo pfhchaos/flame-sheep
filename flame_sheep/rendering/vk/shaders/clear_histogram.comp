@@ -1,0 +1,41 @@
+#version 450
+// Vulkan port of flame_sheep/rendering/shaders/clear.comp.
+//
+// Decays or fully clears a uint histogram SSBO. When decay_num == 0,
+// zeroes every element; otherwise multiplies by (decay_num / 256).
+// Used as the first step of every frame to keep histogram from
+// saturating across frames while preserving recent contributions for
+// temporal smoothing.
+//
+// Differences from the OpenGL version:
+//   - #version 450 (Vulkan-style)
+//   - Uniforms replaced with push constants (no global uniform state
+//     in Vulkan — every per-dispatch scalar goes in push constants
+//     or a uniform buffer)
+//   - Bindings explicit via layout(std430, binding = N) — already
+//     true in the GL version but more strictly enforced here
+//   - Workgroup size unchanged (64) — chosen to match a typical
+//     Mesa/Arc wavefront granularity
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) buffer Histogram {
+    uint histogram[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint total_size;      // element count in `histogram` to touch
+    uint decay_num;       // 0 = full clear; else multiply by /256
+    uint hist_offset;     // offset into histogram[] for compare mode
+};
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= total_size) return;
+    uint oidx = hist_offset + idx;
+    if (decay_num == 0u) {
+        histogram[oidx] = 0u;
+    } else {
+        histogram[oidx] = (histogram[oidx] * decay_num) >> 8u;
+    }
+}

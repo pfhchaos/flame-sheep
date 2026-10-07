@@ -1,0 +1,106 @@
+#version 450
+// Vulkan port of flame_sheep/rendering/shaders/density_estimation.comp.
+//
+// Adaptive density estimation à la flam3 — scatter approach. For each
+// pixel with hits, compute local density, derive a Gaussian kernel
+// width from it (high density → sharp; low density → wide blur), and
+// scatter both the hit count and the color accumulator across neighbors
+// with that kernel. Total energy is preserved (kernel normalized to
+// sum=1). The end result: noisy backgrounds smooth out, bright cores
+// stay crisp.
+//
+// Differences from the GL version:
+//   - #version 450
+//   - Push constants replace uniforms
+//   - Bindings renumbered 11/12 → 0/1 (consecutive)
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) readonly buffer InputHistogram {
+    uint in_histogram[];
+};
+
+layout(std430, binding = 1) coherent buffer OutputHistogram {
+    uint out_histogram[];
+};
+
+layout(push_constant) uniform PushConstants {
+    int width;
+    int height;
+    int max_radius;
+    float curve;
+};
+
+#define COLOR_SCALE 1000000.0
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= width || pos.y >= height) return;
+
+    uint n_pixels = uint(width * height);
+    uint center_idx = uint(pos.y * width + pos.x);
+
+    float center_hits = float(in_histogram[center_idx]);
+    if (center_hits < 0.5) return;
+
+    float center_color_acc = float(in_histogram[n_pixels + center_idx]);
+
+    // --- Local density (3x3 neighborhood) ---
+    float f_select = 0.0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            int ix = pos.x + dx;
+            int iy = pos.y + dy;
+            if (ix < 0 || ix >= width || iy < 0 || iy >= height) continue;
+            f_select += float(in_histogram[uint(iy * width + ix)]);
+        }
+    }
+    f_select /= 9.0;
+
+    // --- Kernel width ---
+    float filt_h = float(max_radius) / pow(f_select + 1.0, curve);
+    filt_h = clamp(filt_h, 0.5, float(max_radius));
+    int r = int(ceil(filt_h));
+    float sigma = filt_h / 2.5;
+    float sigma2_inv = 1.0 / (2.0 * sigma * sigma);
+
+    // Color index (0..1) — preserved across scatter since both channels
+    // use the same kernel weights.
+    float color_idx = center_color_acc / (center_hits * COLOR_SCALE);
+    color_idx = clamp(color_idx, 0.0, 1.0);
+
+    // Kernel normalization so total scattered energy = source energy.
+    float kernel_sum = 0.0;
+    for (int dy = -r; dy <= r; dy++) {
+        for (int dx = -r; dx <= r; dx++) {
+            float d2 = float(dx * dx + dy * dy);
+            if (d2 > filt_h * filt_h) continue;
+            int ix = pos.x + dx;
+            int iy = pos.y + dy;
+            if (ix < 0 || ix >= width || iy < 0 || iy >= height) continue;
+            kernel_sum += exp(-d2 * sigma2_inv);
+        }
+    }
+    if (kernel_sum < 1e-6) kernel_sum = 1.0;
+    float inv_kernel = 1.0 / kernel_sum;
+
+    // --- Scatter ---
+    for (int dy = -r; dy <= r; dy++) {
+        for (int dx = -r; dx <= r; dx++) {
+            float d2 = float(dx * dx + dy * dy);
+            if (d2 > filt_h * filt_h) continue;
+            int ix = pos.x + dx;
+            int iy = pos.y + dy;
+            if (ix < 0 || ix >= width || iy < 0 || iy >= height) continue;
+
+            float w = exp(-d2 * sigma2_inv) * inv_kernel;
+            uint dst_idx = uint(iy * width + ix);
+            uint hits_contrib  = uint(center_hits * w + 0.5);
+            uint color_contrib = uint(center_color_acc * w + 0.5);
+            if (hits_contrib > 0u)
+                atomicAdd(out_histogram[dst_idx], hits_contrib);
+            if (color_contrib > 0u)
+                atomicAdd(out_histogram[n_pixels + dst_idx], color_contrib);
+        }
+    }
+}

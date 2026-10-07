@@ -279,7 +279,7 @@ def main():
     )
 
     from ...storage import _genome_from_json, _ensure_schema
-    from viz_authoring.vk.headless import HeadlessVkRenderer
+    from flame_sheep.rendering.vk.headless import HeadlessVkRenderer
 
     db = _db_path()
     conn = sqlite3.connect(str(db))

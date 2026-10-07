@@ -99,7 +99,7 @@ sys.path.insert(0, '{project}/viz_authoring/src')
 sys.path.insert(0, '{project}')
 import struct, numpy as np
 from viz_authoring.vk.context import VkContext
-from viz_authoring.vk.chaos_game import ChaosGame
+from flame_sheep.rendering.vk.chaos_game import ChaosGame
 
 # Building ChaosGame triggers compile of the full flame_chaos.comp
 # (with symmetry-group injection + variations.glsl include resolution).

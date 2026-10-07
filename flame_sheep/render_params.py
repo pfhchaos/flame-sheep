@@ -6,7 +6,7 @@ moved here so they can outlive the GL stack — surviving consumers
 all import from here.
 """
 
-# Default walker count — matches viz_authoring.vk.ChaosGame's default
+# Default walker count — matches flame_sheep.rendering.vk.chaos_game.ChaosGame's default
 # and the GL renderer's prior value. Picked for parallelism on modern
 # GPUs (~65k walkers gives enough concurrency to saturate Arc / 4090).
 N_WALKERS = 1024 * 64

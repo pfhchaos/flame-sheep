@@ -1,0 +1,62 @@
+#version 450
+// Vulkan port of flame_sheep/rendering/shaders/test_variation.comp.
+//
+// Single-variation test harness: apply one variation function to a
+// list of input points and write the results. Used by Vulkan tests
+// (mirror of tests/variations/test_gpu_golden.py) to verify the
+// shader math matches the CPU reference implementation.
+//
+// Vulkan adaptations: #version 450, push constants instead of
+// uniforms, all buffer bindings consecutive 0..4 (the GL version
+// used 2/3/6/7/10 which is fine on GL but Vulkan's descriptor sets
+// are simpler with consecutive bindings).
+
+layout(local_size_x = 64) in;
+
+#define MAX_ACTIVE_VARS 8
+#define SLOT_SIZE 10
+#define PARAM_OFFSET 2
+#define MAX_TRANSFORMS 6
+
+layout(std430, binding = 0) readonly buffer InputPoints {
+    vec2 in_points[];
+};
+
+layout(std430, binding = 1) buffer OutputPoints {
+    vec2 out_points[];
+};
+
+layout(std430, binding = 2) readonly buffer ActiveVariations {
+    float u_active_vars[];
+};
+
+layout(std430, binding = 3) readonly buffer Affines {
+    float u_affines[];
+};
+
+layout(std430, binding = 4) readonly buffer PreVariations {
+    float u_pre_active_vars[];
+};
+
+layout(push_constant) uniform PushConstants {
+    int u_n_points;
+};
+
+// (variations.glsl carries the {{SYMMETRY_GROUPS}} placeholder; the
+// shader.py source_transform substitutes once after include resolution.)
+
+#include "rng.glsl"
+#include "variations.glsl"
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= u_n_points) return;
+
+    // Init RNG state deterministically per point — match the GL test
+    // shader so RNG-dependent variations produce the same numbers.
+    rng_state = idx * 17u + 1u;
+
+    vec2 p = in_points[idx];
+    vec2 result = apply_variations(p, 0);
+    out_points[idx] = result;
+}

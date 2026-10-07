@@ -3,7 +3,7 @@
 Mirror of the existing GL test. Same shared fixtures (variation_fixtures.py),
 same CPU reference (apply_variation_cpu), same point sets / param sets /
 tolerances. Only difference: runs the variation through Vulkan via
-viz_authoring.vk.shaders.test_variation.comp instead of the GL test
+flame_sheep.rendering.vk.shaders.test_variation.comp instead of the GL test
 shader.
 
 What this catches:
@@ -64,7 +64,7 @@ for _vi in range(NUM_VARIATIONS):
 
 
 SHADER_DIR = (Path(__file__).resolve().parents[2]
-              / 'viz_authoring' / 'src' / 'viz_authoring' / 'vk' / 'shaders')
+              / 'flame_sheep' / 'rendering' / 'vk' / 'shaders')
 TEST_SHADER = SHADER_DIR / 'test_variation.comp'
 
 MAX_POINTS = 256   # generous upper bound on per-variation point counts

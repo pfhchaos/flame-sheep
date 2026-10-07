@@ -106,7 +106,7 @@ def render_genome_gpu(genome, ctx, size: int = 2048, n_frames: int = 60,
     is cached per (ctx, size) so we don't recreate buffers / recompile
     shaders per genome.
     """
-    from viz_authoring.vk.headless import HeadlessVkRenderer
+    from flame_sheep.rendering.vk.headless import HeadlessVkRenderer
     from ..render_params import N_ITERS
     from ..genome import genome_to_chaos_kwargs
 

@@ -46,7 +46,7 @@ def child_compile(use_pipeline_cache: bool, cache_dir: Path) -> float:
     sys.path.insert(0, str(Path(__file__).parents[2]))
 
     from viz_authoring.vk.context import VkContext
-    from viz_authoring.vk.chaos_game import (
+    from flame_sheep.rendering.vk.chaos_game import (
         ChaosGame, MAX_TRANSFORMS, MAX_ACTIVE_VARS, SLOT_SIZE)
     import numpy as np
 

@@ -36,7 +36,7 @@ def _run_variation_benchmark(sample_mode: str = 'random',
                            genome_to_chaos_kwargs)
     from ..render_params import LIVE_ITER_MAX
     from viz_authoring.vk.context import VkContext
-    from viz_authoring.vk.headless import HeadlessVkRenderer
+    from flame_sheep.rendering.vk.headless import HeadlessVkRenderer
 
     # Variation names for display
     var_names = {}

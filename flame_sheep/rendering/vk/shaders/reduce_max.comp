@@ -1,0 +1,57 @@
+#version 450
+// Vulkan port of flame_sheep/rendering/shaders/reduce_max.comp.
+//
+// Parallel max-reduction over a uint histogram. Each workgroup of 256
+// threads reduces its 256 elements to one max via shared memory; the
+// per-workgroup max is then atomicMax'd into a single-element output
+// buffer. Dispatch ceil(n_pixels / 256) workgroups; output is the
+// global max across the whole histogram.
+//
+// Differences from the OpenGL version:
+//   - #version 450
+//   - Uniforms → push constants
+//   - Renumbered max_buf binding from 8 to 1 (Vulkan's descriptor set
+//     conventions don't care about the original number; consecutive
+//     bindings keep ComputePipeline's descriptor-set construction simple)
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) readonly buffer Histogram {
+    uint histogram[];
+};
+
+layout(std430, binding = 1) buffer MaxBuf {
+    uint max_hits;
+};
+
+layout(push_constant) uniform PushConstants {
+    uint n_pixels;       // width * height (hit-count portion only)
+    uint hist_offset;    // for compare mode dual-histogram layout
+};
+
+shared uint smax[256];
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    uint lid = gl_LocalInvocationID.x;
+
+    // Each thread loads one value (or 0 if out of bounds).
+    smax[lid] = (gid < n_pixels) ? histogram[hist_offset + gid] : 0u;
+
+    memoryBarrierShared();
+    barrier();
+
+    // Reduction in shared memory: stride halves each iteration.
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (lid < s) {
+            smax[lid] = max(smax[lid], smax[lid + s]);
+        }
+        memoryBarrierShared();
+        barrier();
+    }
+
+    // Thread 0 of each workgroup writes its local max via atomic.
+    if (lid == 0u) {
+        atomicMax(max_hits, smax[0]);
+    }
+}

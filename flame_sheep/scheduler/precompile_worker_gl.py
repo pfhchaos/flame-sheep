@@ -21,7 +21,7 @@ How it works
    the main wallpaper process compiles the same key later it's a
    ~5ms cache hit instead of 600ms.
 5. Writes a warm marker file (shared with the wallpaper via
-   viz_authoring.vk.pipeline_warm) so FlameRenderer.is_shader_warm()
+   flame_sheep.rendering.vk.pipeline_warm) so FlameRenderer.is_shader_warm()
    on the wallpaper side returns True for compiled keys.
 6. Between compiles, checks the pause flag and yields per the
    wallpaper-signal scheduler.

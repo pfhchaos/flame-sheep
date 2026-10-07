@@ -58,7 +58,7 @@ sys.path.insert(0, '{project}/viz_authoring/src')
 sys.path.insert(0, '{project}')
 
 from viz_authoring.vk.context import VkContext
-from viz_authoring.vk.chaos_game import _symmetry_inject, MAX_TRANSFORMS, MAX_ACTIVE_VARS, SLOT_SIZE
+from flame_sheep.rendering.vk.chaos_game import _symmetry_inject, MAX_TRANSFORMS, MAX_ACTIVE_VARS, SLOT_SIZE
 from viz_authoring.vk.pipeline import ComputePipeline
 
 N = {n}
@@ -97,7 +97,7 @@ prevars = ctx.create_buffer(T * SL * 4, 'storage')
 ctx.upload(walkers, np.random.default_rng(0).uniform(-1, 1, (64, 3)).astype(np.float32))
 ctx.upload(weights, np.array([1.0]+[0]*(MAX_TRANSFORMS-1), dtype=np.float32))
 
-shader = Path('{project}/viz_authoring/src/viz_authoring/vk/shaders/flame_chaos.comp')
+shader = Path('{project}/flame_sheep/rendering/vk/shaders/flame_chaos.comp')
 p = ComputePipeline(
     ctx, shader,
     buffers=[hist, walkers, affines, avars, colors, weights, cspeeds, thits, postaff, prevars],

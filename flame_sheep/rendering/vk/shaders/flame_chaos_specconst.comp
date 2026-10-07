@@ -1,0 +1,162 @@
+#version 450
+// Experimental specialization-constant variant of flame_chaos.comp.
+//
+// Same algorithm; the four push constants that are constant for the
+// lifetime of a (canvas, genome) pair become specialization constants
+// instead. The driver constant-folds them at pipeline-creation time,
+// which should:
+//   - eliminate the `for (int i = 0; i < u_n_transforms; i++)` loop
+//     bound's runtime branch when n_transforms is small
+//   - dead-strip the entire `if (u_has_final_xform != 0)` block when
+//     has_final_xform == 0
+//   - replace u_width/u_height with literal constants in the
+//     world_to_pixel arithmetic (compiler can pre-multiply)
+//
+// Specialization values are bound by ChaosGame at pipeline create
+// time. One pipeline per (canvas_w, canvas_h, n_transforms,
+// has_final_xform) — at most ~12 combinations per canvas size.
+//
+// Trade-off: each combination needs its own pipeline (compile cost).
+// Win: per-genome shader specialization (the next step) gets to
+// reuse this base — combinations that match share both the spec-
+// const-folded shader AND the genome-specific variation set.
+
+layout(local_size_x = 64) in;
+
+// Spec constants (driver constant-folds at pipeline create):
+layout(constant_id = 0) const int   SC_n_transforms     = 1;
+layout(constant_id = 1) const int   SC_has_final_xform  = 0;
+layout(constant_id = 2) const int   SC_width            = 256;
+layout(constant_id = 3) const int   SC_height           = 256;
+
+// Buffers: unchanged from flame_chaos.comp
+layout(std430, binding = 0) buffer Histogram { uint histogram[]; };
+layout(std430, binding = 1) buffer Walkers { float walker_data[]; };
+layout(std430, binding = 2) readonly buffer Affines { float u_affines[]; };
+layout(std430, binding = 3) readonly buffer ActiveVariations { float u_active_vars[]; };
+layout(std430, binding = 4) readonly buffer Colors { float u_colors[]; };
+layout(std430, binding = 5) readonly buffer Weights { float u_weights[]; };
+layout(std430, binding = 6) readonly buffer ColorSpeeds { float u_color_speeds[]; };
+layout(std430, binding = 7) buffer TransformHits { uint transform_hits[]; };
+layout(std430, binding = 8) readonly buffer PostAffines { float u_post_affines[]; };
+layout(std430, binding = 9) readonly buffer PreVariations { float u_pre_active_vars[]; };
+
+// Constants for the variations module
+#define MAX_TRANSFORMS 6
+#define MAX_ACTIVE_VARS 8
+#define SLOT_SIZE 10
+#define PARAM_OFFSET 2
+
+// Push constants: only the per-frame stuff stays here.
+layout(push_constant) uniform PushConstants {
+    vec2  u_zoom;
+    float u_cos_rot;
+    float u_sin_rot;
+    vec2  u_center;
+    int   u_iterations;
+    uint  u_rng_seed;
+    uint  u_hist_offset;
+    uint  u_hist_stride;
+};
+
+#define COLOR_SCALE 1000000u
+
+#include "rng.glsl"
+#include "variations.glsl"
+
+int pick_transform(float rand_val) {
+    float cumulative = 0.0;
+    // SC_n_transforms is a spec const → the compiler unrolls / constant-
+    // bounds this loop completely. With SC_n_transforms=1, no branches
+    // remain at all.
+    for (int i = 0; i < SC_n_transforms; i++) {
+        cumulative += u_weights[i];
+        if (rand_val < cumulative) return i;
+    }
+    return SC_n_transforms - 1;
+}
+
+ivec2 world_to_pixel(vec2 p) {
+    vec2 rotated = vec2(u_cos_rot * p.x - u_sin_rot * p.y,
+                        u_sin_rot * p.x + u_cos_rot * p.y);
+    vec2 scaled = (rotated - u_center) * u_zoom;
+    // SC_width / SC_height are spec consts → compiler folds the
+    // multiply with the 0.5 scale constant into a single literal.
+    int px = int((scaled.x + 1.0) * 0.5 * float(SC_width));
+    int py = int((scaled.y + 1.0) * 0.5 * float(SC_height));
+    return ivec2(px, py);
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    rng_seed(gid * 1973u + 9277u + u_rng_seed);
+
+    uint base = gid * 3u;
+    float px = walker_data[base + 0u];
+    float py = walker_data[base + 1u];
+    float pc = walker_data[base + 2u];
+
+    for (int iter = 0; iter < u_iterations; iter++) {
+        int tidx = pick_transform(rng_float());
+        vec2 pre = apply_pre_variations(vec2(px, py), tidx);
+
+        int abase = tidx * 6;
+        float nx = u_affines[abase+0]*pre.x + u_affines[abase+1]*pre.y + u_affines[abase+2];
+        float ny = u_affines[abase+3]*pre.x + u_affines[abase+4]*pre.y + u_affines[abase+5];
+
+        vec2 warped = apply_variations(vec2(nx, ny), tidx);
+
+        int pbase = tidx * 6;
+        px = u_post_affines[pbase+0]*warped.x + u_post_affines[pbase+1]*warped.y + u_post_affines[pbase+2];
+        py = u_post_affines[pbase+3]*warped.x + u_post_affines[pbase+4]*warped.y + u_post_affines[pbase+5];
+
+        if (isinf(px) || isinf(py) || isnan(px) || isnan(py) ||
+            abs(px) > 1e6 || abs(py) > 1e6) {
+            px = rng_float() * 2.0 - 1.0;
+            py = rng_float() * 2.0 - 1.0;
+            pc = rng_float();
+            continue;
+        }
+
+        float cs = u_color_speeds[tidx];
+        pc = cs * u_colors[tidx] + (1.0 - cs) * pc;
+
+        if (iter < 20) continue;
+
+        float plot_x = px, plot_y = py, plot_c = pc;
+        // SC_has_final_xform is a spec const. When 0, this whole block
+        // becomes dead code — no register pressure for plot_x_after,
+        // ftidx, etc. When 1, the branch is also constant-folded out
+        // (always entered).
+        if (SC_has_final_xform != 0) {
+            int ftidx = MAX_TRANSFORMS;
+            vec2 fp = apply_pre_variations(vec2(plot_x, plot_y), ftidx);
+            int fabase = ftidx * 6;
+            float fnx = u_affines[fabase+0]*fp.x + u_affines[fabase+1]*fp.y + u_affines[fabase+2];
+            float fny = u_affines[fabase+3]*fp.x + u_affines[fabase+4]*fp.y + u_affines[fabase+5];
+            vec2 fwarped = apply_variations(vec2(fnx, fny), ftidx);
+            int fpbase = ftidx * 6;
+            plot_x = u_post_affines[fpbase+0]*fwarped.x + u_post_affines[fpbase+1]*fwarped.y + u_post_affines[fpbase+2];
+            plot_y = u_post_affines[fpbase+3]*fwarped.x + u_post_affines[fpbase+4]*fwarped.y + u_post_affines[fpbase+5];
+            float fcs = u_color_speeds[ftidx];
+            plot_c = fcs * u_colors[ftidx] + (1.0 - fcs) * plot_c;
+        }
+
+        ivec2 pixel = world_to_pixel(vec2(plot_x, plot_y));
+        if (pixel.x < 0 || pixel.x >= SC_width ||
+            pixel.y < 0 || pixel.y >= SC_height) continue;
+
+        uint px_idx = uint(pixel.y * SC_width + pixel.x);
+        uint hit_idx = u_hist_offset + px_idx;
+        uint col_idx = u_hist_stride + u_hist_offset + px_idx;
+        atomicAdd(histogram[hit_idx], 1u);
+        atomicAdd(histogram[col_idx], uint(plot_c * float(COLOR_SCALE)));
+#ifdef SCORING_MODE
+        atomicAdd(transform_hits[px_idx * uint(MAX_TRANSFORMS) + uint(tidx)], 1u);
+#endif
+    }
+
+    walker_data[base + 0u] = px;
+    walker_data[base + 1u] = py;
+    walker_data[base + 2u] = pc;
+}

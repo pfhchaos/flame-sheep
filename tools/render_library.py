@@ -67,7 +67,7 @@ def main():
     from flame_sheep.render_params import N_ITERS
     from flame_sheep.genome import genome_to_chaos_kwargs
     from viz_authoring.vk.context import VkContext
-    from viz_authoring.vk.headless import HeadlessVkRenderer
+    from flame_sheep.rendering.vk.headless import HeadlessVkRenderer
     ctx = VkContext(instance_extensions=[])
     ctx.select_device()
     renderer = HeadlessVkRenderer(ctx, args.size, args.size)

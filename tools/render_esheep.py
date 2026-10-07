@@ -42,7 +42,7 @@ DEFAULT_SWEPT_STEPS = 36   # 36 steps × 10° = full rotation
 def create_renderer(size: int):
     """Create a headless Vulkan renderer (ported from moderngl+EGL)."""
     from viz_authoring.vk.context import VkContext
-    from viz_authoring.vk.headless import HeadlessVkRenderer
+    from flame_sheep.rendering.vk.headless import HeadlessVkRenderer
     ctx = VkContext(instance_extensions=[])
     ctx.select_device()
     log.info('GPU: %s', ctx.device_name)

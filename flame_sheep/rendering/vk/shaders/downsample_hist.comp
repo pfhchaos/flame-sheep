@@ -1,0 +1,47 @@
+#version 450
+// Vulkan port of flame_sheep/rendering/shaders/downsample_hist.comp.
+//
+// Downsamples the hit_count portion of the histogram into a smaller
+// buffer. Each output pixel sums a block_w × block_h region of input
+// pixels (compute-friendly: 16x16 workgroups for spatial locality).
+// Used to derive a low-res density map for tonemap brightness scaling.
+//
+// Differences from the OpenGL version: #version 450, uniforms →
+// push constants, downsampled binding renumbered 6 → 1.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) readonly buffer Histogram {
+    uint histogram[];
+};
+
+layout(std430, binding = 1) writeonly buffer DownsampledHist {
+    uint downsampled[];
+};
+
+layout(push_constant) uniform PushConstants {
+    int canvas_w;
+    int canvas_h;
+    int out_w;
+    int out_h;
+};
+
+void main() {
+    ivec2 out_pos = ivec2(gl_GlobalInvocationID.xy);
+    if (out_pos.x >= out_w || out_pos.y >= out_h) return;
+
+    int block_w = (canvas_w + out_w - 1) / out_w;
+    int block_h = (canvas_h + out_h - 1) / out_h;
+    int x0 = out_pos.x * block_w;
+    int y0 = out_pos.y * block_h;
+    int x1 = min(x0 + block_w, canvas_w);
+    int y1 = min(y0 + block_h, canvas_h);
+
+    uint total = 0u;
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) {
+            total += histogram[y * canvas_w + x];
+        }
+    }
+    downsampled[out_pos.y * out_w + out_pos.x] = total;
+}

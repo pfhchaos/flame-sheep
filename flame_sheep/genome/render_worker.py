@@ -92,7 +92,7 @@ def _render_main(db_path: str,
     # shader cache + scheduler integration.
     try:
         from viz_authoring.vk.context import VkContext
-        from viz_authoring.vk.headless import HeadlessVkRenderer
+        from flame_sheep.rendering.vk.headless import HeadlessVkRenderer
     except Exception as e:
         log.error(f'Failed to import Vulkan stack: {e}')
         return

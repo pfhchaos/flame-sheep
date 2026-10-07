@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 import numpy as np
 
 from viz_authoring.vk.context import VkContext
-from viz_authoring.vk.headless import HeadlessVkRenderer
+from flame_sheep.rendering.vk.headless import HeadlessVkRenderer
 from viz_authoring.vk.wallpaper_demo import _genome_from_catalog
 
 

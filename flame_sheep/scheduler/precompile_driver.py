@@ -119,7 +119,7 @@ class PrecompileDriver:
         the worker would just dutifully re-touch the same disk cache
         for no real benefit).
         """
-        from viz_authoring.vk import pipeline_warm
+        from flame_sheep.rendering.vk import pipeline_warm
         added = 0
         skipped_warm = 0
         with self._seen_lock:

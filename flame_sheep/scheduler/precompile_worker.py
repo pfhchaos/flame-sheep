@@ -56,7 +56,7 @@ def main():
     # Imports are deferred until after argv parsing so --help doesn't
     # drag in a full Vulkan context.
     from viz_authoring.vk.context import VkContext
-    from viz_authoring.vk.chaos_game import ChaosGame
+    from flame_sheep.rendering.vk.chaos_game import ChaosGame
 
     reader = PauseFlagReader(args.pause_flag)
 

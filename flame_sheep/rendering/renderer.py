@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 
 # Matches one `case N: return var_<name>(...);` line in variations.glsl's
-# apply_single_variation switch. Mirror of viz_authoring.vk.chaos_game's
+# apply_single_variation switch. Mirror of flame_sheep.rendering.vk.chaos_game's
 # _VAR_CASE_RE — keep them in sync if either side changes the switch
 # format.
 _VAR_CASE_RE = re.compile(
@@ -199,7 +199,7 @@ class FlameRenderer:
         # side. The marker is just "this key has been compiled to
         # Mesa's cache by SOMEONE" — backend-agnostic.
         try:
-            from viz_authoring.vk import pipeline_warm
+            from flame_sheep.rendering.vk import pipeline_warm
             # n_transforms + has_final_xform don't change the GL shader
             # (only keep_vars does), so synthesize neutral values for
             # the marker key. The marker is informational; misses just
@@ -254,7 +254,7 @@ class FlameRenderer:
         # FlameRenderer instances) know this compile populated Mesa's
         # implicit cache.
         try:
-            from viz_authoring.vk import pipeline_warm
+            from flame_sheep.rendering.vk import pipeline_warm
             pipeline_warm.mark_warm(0, False, keep_vars)
         except Exception:
             pass  # marker write is informational; failure non-fatal

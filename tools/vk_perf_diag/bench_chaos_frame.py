@@ -35,7 +35,7 @@ def main():
     args = parser.parse_args()
 
     from viz_authoring.vk.context import VkContext
-    from viz_authoring.vk.chaos_game import ChaosGame
+    from flame_sheep.rendering.vk.chaos_game import ChaosGame
     from viz_authoring.vk.wallpaper_demo import _genome_from_catalog
 
     ctx = VkContext(instance_extensions=[], pipeline_cache_path=None)

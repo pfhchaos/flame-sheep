@@ -45,7 +45,7 @@ def run_worker(priority_name: str, seconds: float, label: str) -> None:
     """Spawned as child via subprocess; runs chaos game at the given
     priority for `seconds`, prints per-window throughput to stdout."""
     from viz_authoring.vk.context import VkContext
-    from viz_authoring.vk.chaos_game import ChaosGame
+    from flame_sheep.rendering.vk.chaos_game import ChaosGame
     from viz_authoring.vk.wallpaper_demo import _genome_from_catalog
 
     prio = PRIORITY_LOOKUP[priority_name]
