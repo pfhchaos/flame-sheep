@@ -46,7 +46,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from flame_sheep.eval.detectors import (
     BeatDetector, CurrentSystemDetector, BeatRNNDetector, BeatNetDetector,
     MultiDepthBeatRNNDetector, MadmomDetector, StreamingBeatNetDetector,
-    SlidingBeatNetDetector, LiteBeatNetDetector,
+    SlidingBeatNetDetector, LiteBeatNetDetector, BeatNetLivePFDetector,
 )
 from flame_sheep.eval.metrics import evaluate
 from flame_sheep.eval.osu_parser import parse_osu_file
@@ -91,6 +91,18 @@ def _build_detector(name: str, **kwargs) -> BeatDetector:
         return SlidingBeatNetDetector(model_index=kwargs.get('beatnet_model', 1))
     if name == 'beatnet_lite':
         return LiteBeatNetDetector(model_index=kwargs.get('beatnet_model', 1))
+    if name == 'beatnet_live_pf':
+        return BeatNetLivePFDetector(
+            regime='fresh', model_index=kwargs.get('beatnet_model', 1),
+            offset_ms=kwargs.get('pf_offset_ms', 0.0))
+    if name == 'beatnet_live_pf_persistent':
+        return BeatNetLivePFDetector(
+            regime='persistent_reset', model_index=kwargs.get('beatnet_model', 1),
+            offset_ms=kwargs.get('pf_offset_ms', 0.0))
+    if name == 'beatnet_live_pf_noreset':
+        return BeatNetLivePFDetector(
+            regime='persistent_noreset', model_index=kwargs.get('beatnet_model', 1),
+            offset_ms=kwargs.get('pf_offset_ms', 0.0))
     if name == 'madmom':
         return MadmomDetector()
     raise SystemExit(f'Unknown detector: {name!r}')
@@ -299,7 +311,9 @@ def main():
         '--detector', default='current_system',
         choices=['current_system', 'beat_rnn', 'beat_rnn_multidepth',
                  'beatnet', 'beatnet_streaming', 'beatnet_sliding',
-                 'beatnet_lite', 'madmom'],
+                 'beatnet_lite', 'beatnet_live_pf',
+                 'beatnet_live_pf_persistent', 'beatnet_live_pf_noreset',
+                 'madmom'],
         help='Detector to evaluate')
     parser.add_argument(
         '--weights', type=Path, default=None,
@@ -307,6 +321,12 @@ def main():
     parser.add_argument(
         '--beatnet-model', type=int, default=1,
         help='BeatNet model index (1=GTZAN, 2=Ballroom, 3=Rock; default 1)')
+    parser.add_argument(
+        '--pf-offset-ms', type=float, default=0.0,
+        help='Constant latency correction (ms) added to PREDICTED beat/'
+             'downbeat times before scoring, to correct the PF path\'s '
+             'systematic lead over ground truth. Both raw (0 ms) and '
+             'corrected (+offset) F1 are reported. Matrix runs use 65.')
     parser.add_argument(
         '--tracks', type=int, default=10,
         help='Number of tracks to evaluate (default 10)')
@@ -339,10 +359,15 @@ def main():
                        else _DEFAULT_GTZAN_ROOT)
 
     detector = _build_detector(args.detector, weights=args.weights,
-                                beatnet_model=args.beatnet_model)
+                                beatnet_model=args.beatnet_model,
+                                pf_offset_ms=args.pf_offset_ms)
     print(f'Detector: {detector.name} (version {detector.version})')
     print(f'Corpus:   {args.corpus_kind} @ {args.corpus}')
     print(f'Kind:     {args.kind}')
+    offset_s = args.pf_offset_ms / 1000.0
+    if args.pf_offset_ms:
+        print(f'Offset:   +{args.pf_offset_ms:.0f} ms applied to predictions '
+              f'before corrected scoring')
 
     handles = _collect_tracks(args.corpus_kind, args.corpus)
     if not handles:
@@ -357,10 +382,15 @@ def main():
     print(f'Evaluating {len(handles)} tracks\n')
 
     per_track: list[dict] = []
+    per_track_corr: list[dict] = []          # offset-corrected metrics
     aggregate_pred: list[np.ndarray] = []
+    aggregate_pred_corr: list[np.ndarray] = []
     aggregate_true: list[np.ndarray] = []
     skipped_no_downbeat_support = 0
     skipped_no_downbeat_truth = 0
+    # Live-PF detectors expose a persistent PF whose particle populations we
+    # track across tracks (bounded under the fix, exploding under leaky).
+    is_live_pf = args.detector.startswith('beatnet_live_pf')
 
     for i, h in enumerate(handles, 1):
         print(f'[{i}/{len(handles)}] {h.track_id}')
@@ -407,17 +437,41 @@ def main():
         # Fall back to dt only for legacy caches that lack timing.
         m['detect_sec'] = float(timing.get('total', dt)) if timing else dt
         m['timing'] = timing or {}
+
+        # Offset-corrected scoring: shift predicted times by +offset_s to
+        # undo the PF path's systematic lead over ground truth, then score.
+        pred_corr = np.asarray(pred_arr, dtype=np.float64) + offset_s
+        m_corr = evaluate(pred_corr, true_arr)
+        m_corr['track_id'] = h.track_id
+        m_corr['duration_sec'] = duration
+
+        # Live-PF particle populations after this track (leak telemetry).
+        pf = getattr(getattr(detector, '_persistent_det', None), '_pf', None)
+        if pf is not None:
+            m['pf_n_particles'] = int(len(pf.particles))
+            m['pf_n_down_particles'] = int(len(pf.down_particles))
+
         per_track.append(m)
+        per_track_corr.append(m_corr)
 
         offset = sum(t.get('duration_sec', 0) for t in per_track[:-1])
         aggregate_pred.append(np.asarray(pred_arr) + offset)
+        aggregate_pred_corr.append(pred_corr + offset)
         aggregate_true.append(true_arr + offset)
 
+        pf_note = ''
+        if 'pf_n_particles' in m:
+            pf_note = (f'  pf_particles={m["pf_n_particles"]} '
+                       f'down={m["pf_n_down_particles"]}')
         print(f'  duration={duration:.1f}s  detect={dt:.2f}s  '
-              f'pred={m["n_pred"]} true={m["n_true"]}')
-        print(f'  F1: 25ms={m["f1_25ms"]:.3f}  '
+              f'pred={m["n_pred"]} true={m["n_true"]}{pf_note}')
+        print(f'  F1[raw]:  25ms={m["f1_25ms"]:.3f}  '
               f'50ms={m["f1_50ms"]:.3f}  70ms={m["f1_70ms"]:.3f}  '
               f'cemgil={m["cemgil"]:.3f}')
+        if args.pf_offset_ms:
+            print(f'  F1[+{args.pf_offset_ms:.0f}ms]: 25ms={m_corr["f1_25ms"]:.3f}  '
+                  f'50ms={m_corr["f1_50ms"]:.3f}  70ms={m_corr["f1_70ms"]:.3f}  '
+                  f'cemgil={m_corr["cemgil"]:.3f}')
 
     if not per_track:
         if skipped_no_downbeat_support == len(handles):
@@ -433,11 +487,35 @@ def main():
         sys.exit(2)
 
     pred_concat = np.concatenate(aggregate_pred) if aggregate_pred else np.array([])
+    pred_concat_corr = (np.concatenate(aggregate_pred_corr)
+                        if aggregate_pred_corr else np.array([]))
     true_concat = np.concatenate(aggregate_true) if aggregate_true else np.array([])
     pooled = evaluate(pred_concat, true_concat)
+    pooled_corr = evaluate(pred_concat_corr, true_concat)
     label = 'Downbeat' if args.kind == 'downbeat' else 'Beat'
-    _print_aggregate(per_track, pooled, label=label)
+    _print_aggregate(per_track, pooled, label=f'{label} [raw]')
+    if args.pf_offset_ms:
+        _print_aggregate(per_track_corr, pooled_corr,
+                         label=f'{label} [+{args.pf_offset_ms:.0f}ms corrected]')
     _print_latency(per_track, label=label)
+
+    # Final particle populations for live-PF detectors — the leak scorecard.
+    # Under the fix these stay pinned at 1500/250; under leaky they explode
+    # across a persistent_noreset stream.
+    if is_live_pf:
+        pf = getattr(getattr(detector, '_persistent_det', None), '_pf', None)
+        if pf is not None:
+            print('\n=== PF final particle populations ===')
+            print(f'  beat_particles: {len(pf.particles)} '
+                  f'(fixed size 1500)')
+            print(f'  down_particles: {len(pf.down_particles)} '
+                  f'(fixed size 250)')
+            counts = [t.get('pf_n_particles') for t in per_track
+                      if t.get('pf_n_particles') is not None]
+            if counts:
+                print(f'  beat_particles trend across tracks: '
+                      f'{counts[0]} -> {counts[-1]} '
+                      f'(min {min(counts)}, max {max(counts)})')
 
     if args.output:
         result = {
@@ -453,6 +531,23 @@ def main():
             'aggregate_mean_f1_70ms': float(np.mean([t['f1_70ms'] for t in per_track])),
             'aggregate_mean_cemgil': float(np.mean([t['cemgil'] for t in per_track])),
             'pooled_f1_50ms': pooled['f1_50ms'],
+            # Offset-corrected aggregates (predicted times shifted +offset_ms).
+            'pf_offset_ms': args.pf_offset_ms,
+            'aggregate_mean_f1_50ms_corrected':
+                float(np.mean([t['f1_50ms'] for t in per_track_corr])),
+            'aggregate_mean_f1_70ms_corrected':
+                float(np.mean([t['f1_70ms'] for t in per_track_corr])),
+            'pooled_f1_50ms_corrected': pooled_corr['f1_50ms'],
+            'pooled_f1_70ms_corrected': pooled_corr['f1_70ms'],
+            'pf_final_n_particles': (
+                int(len(detector._persistent_det._pf.particles))
+                if is_live_pf and getattr(detector, '_persistent_det', None)
+                is not None else None),
+            'pf_final_n_down_particles': (
+                int(len(detector._persistent_det._pf.down_particles))
+                if is_live_pf and getattr(detector, '_persistent_det', None)
+                is not None else None),
+            'per_track_corrected': per_track_corr,
         }
         args.output.write_text(json.dumps(result, indent=2))
         print(f'\nResults written to {args.output}')

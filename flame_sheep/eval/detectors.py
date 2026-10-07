@@ -1160,3 +1160,184 @@ class MadmomDetector(BeatDetector):
             return np.asarray([], dtype=np.float64)
         downbeat_times = decoded[decoded[:, 1] == 1.0, 0]
         return np.asarray(downbeat_times, dtype=np.float64)
+
+
+# ============================================================================
+# BeatNetLivePFDetector — drives the PRODUCTION daemon beat path.
+#
+# This is the only detector in this module that scores the *shipping* beat
+# times. Every other BeatNet variant above (batch / streaming / sliding /
+# lite) is a parallel reimplementation that bypasses the production particle
+# filter; the tempo-estimator `BeatNetPFTempoEstimator` drives the real PF
+# but scores BPM, not beat times. This closes that gap.
+#
+# Pipeline mirrors the daemon exactly:
+#   BeatNetLiveDetector(use_particle_filter=True)  (beat_detector_beatnet.py)
+#     → feed_audio_hop(hop@48k)  resample→22050, sliding-STFT, lite LSTM
+#     → activations → BeatNet particle_filter_cascade (fast PF via _pf_fast)
+#     → det._pf.path rows [time_seconds, kind]  (kind 1=downbeat, 2=beat)
+#
+# Predicted beat TIMES are read from `det._pf.path`, NOT from the BeatEvents
+# returned by detect() — those carry no timestamp. The PF path time base is
+# `offset + counter * (1/fps)`; with fps=50 that's 20 ms per processed
+# BeatNet frame, measured from the start of the stream fed to that PF.
+#
+# REGIMES (how a detector instance is reused across the eval's per-track
+# detect() calls — each regime is a different fidelity question):
+#   fresh             — new BeatNetLiveDetector per track. Clean-slate PF
+#                       each time; no cross-track contamination. The
+#                       conservative default and the only one safe to run at
+#                       large N while the PF has a per-track particle leak.
+#   persistent_reset  — one detector reused across tracks, reset_bands()
+#                       between tracks. Faithful to the daemon handling a
+#                       playlist of distinct songs (reset on song change).
+#   persistent_noreset— one detector reused, NEVER reset. The continuous-
+#                       audio regime; also the one that exposes the PF
+#                       particle/path leak (path grows unbounded across the
+#                       whole corpus). Times are de-offset per track so
+#                       scoring still aligns to each track's ground truth.
+# ============================================================================
+
+_LIVE_PF_REGIMES = ('fresh', 'persistent_reset', 'persistent_noreset')
+
+
+class BeatNetLivePFDetector(BeatDetector):
+    """Production daemon beat path, scored for beat-time accuracy.
+
+    Constructs `flame_sheep_audio.beat_detector_beatnet.BeatNetLiveDetector`
+    with the particle filter enabled and streams audio through it hop-by-hop
+    exactly as the daemon does (and as `BeatNetPFTempoEstimator` does for
+    BPM). Predicted beat/downbeat times are read from the PF's `path`.
+
+    `regime` selects instance reuse across tracks — see module comment.
+    """
+
+    name = 'beatnet_live_pf'
+
+    def __init__(self, regime: str = 'fresh',
+                 model_index: int = 1,
+                 offset_ms: float = 0.0):
+        super().__init__()
+        if regime not in _LIVE_PF_REGIMES:
+            raise ValueError(
+                f'regime must be one of {_LIVE_PF_REGIMES}, got {regime!r}')
+        self._regime = regime
+        self._model_index = int(model_index)
+        # Constant latency correction (ms) applied to predicted times at
+        # SCORING time (see eval_beat_detection). Stored here only so it can
+        # be baked into the cache namespace — the production PF beats lead
+        # GTZAN ground truth by ~65 ms, so matrix cells score with +65.
+        self.offset_ms = float(offset_ms)
+        # Resampling mode the production PF will run in (read from the same
+        # env var the PF reads at install time). This CHANGES the predicted
+        # beat path, so it MUST be part of the cache key — otherwise the
+        # file-hash below is identical across modes (the mode lives in the
+        # environment, not the source) and the three variants would collide.
+        import os as _os
+        self._resample_mode = _os.environ.get(
+            'FLAMESHEEP_PF_RESAMPLE', 'systematic').strip().lower()
+        # Reused detector for the persistent regimes; None for fresh.
+        self._persistent_det = None
+
+        from flame_sheep_audio import SAMPLE_RATE, HOP_SIZE
+        self._SAMPLE_RATE = SAMPLE_RATE
+        self._HOP_SIZE = HOP_SIZE
+
+        # Version: hash the two source files that define the production beat
+        # path — the adapter + the fast PF install. Any edit to the PF
+        # (the planned later step) or the adapter gets a fresh cache
+        # namespace, so before/after numbers never collide. Regime is baked
+        # in too so the three variants cache independently.
+        import hashlib
+        from flame_sheep_audio import beat_detector_beatnet as _adapter_mod
+        from flame_sheep_audio import _pf_fast as _pf_mod
+        src = (Path(_adapter_mod.__file__).read_text()
+               + Path(_pf_mod.__file__).read_text())
+        h = hashlib.sha256(src.encode()).hexdigest()[:12]
+        # name is the cache namespace alongside version; keep a stable base
+        # name but encode the regime + resample mode there so caches don't
+        # cross-pollute (mode changes the predicted path; see above).
+        self.name = f'beatnet_live_pf_{regime}_{self._resample_mode}'
+        # Version carries mode AND offset so a given (mode, offset) matrix
+        # cell is fully isolated in the cache. Offset is applied post-hoc at
+        # scoring (predictions themselves are offset-independent), so it is
+        # cache-neutral in practice, but it is baked in per the matrix spec
+        # to guarantee cells can never cross-pollute.
+        off_tag = f'off{int(round(self.offset_ms))}'
+        self.version = (f'live_pf_{regime}_{self._resample_mode}_'
+                        f'{off_tag}_m{model_index}_{h}')
+
+    def _make_detector(self):
+        from flame_sheep_audio.beat_detector_beatnet import BeatNetLiveDetector
+        return BeatNetLiveDetector(model_index=self._model_index,
+                                   use_particle_filter=True)
+
+    def _acquire_detector(self):
+        """Return the detector to use for this track, honoring the regime."""
+        if self._regime == 'fresh':
+            return self._make_detector()
+        # persistent_* — build once, then reuse.
+        if self._persistent_det is None:
+            self._persistent_det = self._make_detector()
+        elif self._regime == 'persistent_reset':
+            # Daemon song-change semantics: clear LSTM + buffers + rebuild PF.
+            self._persistent_det.reset_bands()
+        # persistent_noreset: reuse as-is, no reset (leak/continuous regime).
+        return self._persistent_det
+
+    def _stream(self, audio: np.ndarray, sr: int, kind_code: int
+                ) -> np.ndarray:
+        """Stream one track through the production detector and return the
+        predicted times (seconds, track-relative) for the requested PF
+        `kind_code` (1=downbeat, 2=beat)."""
+        import time
+        audio = _ensure_mono_float32(audio)
+        audio = _resample(audio, sr, self._SAMPLE_RATE)
+
+        t0 = time.monotonic()
+        det = self._acquire_detector()
+        setup = time.monotonic() - t0
+
+        pf = det._pf
+        # Time/position of the PF *before* this track so persistent_noreset
+        # (shared, ever-growing path) can be sliced + de-offset to this
+        # track. For fresh / reset the PF is brand-new (counter == -1,
+        # path == [[0,0]]), so these reduce to 0 / 1 and are no-ops.
+        counter_before = int(pf.counter)
+        path_len_before = len(pf.path)
+        t_offset = (counter_before + 1) * float(pf.T)
+
+        hop = self._HOP_SIZE
+        n = len(audio)
+        pos = 0
+        t_stream = time.monotonic()
+        while pos + hop <= n:
+            det.feed_audio_hop(audio[pos:pos + hop])
+            det.detect(None)   # drain pending events (unused; keeps buffer bounded)
+            pos += hop
+        stream = time.monotonic() - t_stream
+
+        path = np.asarray(pf.path, dtype=np.float64)
+        new_rows = path[path_len_before:] if path.shape[0] > path_len_before \
+            else path[:0]
+        if new_rows.size:
+            sel = new_rows[new_rows[:, 1].astype(int) == kind_code]
+            times = sel[:, 0] - t_offset
+            # Clamp any tiny negative (frame-center) artifacts to 0.
+            times = times[times >= -1e-6]
+            times = np.clip(times, 0.0, None)
+        else:
+            times = np.asarray([], dtype=np.float64)
+
+        self.last_timing = {
+            'setup': setup,
+            'stream': stream,
+            'total': setup + stream,
+        }
+        return np.asarray(np.sort(times), dtype=np.float64)
+
+    def detect(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        return self._stream(audio, sr, kind_code=2)
+
+    def detect_downbeats(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        return self._stream(audio, sr, kind_code=1)
