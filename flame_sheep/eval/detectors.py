@@ -1234,8 +1234,9 @@ class BeatNetLivePFDetector(BeatDetector):
         # file-hash below is identical across modes (the mode lives in the
         # environment, not the source) and the three variants would collide.
         import os as _os
-        self._resample_mode = _os.environ.get(
-            'FLAMESHEEP_PF_RESAMPLE', 'systematic').strip().lower()
+        # Production PF is systematic-only now (resample toggle collapsed);
+        # kept as a stable cache-key label, no longer env-selectable.
+        self._resample_mode = 'systematic'
         # Reused detector for the persistent regimes; None for fresh.
         self._persistent_det = None
 
