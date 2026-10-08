@@ -75,7 +75,7 @@ its own repo → its own live ebuild tracking it via `git-r3`). This turns
 - [x] **0.7 XDG paths** — runtime/IPC already respect `$XDG_RUNTIME_DIR`; **config + data
       are hardcoded to `~/.config` / `~/.local/share`** (ignore `$XDG_CONFIG_HOME` /
       `$XDG_DATA_HOME`) across ~10 files. Centralize in one module via **`platformdirs`**.
-- [ ] **0.8 Test-ease** — add `pytest` to a `[test]` extra so the `pytest` entry point
+- [x] **0.8 Test-ease** — add `pytest` to a `[test]` extra so the `pytest` entry point
       works (avoids `python -m pytest` CWD-prepend shadow) + a `make test`. With 0.5 this
       satisfies criterion #3.
 - [ ] **0.9 Repo split** — extract `flame_sheep_audio` / `wallpaper_ml` / `viz_authoring`
