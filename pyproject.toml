@@ -18,6 +18,7 @@ dependencies = [
     "pywayland",
     "dbus-python",
     "PyGObject",
+    "vulkan",
     "flame-sheep-audio",
     "wallpaper-ml",
     "viz-authoring",
@@ -26,6 +27,9 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
 eval = ["musdb>=0.4"]
+# Optional ML genome-scoring backends — torch CNN scorer + scikit-image
+# experimental metrics; both guarded, the daemon runs without them.
+scoring = ["torch", "scikit-image"]
 
 [project.scripts]
 flame-sheep = "flame_sheep.main:main"
