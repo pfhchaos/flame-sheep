@@ -186,7 +186,8 @@ def score_genome_gpu(genome, renderer, n_frames: int = DEFAULT_FRAMES,
 
 
 def _db_path() -> Path:
-    return Path.home() / '.local' / 'share' / 'flame-sheep' / 'library.db'
+    from ..._paths import data_dir
+    return data_dir() / 'library.db'
 
 
 def _update_genome(conn: sqlite3.Connection, gid: int,

@@ -364,15 +364,15 @@ def _score_main(db_path: str, stop_event: multiprocessing.synchronize.Event) -> 
     store_cnn_detail = getattr(getattr(cfg, 'scoring', None), 'store_cnn_detail', False)
 
     # Auxiliary CNN models for multi-model active learning. Each .npz in
-    # ~/.local/share/flame-sheep/aux_models/ gets loaded and scored alongside
+    # <data_dir>/flame-sheep/aux_models/ gets loaded and scored alongside
     # the primary on every genome. Filename basename (without .npz) is the
     # name used as the cnn_scores_detail key. Drop a weights file (or
     # symlink) into the dir to register; restart score_worker to pick up.
     aux_cnn_models: dict[str, object] = {}
     if cnn_model is not None:  # only meaningful if torch path is working
         from ..genome.scoring.cnn_scorer import load_model as _load_aux
-        aux_dir = Path(os.path.expanduser(
-            '~/.local/share/flame-sheep/aux_models'))
+        from .._paths import data_dir
+        aux_dir = data_dir() / 'aux_models'
         aux_cnn_models = _discover_aux_models(aux_dir, _load_aux, log)
         if aux_cnn_models:
             log.info('aux models active: %s', sorted(aux_cnn_models))

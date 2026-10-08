@@ -40,11 +40,13 @@ import queue
 from pathlib import Path
 from dataclasses import dataclass
 
+from .._paths import data_dir
+
 
 # Default pipe location
 DEFAULT_PIPE_PATH = Path(os.environ.get(
     'FLAME_SHEEP_CTL',
-    os.path.expanduser('~/.local/share/flame-sheep/ctl')
+    str(data_dir() / 'ctl')
 ))
 
 

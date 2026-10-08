@@ -54,13 +54,14 @@ from typing import Any
 
 from flame_sheep_audio import AudioSnapshot
 
+from ._paths import data_dir
+
 log = logging.getLogger(__name__)
 
 # Default output path — mirrors the audio feature logger's convention
-# (~/.local/share/flame-sheep/...), separate file so the two logs don't
+# (<data_dir>/flame-sheep/...), separate file so the two logs don't
 # interleave schemas.
-DEFAULT_TELEMETRY_FILE = Path(
-    '~/.local/share/flame-sheep/telemetry.jsonl').expanduser()
+DEFAULT_TELEMETRY_FILE = data_dir() / 'telemetry.jsonl'
 
 # Default sampling cadence. Task asks for ~1-5s; 2s is a reasonable
 # middle ground for "long real-usage periods" without bloating the log.

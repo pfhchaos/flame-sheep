@@ -19,6 +19,7 @@ dependencies = [
     "dbus-python",
     "PyGObject",
     "vulkan",
+    "platformdirs",
     "flame-sheep-audio",
     "wallpaper-ml",
     "viz-authoring",

@@ -20,7 +20,9 @@ from pathlib import Path
 
 import numpy as np
 
-_DEFAULT_DIR = Path.home() / '.local' / 'share' / 'flame-sheep'
+from .._paths import data_dir
+
+_DEFAULT_DIR = data_dir()
 _DB_NAME = 'library.db'
 
 # Blob columns that live in the separate `genome_blobs` table

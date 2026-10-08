@@ -22,11 +22,12 @@ from typing import Any
 
 from flame_sheep_audio import AudioSnapshot, BandState
 from flame_sheep.runtime import Orchestrator, TimestampedEvent
+from flame_sheep._paths import data_dir
 
 log = logging.getLogger(__name__)
 
 # Default output path
-DEFAULT_FEATURE_FILE = Path('~/.local/share/flame-sheep/features.jsonl').expanduser()
+DEFAULT_FEATURE_FILE = data_dir() / 'features.jsonl'
 
 
 class AudioFeatureLogger:

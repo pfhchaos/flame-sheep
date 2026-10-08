@@ -19,9 +19,11 @@ from typing import Any
 from types import SimpleNamespace
 from collections.abc import Callable
 
+from ._paths import config_dir, data_dir
+
 log = logging.getLogger(__name__)
 
-CONFIG_PATH = Path.home() / '.config' / 'flame-sheep' / 'config.toml'
+CONFIG_PATH = config_dir() / 'config.toml'
 
 DEFAULTS = {
     'audio_device': None,  # auto-detect, or string like "Companion Speaker"
@@ -87,7 +89,7 @@ DEFAULTS = {
         'window_height': 400,
     },
     'logging': {
-        'feature_file': '~/.local/share/flame-sheep/features.jsonl',
+        'feature_file': str(data_dir() / 'features.jsonl'),
         'feature_fields': [],
         'levels': {},
     },

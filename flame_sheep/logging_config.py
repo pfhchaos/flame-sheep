@@ -21,10 +21,12 @@ import logging.handlers
 import os
 from pathlib import Path
 
+from ._paths import data_dir
+
 
 LOG_DIR = Path(os.environ.get(
     'FLAME_SHEEP_LOG_DIR',
-    os.path.expanduser('~/.local/share/flame-sheep')
+    str(data_dir())
 ))
 
 LOG_FORMAT = '%(asctime)s %(name)s %(levelname)s %(message)s'

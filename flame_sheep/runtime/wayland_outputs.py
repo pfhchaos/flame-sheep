@@ -220,7 +220,8 @@ def _ensure_singleton() -> None:
     instance is still running, SIGTERM it and wait briefly for cleanup.
     """
     import signal
-    pid_path = os.path.expanduser('~/.local/share/flame-sheep/pid')
+    from .._paths import data_dir
+    pid_path = str(data_dir() / 'pid')
     os.makedirs(os.path.dirname(pid_path), exist_ok=True)
 
     # Check for existing instance
