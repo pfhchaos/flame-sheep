@@ -812,10 +812,11 @@ class SlidingBeatNetDetector(BeatDetector):
 #   numpy + the lite .npz: ~2 MB (1.5 MB weights + 0.4 MB filterbank)
 #
 # Designed for the live wallpaper's r/unixporn install story — see
-# `feedback_flame_sheep_audience_scope.md`. The .npz files in
-# `flame_sheep/data/beatnet_m{1,2,3}_lite.npz` ship with the package;
-# regenerate with `tools/export_beatnet_lite_weights.py` if BeatNet's
-# upstream model weights ever change.
+# `feedback_flame_sheep_audience_scope.md`. The .npz files
+# (`flame_sheep_audio/data/beatnet_m{1,2,3}_lite.npz`) ship with the
+# flame_sheep_audio package; regenerate with
+# `tools/export_beatnet_lite_weights.py` if BeatNet's upstream model
+# weights ever change.
 # ============================================================================
 
 class LiteBeatNetDetector(BeatDetector):
@@ -840,6 +841,12 @@ class LiteBeatNetDetector(BeatDetector):
         if weights_path is None:
             weights_path = (Path(__file__).resolve().parents[1]
                             / 'data' / f'beatnet_m{model_index}_lite.npz')
+            if not weights_path.exists():
+                # 0.4 relocation: lite weights now ship in the
+                # flame_sheep_audio package's data dir.
+                import flame_sheep_audio
+                weights_path = (Path(flame_sheep_audio.__file__).resolve().parent
+                                / 'data' / f'beatnet_m{model_index}_lite.npz')
         self._weights_path = Path(weights_path)
         if not self._weights_path.exists():
             raise FileNotFoundError(

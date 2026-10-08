@@ -46,6 +46,10 @@ flame_sheep = [
     "rendering/shaders/*",
     "rendering/vk/shaders/*",
     "default_config.toml",
+    # Canonical compare-mode CNN scorer weights. Explicit filename, NOT a
+    # glob: the data dir also holds untracked personal/backup variants that
+    # must not sweep into the wheel.
+    "data/cnn_scorer_vk.npy",
 ]
 
 [tool.pytest.ini_options]
