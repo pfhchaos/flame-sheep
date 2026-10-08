@@ -168,6 +168,7 @@ class TestTempoBaseline:
     """Collect accuracy metrics for the current tracker. These tests
     always pass — they just print results for comparison."""
 
+    @pytest.mark.slow  # re-runs every pattern in ALL_PATTERNS just to print a report — no new assertions, ~38s
     def test_print_accuracy_report(self, capsys):
         """Print a table of expected vs estimated BPM for all patterns."""
         results = []

@@ -141,6 +141,7 @@ class TestLibraryGenomes:
         tmp_lib.save_genome(Genome.random(rng))
         assert tmp_lib.genome_count() == 2
 
+    @pytest.mark.slow  # 10x Genome.random() — pure-Python chaos-game survey, ~15s total
     def test_top_genomes(self, tmp_lib):
         rng = np.random.default_rng(23)
         for _ in range(10):
@@ -161,6 +162,7 @@ class TestLibraryGenomes:
 
 class TestLibraryLoops:
 
+    @pytest.mark.slow  # Genome.random() x4 + motion-field compute — pure-Python chaos game, ~7s
     def test_save_and_load_loop(self, tmp_lib):
         rng = np.random.default_rng(30)
         gids = [tmp_lib.save_genome(Genome.random(rng)) for _ in range(4)]
@@ -173,6 +175,7 @@ class TestLibraryLoops:
             assert mf is not None
             assert mf.shape == (MOTION_GRID, MOTION_GRID, 2)
 
+    @pytest.mark.slow  # Genome.random() x6 + motion-field compute — pure-Python chaos game, ~11s
     def test_loop_preserves_order(self, tmp_lib):
         rng = np.random.default_rng(31)
         gids = [tmp_lib.save_genome(Genome.random(rng)) for _ in range(6)]
@@ -184,6 +187,7 @@ class TestLibraryLoops:
         with pytest.raises(KeyError):
             tmp_lib.load_loop(9999)
 
+    @pytest.mark.slow  # Genome.random() x3 + motion-field compute — pure-Python chaos game, ~5s
     def test_loop_count(self, tmp_lib):
         rng = np.random.default_rng(32)
         assert tmp_lib.loop_count() == 0
@@ -216,6 +220,7 @@ class TestLibraryRatings:
 
 class TestScoreLoop:
 
+    @pytest.mark.slow  # Genome.random() x4 + motion-field compute — pure-Python chaos game, ~5s
     def test_returns_all_keys(self):
         rng = np.random.default_rng(50)
         genomes = [Genome.random(rng) for _ in range(4)]
@@ -224,6 +229,7 @@ class TestScoreLoop:
         expected = {'mean_coherence', 'min_coherence', 'diversity', 'palette_flow', 'smoothness', 'fitness'}
         assert set(scores.keys()) == expected
 
+    @pytest.mark.slow  # Genome.random() x4 + motion-field compute — pure-Python chaos game, ~5s
     def test_all_values_finite(self):
         rng = np.random.default_rng(51)
         genomes = [Genome.random(rng) for _ in range(4)]

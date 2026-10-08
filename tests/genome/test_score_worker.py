@@ -122,6 +122,7 @@ class TestHistogramScoring:
                                hist_transform=hist_tf)
         assert scores['tf_n_clusters'] >= 0
 
+    @pytest.mark.slow  # 4x full histogram clustering pipeline — ~9s total
     def test_different_transform_counts(self, rng):
         """Should handle varying numbers of transforms."""
         static = _make_png()

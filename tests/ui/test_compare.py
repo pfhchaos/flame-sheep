@@ -12,6 +12,13 @@ from flame_sheep.genome import Genome
 from flame_sheep.storage import Library
 from flame_sheep.ui.compare import CompareMode, PairState
 
+# Whole module gated slow: nearly every test depends on tmp_lib / tmp_lib_unscored /
+# tmp_lib_multi_model, each of which is function-scoped and regenerates 20 random
+# genomes (Genome.random() is a pure-Python chaos-game survey, ~1s/call) plus
+# aesthetic_score() per genome. That's ~20-30s of fixture setup PER TEST, and this
+# file has ~35 tests — by far the single largest contributor to full-suite runtime.
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture
 def tmp_lib():

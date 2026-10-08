@@ -245,6 +245,7 @@ class TestLoopOverlap:
     # (commit 82fc08d). Standalone-overlap tests dropped with it; the
     # _too_similar test below exercises the same shape end-to-end.
 
+    @pytest.mark.slow  # lib_with_loops fixture: 40x Genome.random() — pure-Python chaos game, ~60s
     def test_too_similar_catches_high_overlap(self, lib_with_loops):
         loops = lib_with_loops.top_loops(n=1)
         if not loops:

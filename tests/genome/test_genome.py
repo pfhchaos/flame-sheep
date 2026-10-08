@@ -79,6 +79,7 @@ class TestGenomeRandom:
         assert np.all(g.palette >= 0.0)
         assert np.all(g.palette <= 1.0)
 
+    @pytest.mark.slow  # 20x Genome.random() — each run is a pure-Python chaos-game survey, ~15s total
     def test_random_zoom_in_range(self):
         # Random() seeds zoom in [0.8, 1.5] but then survey_and_correct
         # auto-fits to the actual attractor extent, clamping into
@@ -88,6 +89,7 @@ class TestGenomeRandom:
             g = Genome.random(rng)
             assert 0.1 <= g.zoom <= 1.5
 
+    @pytest.mark.slow  # 10x Genome.random() — pure-Python chaos-game survey, ~9s total
     def test_random_is_viable(self):
         """Genome.random() should always return a viable genome."""
         rng = np.random.default_rng(20)
@@ -243,6 +245,7 @@ class TestGenomeDistance:
         g2 = Genome.random(rng)
         assert abs(g1.distance(g2) - g2.distance(g1)) < 1e-9
 
+    @pytest.mark.slow  # 10x Genome.random() — pure-Python chaos-game survey, ~8s total
     def test_distance_in_range(self):
         """Distance must always be in [0, 1]."""
         rng = np.random.default_rng(52)
@@ -252,6 +255,7 @@ class TestGenomeDistance:
                 d = genomes[i].distance(genomes[j])
                 assert 0.0 <= d <= 1.0, f"distance {d} out of [0,1]"
 
+    @pytest.mark.slow  # 40x Genome.random() — pure-Python chaos-game survey, ~33s total
     def test_random_genomes_have_nonzero_distance(self):
         """Random genome pairs should have nonzero distance."""
         rng = np.random.default_rng(53)
@@ -311,6 +315,7 @@ class TestScoreFromHistogram:
         assert scores['entropy'] > 0.99
         assert scores['complexity'] < 0.1  # uniform = no structure
 
+    @pytest.mark.slow  # 10x Genome.random() + aesthetic_score() — pure-Python chaos game, ~14s total
     def test_all_scores_in_range(self):
         rng = np.random.default_rng(70)
         for _ in range(10):
@@ -380,6 +385,7 @@ class TestAestheticScoreCpu:
         assert required.issubset(scores.keys()), \
             f"missing {required - scores.keys()}"
 
+    @pytest.mark.slow  # 10x Genome.random() + aesthetic_score() — pure-Python chaos game, ~12s total
     def test_different_genomes_different_scores(self):
         rng = np.random.default_rng(81)
         scores = [Genome.random(rng).aesthetic_score() for _ in range(10)]

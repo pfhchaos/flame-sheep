@@ -110,6 +110,7 @@ class TestCheckStability:
         g = Genome.random(rng)
         assert isinstance(g.check_stability(), bool)
 
+    @pytest.mark.slow  # 20x Genome.random() — pure-Python chaos-game survey, ~25s total
     def test_respects_max_bbox_ratio(self, rng):
         """Very tight threshold should reject more genomes."""
         rejected = 0
@@ -128,6 +129,7 @@ class TestSurveyAndCorrect:
         result = g.survey_and_correct()
         assert isinstance(result, bool)
 
+    @pytest.mark.slow  # 30x Genome.random() — pure-Python chaos-game survey, ~49s total
     def test_random_genomes_pass_rate(self, rng):
         """At least some random genomes should pass survey_and_correct."""
         passed = 0
