@@ -36,7 +36,13 @@ flame-sheep = "flame_sheep.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["tests*"]
+# Allowlist, not an exclude-list: only flame_sheep (+ its subpackages) ships.
+# The flat repo root also holds evals/ (has __init__.py), tests/, tools/,
+# datasets/, docs/ — an exclude-list leaks whatever it forgets (evals/ was
+# being swept into the wheel). An include allowlist can't. The sibling
+# package project-dirs (flame_sheep_audio/ etc.) are separate distributions,
+# not part of this one.
+include = ["flame_sheep", "flame_sheep.*"]
 
 [tool.setuptools.package-data]
 # Ship the GPU shaders and the example config in built wheels — without this
