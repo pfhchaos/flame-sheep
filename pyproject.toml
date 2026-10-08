@@ -38,6 +38,16 @@ flame-sheep = "flame_sheep.main:main"
 where = ["."]
 exclude = ["tests*"]
 
+[tool.setuptools.package-data]
+# Ship the GPU shaders and the example config in built wheels — without this
+# they're dropped from a non-editable build (everything works today only
+# because the dev installs are editable and read the source tree).
+flame_sheep = [
+    "rendering/shaders/*",
+    "rendering/vk/shaders/*",
+    "default_config.toml",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests", "flame_sheep_audio/tests", "viz_authoring/tests"]
 # --import-mode=importlib: don't auto-prepend test directories to sys.path.
