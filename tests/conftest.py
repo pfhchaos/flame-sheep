@@ -8,7 +8,12 @@ from pathlib import Path
 _tests_dir = str(Path(__file__).resolve().parent)
 _audio_tests = str(Path(__file__).resolve().parent.parent / 'flame_sheep_audio' / 'tests')
 
-# Ensure both test directories are importable
+# Ensure both test directories are importable. NOTE: _audio_tests is NOT
+# dead despite living in flame_sheep_audio/ — `audio_helpers.py` (imported
+# below for "Re-export audio helpers for integration tests") lives only at
+# flame_sheep_audio/tests/audio_helpers.py, not in this directory. Removing
+# this breaks that import. (Tried removing it during the 0.9-prep pass;
+# `from audio_helpers import ...` below failed immediately. Left in place.)
 for _p in [_tests_dir, _audio_tests]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -70,7 +75,7 @@ _verify_package_imports()
 # fixture scope errors, anything that quietly shrinks the suite.
 #
 # Only enforced when the full default suite is being collected — running a
-# subset (e.g. `pytest tests/wallpaper_ml/test_rnn_shaders.py` during dev)
+# subset (e.g. `pytest wallpaper_ml/tests/test_rnn_shaders.py` during dev)
 # is exempt. Bump _MIN_TEST_COUNT when intentionally adding tests; failing
 # means something silently regressed, NOT that the floor needs to move.
 # ---------------------------------------------------------------------------
@@ -127,3 +132,23 @@ def _hermetic_audio_config():
     _audio_cfg.reset_to_defaults()
     yield
     _audio_cfg.reset_to_defaults()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_data_dir(tmp_path, monkeypatch):
+    """Point the XDG data/config dirs at a fresh per-test temp location so no
+    test reads or writes the real ~/.local/share/flame-sheep. Mirrors the
+    fixture in flame_sheep_audio/tests/conftest.py (both trees need it — autouse
+    only applies in the conftest's own directory tree).
+
+    This isolates the AGC's persisted gain state: every AudioProcessor's
+    AudioLevelAgc loads slow_rms from data_dir()/agc_state.json on construction
+    and saves it back, so that on-disk file leaks gain calibration across tests
+    AND across pytest runs — the cross-run non-determinism behind the flaky
+    beat-detection tests and the tests/eval band_routing regression. A fresh
+    empty dir per test => the AGC always bootstraps at target => deterministic.
+    Production persistence is intentional and untouched; this only sandboxes
+    the tests."""
+    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'xdg-data'))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg-config'))
+    yield

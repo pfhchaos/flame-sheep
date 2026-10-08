@@ -60,12 +60,15 @@ flame_sheep = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "flame_sheep_audio/tests", "viz_authoring/tests"]
+testpaths = ["tests", "flame_sheep_audio/tests", "viz_authoring/tests", "wallpaper_ml/tests"]
 # --import-mode=importlib: don't auto-prepend test directories to sys.path.
-# Prevents the silent-shadowing class where tests/wallpaper_ml/__init__.py
+# Prevents the silent-shadowing class where a tests/wallpaper_ml/__init__.py
 # would mask the installed wallpaper_ml package and cause every numerical-
 # correctness test to skip with no error signal. See tests/conftest.py for
-# the runtime verification that backs this up.
+# the runtime verification that backs this up. (wallpaper_ml's own tests
+# moved to wallpaper_ml/tests/ on 2026-10-08 — colocated with the package,
+# same as flame_sheep_audio/tests and viz_authoring/tests, ahead of the 0.9
+# repo split.)
 addopts = "--tb=short -m 'not slow' --import-mode=importlib --strict-markers"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
