@@ -56,23 +56,23 @@ its own repo → its own live ebuild tracking it via `git-r3`). This turns
 
 ## Phase 0 — repo prep (do in the monorepo first, split last)
 
-- [ ] **0.1 Native build** — `flame_sheep_audio/pyproject.toml` → `scikit-build-core`
+- [x] **0.1 Native build** — `flame_sheep_audio/pyproject.toml` → `scikit-build-core`
       backend + CMakeLists that builds `prtcqt` (rt-cqt + pffft + binding). A clean
       `pip install .` must compile it. Wire `_btrack` to the overlay package.
-- [ ] **0.2 Declare real deps** — pyproject declares `moderngl, moderngl-window, numpy,
+- [x] **0.2 Declare real deps** — pyproject declares `moderngl, moderngl-window, numpy,
       scipy, sounddevice` but code also imports **`pywayland`, `Pillow`, `dbus-python`,
       `PyGObject`(gi)/GLib, `cffi`, `glcontext`** — add them.
-- [ ] **0.3 Package-data** — declare `flame_sheep/rendering/shaders/*` + `default_config.toml`
+- [x] **0.3 Package-data** — declare `flame_sheep/rendering/shaders/*` + `default_config.toml`
       (would be dropped from a built dist today). `wallpaper_ml/shaders/*` already declared.
-- [ ] **0.4 Canonical model weights** — `.npz/.npy` in `flame_sheep/data/` are gitignored
+- [x] **0.4 Canonical model weights** — `.npz/.npy` in `flame_sheep/data/` are gitignored
       with `.backup_*` copies; pick the canonical set, `git add -f`, declare as package-data.
-- [ ] **0.5 Constrain flat layout** — `where=["."]` sweeps `docs/scripts/tools/datasets`
+- [x] **0.5 Constrain flat layout** — `where=["."]` sweeps `docs/scripts/tools/datasets`
       into the package; add an explicit allowlist (or move `flame_sheep` under `src/`).
       **Also kills the pytest namespace-shadow → half of criterion #3.**
-- [ ] **0.6 Vendor + de-hardcode the systemd unit** (into `flame_sheep_audio`) — add a
+- [x] **0.6 Vendor + de-hardcode the systemd unit** (into `flame_sheep_audio`) — add a
       `flame-sheep-audio` console script (`flame_sheep_audio.daemon:main`), rewrite
       `ExecStart` to it, ship the unit (`data/systemd/…`), install via `systemd_douserunit`.
-- [ ] **0.7 XDG paths** — runtime/IPC already respect `$XDG_RUNTIME_DIR`; **config + data
+- [x] **0.7 XDG paths** — runtime/IPC already respect `$XDG_RUNTIME_DIR`; **config + data
       are hardcoded to `~/.config` / `~/.local/share`** (ignore `$XDG_CONFIG_HOME` /
       `$XDG_DATA_HOME`) across ~10 files. Centralize in one module via **`platformdirs`**.
 - [ ] **0.8 Test-ease** — add `pytest` to a `[test]` extra so the `pytest` entry point
