@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "flame-sheep"
 version = "0.1.0"
 description = "Audio-reactive flame fractal wallpaper — Electric Sheep reimagined"
-license = { text = "GPL-2.0-or-later" }
+license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.12"
 dependencies = [
     "moderngl>=5.12.0",
