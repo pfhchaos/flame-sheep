@@ -84,6 +84,11 @@ def main():
 
     compiled = 0
     skipped = 0
+    # Keys compiled this run, for dedup. We deliberately do NOT retain the
+    # compiled programs (see the release in the loop below), so we can't
+    # dedup against renderer._chaos_shader_cache — track keys in a cheap
+    # set of frozensets instead (bytes, not ~0.9MB/key of GL program).
+    seen: set[frozenset] = set()
     t_start = time.perf_counter()
 
     sys.stdout.write('READY\n')
@@ -117,15 +122,24 @@ def main():
                     time.sleep(args.slow_delay_ms / 1000.0)
                 break
 
-            if keep_vars in renderer._chaos_shader_cache:
+            if keep_vars in seen:
                 skipped += 1
                 sys.stdout.write('DONE 0 dup\n')
                 sys.stdout.flush()
                 continue
 
             t0 = time.perf_counter()
-            renderer._get_chaos_shader_for_keep_vars(keep_vars)
+            prog = renderer._get_chaos_shader_for_keep_vars(keep_vars)
             dt = (time.perf_counter() - t0) * 1000.0
+            # Our ONLY deliverable is that compile's side effects: Mesa's
+            # on-disk shader cache is now warm and the warm marker is
+            # written. The in-memory GL program never renders in this
+            # process, so keeping it just accumulates Mesa-compiled code
+            # (~0.9MB/key; 14.9k keys -> ~8GB of swapped-out heap observed
+            # on a long run). Drop it immediately.
+            renderer._chaos_shader_cache.pop(keep_vars, None)
+            prog.release()
+            seen.add(keep_vars)
             compiled += 1
             cache_status = 'hit' if dt < 20.0 else 'cold'
             log.info(

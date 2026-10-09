@@ -28,12 +28,20 @@ from __future__ import annotations
 import logging
 import re
 import time as _time
+from collections import OrderedDict
 
 import moderngl
 import numpy as np
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# Max distinct trimmed chaos programs kept resident. Each is ~0.9MB of
+# Mesa-compiled code, so an unbounded cache grew to ~13GB over a 35-day
+# run (task: shader-cache leak). Eviction is cheap: a re-seen key
+# recompiles from Mesa's warm *disk* cache (~5ms), not a cold ~600ms
+# compile, so bounding this never reintroduces the swap-in stutter.
+_CHAOS_SHADER_CACHE_MAX = 512
 
 
 # Matches one `case N: return var_<name>(...);` line in variations.glsl's
@@ -157,7 +165,8 @@ class FlameRenderer:
         # serves as a fallback for the very first upload before any
         # cache entries exist + for codepaths that don't call
         # upload_genome (test_pattern, smoke tests).
-        self._chaos_shader_cache: dict[frozenset, "moderngl.ComputeShader"] = {}
+        self._chaos_shader_cache: "OrderedDict[frozenset, moderngl.ComputeShader]" = \
+            OrderedDict()
         self._chaos_universal_shader = self.compute_shader
         self.clear_shader = self.gpu.compile_compute_shader(
             SHADER_DIR / 'clear.comp')
@@ -233,6 +242,7 @@ class FlameRenderer:
         """
         cached = self._chaos_shader_cache.get(keep_vars)
         if cached is not None:
+            self._chaos_shader_cache.move_to_end(keep_vars)  # LRU: mark used
             self._sync_chaos_program_uniforms(cached)
             return cached
         _t0 = _time.perf_counter()
@@ -245,6 +255,20 @@ class FlameRenderer:
             source_transform=_transform,
         )
         self._chaos_shader_cache[keep_vars] = prog
+        # LRU eviction. We just inserted one, so len exceeds the cap by at
+        # most one; pop the least-recently-used and free its Mesa compile.
+        # Never release the live program or the universal fallback — the
+        # MRU insert above means the victim is always a long-idle entry, so
+        # this guard is defensive (a skipped victim just leaves the cache
+        # at cap, re-fetched as a cheap disk-cache hit next time).
+        if len(self._chaos_shader_cache) > _CHAOS_SHADER_CACHE_MAX:
+            _ev_key, _ev_prog = self._chaos_shader_cache.popitem(last=False)
+            if _ev_prog is not self.compute_shader and \
+                    _ev_prog is not self._chaos_universal_shader:
+                try:
+                    _ev_prog.release()
+                except Exception:
+                    pass
         dt_ms = (_time.perf_counter() - _t0) * 1000
         log.info(
             f'[gl-chaos-trim] compiled shader for '
