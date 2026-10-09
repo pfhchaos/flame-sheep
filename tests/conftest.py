@@ -6,17 +6,13 @@ import sys
 from pathlib import Path
 
 _tests_dir = str(Path(__file__).resolve().parent)
-_audio_tests = str(Path(__file__).resolve().parent.parent / 'flame_sheep_audio' / 'tests')
 
-# Ensure both test directories are importable. NOTE: _audio_tests is NOT
-# dead despite living in flame_sheep_audio/ — `audio_helpers.py` (imported
-# below for "Re-export audio helpers for integration tests") lives only at
-# flame_sheep_audio/tests/audio_helpers.py, not in this directory. Removing
-# this breaks that import. (Tried removing it during the 0.9-prep pass;
-# `from audio_helpers import ...` below failed immediately. Left in place.)
-for _p in [_tests_dir, _audio_tests]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# audio_helpers.py and viz_helpers.py are vendored in this directory —
+# audio_helpers was copied in when flame_sheep_audio split out into its own
+# repo, so this tree no longer reaches into a sibling package's tests. Only
+# this directory needs to be importable.
+if _tests_dir not in sys.path:
+    sys.path.insert(0, _tests_dir)
 
 # ---------------------------------------------------------------------------
 # Package-import sanity check
@@ -41,11 +37,12 @@ for _p in [_tests_dir, _audio_tests]:
 def _verify_package_imports():
     import importlib
     _repo = Path(__file__).resolve().parent.parent
+    # Post-split, only flame_sheep lives in this repo; the three siblings are
+    # external installed deps (their own repos now), so there are no sibling
+    # dirs at the repo root to shadow — only flame_sheep is meaningful to
+    # check here.
     expected = {
-        'wallpaper_ml':      _repo / 'wallpaper_ml' / 'src' / 'wallpaper_ml',
         'flame_sheep':       _repo / 'flame_sheep',
-        'flame_sheep_audio': _repo / 'flame_sheep_audio' / 'src' / 'flame_sheep_audio',
-        'viz_authoring':     _repo / 'viz_authoring' / 'src' / 'viz_authoring',
     }
     for name, expected_path in expected.items():
         try:
@@ -80,12 +77,12 @@ _verify_package_imports()
 # means something silently regressed, NOT that the floor needs to move.
 # ---------------------------------------------------------------------------
 
-# Bump when intentionally adding tests. As of 2026-05-31 (after restoring
-# the silently-skipped wallpaper_ml suite + adding the seq-backward
-# regression test + shader-health tests): 1715 non-slow tests collect.
-# 1700 gives ~15 tests of headroom for legitimate removal while still
+# Bump when intentionally adding tests. As of 2026-10-08 (after the 0.9 repo
+# split moved flame_sheep_audio/wallpaper_ml/viz_authoring to their own repos
+# with their own suites): 1012 non-slow tests collect in this repo.
+# 1000 gives ~12 tests of headroom for legitimate removal while still
 # catching any larger silent loss.
-_MIN_TEST_COUNT = 1700
+_MIN_TEST_COUNT = 1000
 
 
 def pytest_collection_modifyitems(config, items):

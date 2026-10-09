@@ -60,7 +60,7 @@ flame_sheep = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "flame_sheep_audio/tests", "viz_authoring/tests", "wallpaper_ml/tests"]
+testpaths = ["tests"]
 # --import-mode=importlib: don't auto-prepend test directories to sys.path.
 # Prevents the silent-shadowing class where a tests/wallpaper_ml/__init__.py
 # would mask the installed wallpaper_ml package and cause every numerical-
