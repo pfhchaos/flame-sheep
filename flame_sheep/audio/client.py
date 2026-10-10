@@ -142,17 +142,11 @@ class AudioDaemonClient:
         layout = compute_layout(n_bins, band_names)
         reader = ShmReader(layout, new_mmap)
 
-        # Derive bin frequencies from engine type + bin count.
-        if n_bins == 108:  # CQT default
-            try:
-                from flame_sheep_audio import CqtEngine
-                bin_freqs = CqtEngine().bin_centers
-            except ImportError:
-                bin_freqs = np.linspace(20, 20000, n_bins).astype(np.float32)
-        else:
-            from flame_sheep_audio import FREQS
-            bin_freqs = (FREQS[:n_bins] if len(FREQS) >= n_bins
-                         else np.linspace(20, 20000, n_bins).astype(np.float32))
+        # Bin center frequencies come from the daemon's schema — it owns the
+        # spectrum engine, so it publishes the authoritative mapping. The
+        # client never reconstructs it (that silently goes wrong if the
+        # daemon's engine params differ from the client's assumptions).
+        bin_freqs = np.asarray(schema['bin_freqs'], dtype=np.float32)
 
         # Re-subscribe to SongStart — the previous subscription died
         # with the old daemon instance.
