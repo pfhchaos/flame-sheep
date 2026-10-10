@@ -6,7 +6,7 @@ import numpy as np
 
 from flame_sheep.config import cfg
 from flame_sheep_audio import HOP_SIZE, SAMPLE_RATE
-from flame_sheep_audio.response import AsymmetricEnvelope
+from viz_authoring.response import AsymmetricEnvelope
 
 
 TWO_PI = 2.0 * np.pi
