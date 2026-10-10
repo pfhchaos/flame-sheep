@@ -138,6 +138,31 @@ its own repo → its own live ebuild tracking it via `git-r3`). This turns
 - **Where the split repos live** (self-hosted / forge / local bare repos for `git-r3`).
 - **prtcqt pedantry:** leave pffft bundled in the CMake target (fine for a `-9999`
   personal ebuild) vs unbundle to a system lib later.
+- **Dev workflow after packaging (TODO — 2026-10-09):** the live `flame-sheep --wallpaper`
+  loads `flame_sheep` from the emerged `/usr/lib` package, NOT the venv editable install.
+  `include-system-site-packages=true` + a *lenient* editable (project appended to the END of
+  `sys.path`) means the system package now shadows dev edits — pre-emerge the editable won;
+  packaging silently flipped it. Consequence: source edits need a re-emerge to reach the
+  running wallpaper (hit this live while fixing the shader-cache leak). Decide the intended
+  loop: (a) run the system package, re-emerge to deploy (current de-facto); (b) make the
+  editable win (strict editable, or `include-system-site-packages=false`); or (c) run the
+  `/usr/bin/flame-sheep` system binary explicitly, venv = tests-only.
+- **CNN scoring via `scoring` USE (2026-10-09, in progress):** needs `sci-ml/pytorch`, which is
+  single-target — unsatisfiable while flame-sheep was multi-target. Fixed by the single-impl
+  conversion (below); `scoring` now resolves and pulls the pytorch stack (~28 pkgs). Enabled on
+  this system via package.use; building. Open: `+scoring`/mandatory vs keep default-off — defer
+  until the code-split lands and CNN's value is confirmed in use (the heuristic was anti-correlated
+  with preferences, so CNN isn't a nudge over a good baseline — it's the fix for a bad one).
+- **flame-sheep & flame-sheep-audio were wrongly multi-target (fixed 2026-10-09):** multi-target
+  is for libraries imported in-process by multiple interpreters. flame-sheep is an app;
+  flame-sheep-audio is an IPC service daemon (shmem + dbus) — both are now `DISTUTILS_SINGLE_IMPL`.
+  wallpaper-ml, viz-authoring, vulkan stay multi-target (genuine libraries).
+- **Audio/visual code-split (TODO — 2026-10-09):** flame-sheep imports compute code from
+  flame_sheep_audio across the IPC boundary. `response.py` (EMA, AsymmetricEnvelope, OnsetDensity,
+  Delta, MelCentroid, Normalize) is used ONLY by flame-sheep's axes, not the daemon → client-side
+  visual-response math misplaced in the audio package. Move to viz-authoring (multi-target, already
+  a flame-sheep dep, its domain). CqtEngine stays (daemon uses it: daemon.py, processor.py);
+  flame-sheep's import of CqtEngine is a smaller cleanup (likely only needs constants).
 
 ## Notes
 
