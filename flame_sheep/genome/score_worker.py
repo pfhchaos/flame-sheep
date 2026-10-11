@@ -587,12 +587,19 @@ class BackgroundCpuScorer:
 
     def __init__(self, db_path: str):
         self._db_path = db_path
+        # spawn, not the Linux-default fork: fork copies the parent
+        # render process's GL context + GPU buffers and its open SQLite
+        # connection fd into the child. These workers are meant to be
+        # fully isolated (that's why they're processes). The Event and
+        # Process must come from the SAME spawn context or the Event
+        # won't ride the spawn Process cleanly.
+        self._ctx = multiprocessing.get_context('spawn')
         self._process: multiprocessing.Process | None = None
-        self._stop = multiprocessing.Event()
+        self._stop = self._ctx.Event()
 
     def start(self) -> None:
         self._stop.clear()
-        self._process = multiprocessing.Process(
+        self._process = self._ctx.Process(
             target=_score_main,
             args=(self._db_path, self._stop),
             daemon=True, name='cpu-scorer')
