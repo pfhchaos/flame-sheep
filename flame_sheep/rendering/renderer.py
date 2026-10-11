@@ -295,16 +295,18 @@ class FlameRenderer:
             #   COLD (~600ms): Mesa had nothing cached; a genuine visible
             #     stutter AND a signal the worker never pre-warmed this key
             #     (behind, or it was never enqueued). -> WARNING.
-            #   warm (~5ms): disk-warm in Mesa's cache but evicted from our
-            #     bounded in-memory LRU; a single one isn't a visible
-            #     stutter (see the cache-bound note at the top of this
-            #     file), but a STREAM of them means the live working set
-            #     exceeds the cache -> thrashing / cache-size pressure, a
-            #     different problem from a lagging worker. -> INFO.
+            #   warm (~5ms): disk-warm in Mesa's cache but not resident in
+            #     our bounded in-memory cache -- evicted under pressure, OR
+            #     (at startup / before the cache fills) simply never promoted
+            #     yet. A single one isn't a visible stutter (see the cache-
+            #     bound note at the top of this file); a STREAM once the cache
+            #     is full means the live working set exceeds it -> thrashing /
+            #     cache-size pressure, a different problem from a lagging
+            #     worker. -> INFO.
             cold = dt_ms > _INLINE_COMPILE_COLD_MS
             msg = (
                 f'[gl-chaos-trim] RENDER-THREAD inline compile '
-                f'({"COLD — precompile worker did not pre-warm this" if cold else "warm disk-cache recompile — evicted from in-memory LRU"}): '
+                f'({"COLD — precompile worker did not pre-warm this" if cold else "warm disk-cache recompile — not resident in in-memory cache"}): '
                 f'|vars|={len(keep_vars)} took {dt_ms:.0f}ms '
                 f'(cache {len(self._chaos_shader_cache)}/{_CHAOS_SHADER_CACHE_MAX})')
             log.warning(msg) if cold else log.info(msg)
