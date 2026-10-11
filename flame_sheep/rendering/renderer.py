@@ -43,6 +43,11 @@ log = logging.getLogger(__name__)
 # compile, so bounding this never reintroduces the swap-in stutter.
 _CHAOS_SHADER_CACHE_MAX = 512
 
+# Above this, an inline compile is a true cold compile (Mesa had nothing on
+# disk; ~600ms). Below it, the key was disk-warm and the ~5ms is just the
+# in-memory recompile. Used only to classify the render-thread warning.
+_INLINE_COMPILE_COLD_MS = 50.0
+
 
 # Matches one `case N: return var_<name>(...);` line in variations.glsl's
 # apply_single_variation switch. Mirror of flame_sheep.rendering.vk.chaos_game's
@@ -116,6 +121,18 @@ class FlameRenderer:
         self.gpu        = gpu
         self.ctx        = gpu.ctx  # local alias — same moderngl context
         self.n_walkers  = n_walkers
+
+        # When True, any inline chaos-shader compile is logged as an
+        # unexpected render-thread event — WARNING if it's a cold compile
+        # (~600ms, a real stutter + the precompile worker never pre-warmed
+        # it), INFO if it's a cheap warm recompile (~5ms, a key evicted
+        # from the in-memory LRU; not a visible stutter alone, but a stream
+        # of them means cache thrashing). The live wallpaper sets this —
+        # its render thread is never supposed to compile, since the
+        # precompile worker + the GenomeAxis readiness gate exist to keep
+        # compiles off the hot path. Left False in the precompile worker,
+        # where compiling IS the job and the quiet [gl-chaos-trim] applies.
+        self.warn_on_inline_compile = False
 
         self._load_shaders(scoring=scoring)
         self._create_resources()
@@ -270,10 +287,32 @@ class FlameRenderer:
                 except Exception:
                     pass
         dt_ms = (_time.perf_counter() - _t0) * 1000
-        log.info(
-            f'[gl-chaos-trim] compiled shader for '
-            f'|vars|={len(keep_vars)} in {dt_ms:.0f}ms '
-            f'(cache size={len(self._chaos_shader_cache)})')
+        if self.warn_on_inline_compile:
+            # The live render thread is never supposed to compile inline
+            # (precompile worker + readiness gate keep it off the hot
+            # path), so log every one — but at a level that matches the
+            # actual cost, not a blanket alarm:
+            #   COLD (~600ms): Mesa had nothing cached; a genuine visible
+            #     stutter AND a signal the worker never pre-warmed this key
+            #     (behind, or it was never enqueued). -> WARNING.
+            #   warm (~5ms): disk-warm in Mesa's cache but evicted from our
+            #     bounded in-memory LRU; a single one isn't a visible
+            #     stutter (see the cache-bound note at the top of this
+            #     file), but a STREAM of them means the live working set
+            #     exceeds the cache -> thrashing / cache-size pressure, a
+            #     different problem from a lagging worker. -> INFO.
+            cold = dt_ms > _INLINE_COMPILE_COLD_MS
+            msg = (
+                f'[gl-chaos-trim] RENDER-THREAD inline compile '
+                f'({"COLD — precompile worker did not pre-warm this" if cold else "warm disk-cache recompile — evicted from in-memory LRU"}): '
+                f'|vars|={len(keep_vars)} took {dt_ms:.0f}ms '
+                f'(cache {len(self._chaos_shader_cache)}/{_CHAOS_SHADER_CACHE_MAX})')
+            log.warning(msg) if cold else log.info(msg)
+        else:
+            log.info(
+                f'[gl-chaos-trim] compiled shader for '
+                f'|vars|={len(keep_vars)} in {dt_ms:.0f}ms '
+                f'(cache size={len(self._chaos_shader_cache)})')
         # Mark warm so peer processes (precompile worker, future
         # FlameRenderer instances) know this compile populated Mesa's
         # implicit cache.

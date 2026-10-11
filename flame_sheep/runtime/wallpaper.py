@@ -123,6 +123,12 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     session.make_current(first_surf)
     ctx = session.create_moderngl_context()
     renderer = FlameRenderer(GpuContext(ctx, canvas_w, canvas_h, ppmm=canvas_ppmm))
+    # This is the live render thread — it is never supposed to compile a
+    # chaos shader inline (the precompile worker + readiness gate keep cold
+    # compiles off the hot path). Log inline compiles (WARNING when cold =
+    # real stutter + worker behind, INFO when a cheap evicted-recompile) so
+    # a lagging worker — or cache thrashing — is visible instead of silent.
+    renderer.warn_on_inline_compile = True
     renderer.blur_radius = blur_radius
 
     renderer.temporal_decay = 0.0  # image-space temporal off (using histogram decay instead)

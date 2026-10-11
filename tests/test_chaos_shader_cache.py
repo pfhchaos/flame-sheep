@@ -13,6 +13,7 @@ again.
 """
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from unittest.mock import MagicMock
 
@@ -21,7 +22,10 @@ import pytest
 from flame_sheep.rendering.renderer import (
     FlameRenderer,
     _CHAOS_SHADER_CACHE_MAX,
+    _INLINE_COMPILE_COLD_MS,
 )
+
+_LOGGER = "flame_sheep.rendering.renderer"
 
 
 class _FakeProg:
@@ -51,6 +55,9 @@ def _make_renderer(monkeypatch) -> FlameRenderer:
     # Don't write real warm-marker files into ~/.cache during the test.
     import flame_sheep.rendering.vk.pipeline_warm as pw
     monkeypatch.setattr(pw, "mark_warm", lambda *a, **k: None)
+    # Real __init__ sets this; __new__ bypasses it. Default matches __init__
+    # (the precompile worker's value — compiling is expected there).
+    r.warn_on_inline_compile = False
     return r
 
 
@@ -95,3 +102,79 @@ def test_active_program_is_never_released_on_eviction(monkeypatch):
 
     assert active_key not in r._chaos_shader_cache  # evicted from the dict
     assert active.released is False  # but NOT freed — it's in use
+
+
+def _patch_compile_duration(monkeypatch, seconds: float) -> None:
+    """Make the next inline compile appear to take `seconds` of wall-clock.
+    _get_chaos_shader_for_keep_vars calls perf_counter twice on a miss (start,
+    end); feed it start then start+seconds (and hold the last value if called
+    again, so we never raise StopIteration)."""
+    import flame_sheep.rendering.renderer as rmod
+    vals = iter([0.0, float(seconds)])
+    last = [0.0]
+
+    def _fake():
+        try:
+            last[0] = next(vals)
+        except StopIteration:
+            pass
+        return last[0]
+
+    monkeypatch.setattr(rmod._time, "perf_counter", _fake)
+
+
+# Durations that sit clearly on either side of the cold threshold, derived
+# from the constant so these don't rot if the threshold is retuned.
+_COLD_S = (_INLINE_COMPILE_COLD_MS * 2) / 1000.0
+_WARM_S = (_INLINE_COMPILE_COLD_MS / 2) / 1000.0
+
+
+def test_live_thread_inline_compile_warns_cold(monkeypatch, caplog):
+    """The live render thread is never supposed to compile inline; when it
+    does and the compile is cold, it must surface as a WARNING naming the
+    render thread + the cold (worker-didn't-pre-warm) cause. Reverting the
+    branch to a plain INFO turns this red."""
+    r = _make_renderer(monkeypatch)
+    r.warn_on_inline_compile = True
+    _patch_compile_duration(monkeypatch, _COLD_S)
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        r._get_chaos_shader_for_keep_vars(frozenset({1, 2}))
+    recs = [x for x in caplog.records if x.name == _LOGGER]
+    assert any(x.levelno == logging.WARNING and "RENDER-THREAD" in x.message
+               and "COLD" in x.message for x in recs), recs
+    # And it must NOT also emit the quiet worker-style INFO line.
+    assert not any("compiled shader for" in x.message for x in recs)
+
+
+def test_live_thread_warm_eviction_logs_info_not_warning(monkeypatch, caplog):
+    """A fast inline compile on the live thread is a disk-warm key evicted
+    from the in-memory LRU — a ~5ms recompile, not a visible stutter. It must
+    still be logged (the live thread shouldn't compile at all) but as INFO,
+    NOT a WARNING: warning on it would cry wolf on the cheap case. It stays
+    distinguishable from the worker's own INFO line via the RENDER-THREAD tag."""
+    r = _make_renderer(monkeypatch)
+    r.warn_on_inline_compile = True
+    _patch_compile_duration(monkeypatch, _WARM_S)
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        r._get_chaos_shader_for_keep_vars(frozenset({3}))
+    recs = [x for x in caplog.records if x.name == _LOGGER]
+    assert not any(x.levelno == logging.WARNING for x in recs), recs
+    infos = [x for x in recs if x.levelno == logging.INFO
+             and "RENDER-THREAD" in x.message]
+    assert len(infos) == 1, recs
+    assert "COLD" not in infos[0].message
+
+
+def test_worker_inline_compile_stays_quiet_info(monkeypatch, caplog):
+    """In the precompile worker (flag False) compiling IS the job, even a cold
+    one — it must stay an INFO line and never warn, or the worker log drowns
+    in false alarms."""
+    r = _make_renderer(monkeypatch)
+    assert r.warn_on_inline_compile is False
+    _patch_compile_duration(monkeypatch, _COLD_S)
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        r._get_chaos_shader_for_keep_vars(frozenset({7}))
+    recs = [x for x in caplog.records if x.name == _LOGGER]
+    assert any(x.levelno == logging.INFO and "compiled shader for" in x.message
+               for x in recs), recs
+    assert not any(x.levelno == logging.WARNING for x in recs)
