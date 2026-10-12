@@ -505,6 +505,57 @@ class Genome:
         result.center   = _lerp_arr(self.center,   other.center,   t)
         return result
 
+    def to_dict(self) -> dict:
+        """Exact, lossless serialization of the genome's INTRINSIC data to a
+        JSON-compatible dict.
+
+        This is the SINGLE genome serializer — the catalog DB
+        (``storage.serialization._genome_to_json``) and the shader-warming PLAN
+        protocol both go through it, so there is one source of truth for the
+        genome blob. It round-trips every intrinsic field (transforms incl.
+        ``color_speed``, final_xform, palette, zoom, rotation, center, and the
+        flam3 tone-map params).
+
+        ``db_id`` is DELIBERATELY excluded: identity is not genome data, it is
+        the catalog row key. The storage layer owns it (``load_genome`` stamps
+        it from the row id) and the PLAN protocol carries it as a SEPARATE wire
+        field alongside the serialized genome (see ``plan_protocol``), not inside
+        this blob. Keeping it out is what lets the catalog reuse this serializer
+        without leaking the row key into the stored params.
+
+        Paired with ``from_dict``; a divergence is caught by
+        ``test_genome_serialize.py``.
+        """
+        d = {
+            'transforms': [tr.to_dict() for tr in self.transforms],
+            'palette': self.palette.tolist(),
+            'zoom': float(self.zoom),
+            'rotation': float(self.rotation),
+            'center': self.center.tolist(),
+            'flam3_brightness': float(self.flam3_brightness),
+            'flam3_gamma': float(self.flam3_gamma),
+        }
+        if self.final_xform is not None:
+            d['final_xform'] = self.final_xform.to_dict()
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'Genome':
+        """Inverse of :meth:`to_dict`. ``db_id`` is NOT read here — it is not in
+        the blob; the caller (storage layer / PLAN protocol) sets it from the
+        row id / wire field. Old blobs may lack ``flam3_*`` → field defaults."""
+        g = cls()
+        g.transforms = [Transform.from_dict(td) for td in d['transforms']]
+        if d.get('final_xform') is not None:
+            g.final_xform = Transform.from_dict(d['final_xform'])
+        g.palette = np.array(d['palette'], dtype=np.float32)
+        g.zoom = float(d['zoom'])
+        g.rotation = float(d['rotation'])
+        g.center = np.array(d['center'], dtype=np.float32)
+        g.flam3_brightness = float(d.get('flam3_brightness', cls.flam3_brightness))
+        g.flam3_gamma = float(d.get('flam3_gamma', cls.flam3_gamma))
+        return g
+
     def rotated(self, angle: float) -> 'Genome':
         """Return a copy with all affine transforms rotated by angle (radians).
 
