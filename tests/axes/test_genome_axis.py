@@ -294,12 +294,23 @@ class TestUserNext:
 
     def test_user_next_mid_morph_sets_flag(self, axis_with_lib):
         axis = axis_with_lib
+        axis._mode = Mode.BEAT          # the loop-pending flag is beat-only now
         axis._morph.state = MorphState.MORPHING
         axis._morph.t = 0.5
         axis.user_next()
         assert axis._next_loop_pending is True
         # Morph continues
         assert axis._morph.t == 0.5
+
+    def test_user_next_walks_in_idle(self, axis_with_lib):
+        """Not-beat: user_next walks on now (loops are beat-only) — no loop flag."""
+        axis = axis_with_lib
+        axis._mode = Mode.IDLE
+        axis._morph.state = MorphState.MORPHING
+        axis._morph.t = 0.5
+        axis.user_next()
+        assert axis._next_loop_pending is False
+        assert axis._morph.state == MorphState.MORPHING   # walking (start_morph)
 
     def test_user_next_in_swap_ready_switches(self, axis_with_lib):
         axis = axis_with_lib
@@ -435,6 +446,7 @@ class TestPickRelocation:
 
     def test_pick_next_target_follows_in_loop(self, axis_with_lib):
         axis = axis_with_lib
+        axis._mode = Mode.BEAT                          # FOLLOW is beat-only
         step0 = axis._loop.loop_step
         axis._pick_next_target()
         assert axis._loop.loop_step != step0            # FOLLOW advanced the seq
@@ -457,6 +469,7 @@ class TestPickRelocation:
 
 class TestFollowAuthority:
     def _in_loop_with_dbid(self, axis):
+        axis._mode = Mode.BEAT          # FOLLOW is beat-only after the reshape
         axis.current_genome = axis._loop.loop_genomes[0]
         assert axis.current_genome.db_id is not None
 
@@ -483,33 +496,68 @@ class TestFollowAuthority:
 
     def test_follow_falls_back_without_provider(self, axis_with_lib):
         axis = axis_with_lib                              # no provider wired
+        axis._mode = Mode.BEAT                            # FOLLOW is beat-only
         step0 = axis._loop.loop_step
         assert axis._pick_next_target() is True
         assert axis._loop.loop_step == step0 + 1          # render-side pick ran
 
-    def test_dwell_release_stays_dwelling_on_defer(self, axis_with_lib):
+    # FOLLOW is beat-only now, and beat's dwell is released by a KICK (not a
+    # timeout) — so the defer-at-release integration lives in beat mode.
+    def test_beat_release_stays_dwelling_on_defer(self, axis_with_lib):
         axis = axis_with_lib
-        self._in_loop_with_dbid(axis)
-        axis.set_plan_provider(lambda aid, b: None)       # worker not ready
-        axis._mode = Mode.IDLE
+        self._in_loop_with_dbid(axis)                     # beat mode
+        axis.set_plan_provider(lambda aid, b: None)       # FOLLOW not ready
         axis._morph.state = MorphState.DWELL
-        axis._morph.dwell_start = 0.0
-        axis.tick(_make_audio(mode='idle'), 1 / 60, 100000.0)  # past timeout
-        assert axis._morph.state == MorphState.DWELL      # deferred, dwelling
+        kick = BeatEvent(kind='low', energy=0.8)
+        axis.tick(_make_audio(mode='beat', events=[kick]), 1 / 60, 1000.0)
+        assert axis._morph.state == MorphState.DWELL      # kick couldn't release
 
-    def test_dwell_release_morphs_when_ready(self, axis_with_lib):
+    def test_beat_release_morphs_when_ready(self, axis_with_lib):
         axis = axis_with_lib
-        self._in_loop_with_dbid(axis)
+        self._in_loop_with_dbid(axis)                     # beat mode
         sentinel = trivial_genome(888)
         sentinel.db_id = 888
         axis.set_plan_provider(
             lambda aid, b: sentinel if b == 'follow' else None)
-        axis._mode = Mode.IDLE
         axis._morph.state = MorphState.DWELL
-        axis._morph.dwell_start = 0.0
-        axis.tick(_make_audio(mode='idle'), 1 / 60, 100000.0)
+        kick = BeatEvent(kind='low', energy=0.8)
+        axis.tick(_make_audio(mode='beat', events=[kick]), 1 / 60, 1000.0)
         assert axis._morph.state == MorphState.MORPHING
         assert axis.target_genome is sentinel
+
+
+# ----------------------------------------------------------------
+# Mode → movement reshape (DECISIONS 2026-10-12): IDLE/ENERGY one-step WALK even
+# with a loop loaded; loops are BEAT-only (they encode rhythmic cadence). Walking
+# idle/energy also surfaces non-loop genomes for voting (GA coverage).
+#
+# MUTATION GUARD: drop the `Mode.BEAT` gate in _pick_next_target and
+# test_idle_walks_past_a_loaded_loop reddens (idle would FOLLOW → loop_step
+# advances).
+# ----------------------------------------------------------------
+
+class TestModeMovementReshape:
+    def test_idle_walks_past_a_loaded_loop(self, axis_with_lib):
+        axis = axis_with_lib                         # a loop is loaded
+        axis._mode = Mode.IDLE
+        assert axis._loop.has_loop
+        step0 = axis._loop.loop_step
+        axis._pick_next_target()
+        assert axis._loop.loop_step == step0         # WALK: counter does NOT advance
+
+    def test_energy_walks_past_a_loaded_loop(self, axis_with_lib):
+        axis = axis_with_lib
+        axis._mode = Mode.ENERGY
+        step0 = axis._loop.loop_step
+        axis._pick_next_target()
+        assert axis._loop.loop_step == step0         # WALK
+
+    def test_beat_still_follows_loop(self, axis_with_lib):
+        axis = axis_with_lib
+        axis._mode = Mode.BEAT
+        step0 = axis._loop.loop_step
+        axis._pick_next_target()
+        assert axis._loop.loop_step == step0 + 1     # beat FOLLOWS → advances
 
 
 # ----------------------------------------------------------------

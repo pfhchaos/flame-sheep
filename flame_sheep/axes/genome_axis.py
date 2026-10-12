@@ -200,7 +200,11 @@ class GenomeAxis:
                 self.current_genome = self.current_genome.lerp(
                     self.target_genome, self._morph.t
                 )
-                self._swap_next_genome()
+                # A timbral (centroid) trigger moves timbrally: WALK toward a
+                # spectral neighbor, not FOLLOW a rhythmic loop. (In BEAT this is
+                # a reactive detour; ENERGY's reactive walk is its one distinction
+                # from idle's timeout walk.)
+                self._graph_walk_next()
                 self._morph.commit_swap(clock)
                 log.debug("[centroid swap] triggered")
 
@@ -213,21 +217,16 @@ class GenomeAxis:
                 if self._mode == Mode.BEAT:
                     self._morph.enter_swap_ready()
                 else:
-                    # Idle/energy: ARRIVE at the completed target. Fire the PLAN
-                    # request for the just-arrived genome, then either take a loop
-                    # CHANGE immediately (BREAK — no dwell, as before) or enter
-                    # DWELL and defer the steady FOLLOW/WALK pick to dwell-release.
+                    # Idle/energy ARRIVE: fire the PLAN for the just-arrived
+                    # genome and enter DWELL. These modes WALK (loops are a
+                    # beat-mode construct — they encode musical cadence, which
+                    # idle/energy don't have), so there is no loop-change here; the
+                    # steady pick at dwell-release is a one-step walk. Walking also
+                    # surfaces NON-loop genomes for the user to vote on (GA
+                    # coverage) — see DECISIONS 2026-10-12.
                     self.current_genome = self.target_genome
                     self._emit_arrival()
-                    if self._next_loop_pending:
-                        self._next_loop_pending = False
-                        self.next_loop()
-                        self._morph.start_morph()
-                    elif self._loop.has_loop and self._loop.should_exit_loop():
-                        self.next_loop()
-                        self._morph.start_morph()
-                    else:
-                        self._morph.commit_swap(clock)
+                    self._morph.commit_swap(clock)
 
         elif self._morph.in_dwell:
             # Mode-specific dwell release
@@ -370,19 +369,28 @@ class GenomeAxis:
         log.info("force swap")
 
     def user_next(self) -> None:
-        """User-triggered 'next' — finish current morph, then switch loop.
+        """User-triggered 'next'. Mode-keyed: BEAT jumps to the next loop;
+        IDLE/ENERGY walk on now (loops are beat-only). The not-beat branch forces
+        an immediate walk rather than setting the loop-pending flag (which only
+        BEAT consumes — leaving it set in idle/energy would linger).
 
-        Sets a flag so that when the current morph completes, instead of
-        continuing the loop sequence, it loads the next loop via graph.
-        If in dwell, triggers immediately.
-        """
+        TODO (DECISIONS 2026-10-12): "next" probably wants a RANDOM JUMP to
+        something DIFFERENT, not a similar graph-neighbor — revisit once directed
+        walk / random-jump exists."""
+        if self._mode != Mode.BEAT:
+            # not-beat: walk on immediately
+            self.current_genome = self.current_genome.lerp(
+                self.target_genome, self._morph.t)
+            self._graph_walk_next()
+            self._morph.start_morph()
+            return
+        # beat: switch to the next loop
         if self._morph.in_dwell or self._morph.in_swap_ready:
-            # Not morphing — switch now
             self.current_genome = self.target_genome or self.current_genome
             self.next_loop()
             self._morph.start_morph()
         else:
-            # Mid-morph — flag it to switch when morph completes
+            # Mid-morph — flag it to switch when the morph completes.
             self._next_loop_pending = True
 
     # --- Loop management ---
@@ -493,12 +501,14 @@ class GenomeAxis:
 
     def _pick_next_target(self) -> bool:
         """Pick the next steady-cycle target at DEPARTURE (dwell-release / the
-        release-kick): FOLLOW in a loop, WALK otherwise. Returns False iff the
-        pick DEFERRED (worker hasn't answered / shader not warm) — the caller
-        then stays in DWELL and retries, affines still rotating."""
-        if self._loop.has_loop:
-            return self._follow_pick()   # FOLLOW via the worker (S3)
-        self._graph_walk_next()          # WALK — render-side (S4 flips this)
+        release-kick). Movement is MODE-keyed: BEAT follows a loop (loops encode
+        rhythmic cadence); IDLE/ENERGY one-step WALK (no cadence to follow, and
+        walking surfaces non-loop genomes for voting — DECISIONS 2026-10-12).
+        Returns False iff the pick DEFERRED (worker not answered / shader not
+        warm) — caller stays in DWELL and retries, affines still rotating."""
+        if self._mode == Mode.BEAT and self._loop.has_loop:
+            return self._follow_pick()   # beat: follow the loop (S3 worker FOLLOW)
+        self._graph_walk_next()          # idle/energy or no-loop: one-step walk
         return True
 
     def _follow_pick(self) -> bool:
