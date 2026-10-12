@@ -193,17 +193,17 @@ class GenomeAxis:
                 if event.kind == "song_start":
                     self._handle_song_start(clock)
 
-        # --- Centroid swap (beat + energy modes) ---
-        if self._mode in (Mode.BEAT, Mode.ENERGY):
+        # --- Centroid swap (ENERGY mode only) ---
+        # A centroid/timbral shift is ENERGY's reactivity: WALK toward a spectral
+        # neighbor. BEAT does NOT swap on centroid — its loop advances on the beat
+        # (kicks), not on timbre. (Firing in beat too was drift; it both broke the
+        # rhythm-only loop and walked onto un-warmed genomes = cold compiles.)
+        if self._mode == Mode.ENERGY:
             low_density = self._role.band_state(audio, DOWNBEAT).onset_density
             if self._centroid.tick(audio.spectrum, low_density, self._morph.t):
                 self.current_genome = self.current_genome.lerp(
                     self.target_genome, self._morph.t
                 )
-                # A timbral (centroid) trigger moves timbrally: WALK toward a
-                # spectral neighbor, not FOLLOW a rhythmic loop. (In BEAT this is
-                # a reactive detour; ENERGY's reactive walk is its one distinction
-                # from idle's timeout walk.)
                 self._graph_walk_next()
                 self._morph.commit_swap(clock)
                 log.debug("[centroid swap] triggered")

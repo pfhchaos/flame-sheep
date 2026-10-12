@@ -559,6 +559,33 @@ class TestModeMovementReshape:
         axis._pick_next_target()
         assert axis._loop.loop_step == step0 + 1     # beat FOLLOWS → advances
 
+    # The centroid swap is ENERGY-ONLY: a timbral trigger is energy's reactivity
+    # (a walk). BEAT does NOT swap on centroid — the loop advances on the beat,
+    # not on timbre. (Regression caught on-box 2026-10-12: firing in beat walked
+    # off-loop onto un-warmed genomes → a render-thread COLD compile.)
+    def test_centroid_no_swap_in_beat(self, axis_with_lib, monkeypatch):
+        axis = axis_with_lib
+        axis._mode = Mode.BEAT
+        axis._morph.state = MorphState.DWELL
+        monkeypatch.setattr(axis._centroid, 'tick', lambda *a: True)
+        tgt0 = axis.target_genome
+        step0 = axis._loop.loop_step
+        axis.tick(_make_audio(mode='beat'), 1 / 60, 1000.0)
+        assert axis.target_genome is tgt0            # no centroid swap in beat
+        assert axis._loop.loop_step == step0
+
+    def test_centroid_walks_in_energy(self, axis_with_lib, monkeypatch):
+        axis = axis_with_lib
+        axis._mode = Mode.ENERGY
+        axis._morph.state = MorphState.DWELL
+        axis.current_genome = axis._loop.loop_genomes[0]
+        monkeypatch.setattr(axis._centroid, 'tick', lambda *a: True)
+        tgt0 = axis.target_genome
+        step0 = axis._loop.loop_step
+        axis.tick(_make_audio(mode='energy'), 1 / 60, 1000.0)
+        assert axis.target_genome is not tgt0        # energy centroid WALKED
+        assert axis._loop.loop_step == step0         # walk doesn't advance loop
+
 
 # ----------------------------------------------------------------
 # Graph walk (idle/energy mode)
