@@ -505,11 +505,31 @@ class GenomeAxis:
         rhythmic cadence); IDLE/ENERGY one-step WALK (no cadence to follow, and
         walking surfaces non-loop genomes for voting — DECISIONS 2026-10-12).
         Returns False iff the pick DEFERRED (worker not answered / shader not
-        warm) — caller stays in DWELL and retries, affines still rotating."""
+        warm) — caller stays in DWELL and retries, affines still rotating.
+
+        In BEAT, the loop may also BREAK: should_exit_loop() picks a uniform exit
+        position per loop entry (after MIN_EXIT_CYCLES), and on that step we leave
+        the loop for a new one instead of following. Loop CHANGES stay beat-only —
+        idle/energy never reach this branch, they just WALK."""
         if self._mode == Mode.BEAT and self._loop.has_loop:
+            if self._loop.should_exit_loop():
+                return self._break_pick()    # leave the loop (BREAK)
             return self._follow_pick()   # beat: follow the loop (S3 worker FOLLOW)
         self._graph_walk_next()          # idle/energy or no-loop: one-step walk
         return True
+
+    def _break_pick(self) -> bool:
+        """Leave the current loop (BREAK). Render-side next_loop for now (the
+        worker-ships-the-loop flip is a follow-up). Returns True if a new loop
+        target was committed, False to defer."""
+        ref = self.current_genome
+        if ref.db_id is None and self.target_genome is not None:
+            ref = self.target_genome
+        target = self._loop.next_loop(ref)
+        if target is not None and self._accept_target(target):
+            self.target_genome = target
+            return True
+        return False
 
     def _follow_pick(self) -> bool:
         """FOLLOW using the worker's pre-decided target (step 4 S3). The render

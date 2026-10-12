@@ -69,6 +69,10 @@ class LoopPlayer:
         self.active_loop_id: int | None = None
         self._loop_history: deque[int] = deque(maxlen=self.LOOP_HISTORY_SIZE)
         self._cycle_count: int = 0
+        # Pick-the-exit-node: a sequence position in [0, cycle_len), re-picked
+        # once per loop entry in _start_loop. should_exit_loop fires when
+        # _loop_step lands on it (after MIN_EXIT_CYCLES). Uniform exit POSITION.
+        self._exit_at: int = 0
 
         # Prefetch (for non-loop graph walk mode)
         self._next_genome: Genome | None = None
@@ -219,12 +223,14 @@ class LoopPlayer:
             return target
 
     def should_exit_loop(self) -> bool:
-        """Loop progression: after MIN_EXIT_CYCLES, increasing exit probability.
+        """Loop progression: PICK-THE-EXIT-NODE. After MIN_EXIT_CYCLES, exit the
+        FIRST time the loop position reaches ``_exit_at`` — a single uniform exit
+        sequence-position chosen per loop entry in ``_start_loop``.
 
-        Exit probability at genome swap i within a cycle is i / loop_length.
-        This biases toward exiting near the end of a cycle (completing the
-        phrase) while still allowing mid-cycle exits to avoid hub-node ruts
-        in graph traversal.
+        This gives a UNIFORM exit POSITION (a fresh exit spot each pass, like the
+        entry varies) and a bounded, known hold-time of MIN_EXIT_CYCLES..+1
+        cycles. It replaces the old ``pos / loop_length`` ramp, which was both
+        geometric (unbounded hold) and clustered exits at the END of the cycle.
         """
         if not self._loop_genomes:
             return False
@@ -233,12 +239,10 @@ class LoopPlayer:
         n = len(self._loop_genomes)
         if n <= 1:
             return True
-        # Position within current cycle (0-indexed)
-        pos = self._loop_step
-        exit_prob = pos / n
-        if self._rng.random() < exit_prob:
+        if self._loop_step == self._exit_at:
             log.info(f"[loop] exiting after {self._cycle_count} cycles "
-                     f"(pos={pos}/{n}, prob={exit_prob:.2f})")
+                     f"(pos={self._loop_step}/{self._loop_cycle_len}, "
+                     f"exit_at={self._exit_at})")
             return True
         return False
 
@@ -261,6 +265,16 @@ class LoopPlayer:
 
         self._loop_sequence = loop_sequence(self._loop_genomes, self._loop_structure)
         self._loop_cycle_len = cycle_length(n, self._loop_structure)
+
+        # Pick-the-exit-node: choose a UNIFORM exit sequence-position once, now
+        # that cycle_len is known. should_exit_loop fires when _loop_step hits it
+        # (after MIN_EXIT_CYCLES), giving a fresh exit spot each pass and a
+        # bounded hold-time of MIN_EXIT_CYCLES..+1 cycles — not the old geometric
+        # pos/n ramp that clustered exits at the end of the cycle.
+        if self._loop_cycle_len >= 1:
+            self._exit_at = int(self._rng.integers(0, self._loop_cycle_len))
+        else:
+            self._exit_at = 0
 
         # Pick start position: use graph-provided entry genome, or find closest
         if entry_genome_id is not None:

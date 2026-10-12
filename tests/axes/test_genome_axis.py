@@ -241,42 +241,41 @@ class TestLoopPlayback:
 # ----------------------------------------------------------------
 
 class TestLoopProgression:
+    # REWRITTEN for PICK-THE-EXIT-NODE (the old pos/n probability ramp is gone).
+    # should_exit_loop now fires deterministically at a single uniform exit
+    # position (_exit_at) picked per loop entry, after MIN_EXIT_CYCLES. The old
+    # `test_exit_prob_increases_with_position` is OBSOLETE (there is no longer a
+    # position-dependent probability) and is replaced by
+    # `test_exit_fires_only_at_picked_position` below, which also proves the exit
+    # can land anywhere (uniform position, not clustered late).
+
     def test_no_exit_before_min_cycles(self, axis_with_lib):
-        """should_exit_loop returns False before MIN_EXIT_CYCLES."""
+        """should_exit_loop returns False before MIN_EXIT_CYCLES, even sitting on
+        the exit node."""
         axis = axis_with_lib
-        axis._loop._cycle_count = 2
-        assert axis._loop.should_exit_loop() is False
+        lp = axis._loop
+        lp._cycle_count = lp.MIN_EXIT_CYCLES - 1
+        lp._loop_step = lp._exit_at
+        assert lp.should_exit_loop() is False
 
-    def test_exit_possible_after_min_cycles(self, axis_with_lib):
-        """After enough cycles, should_exit_loop can return True."""
+    @pytest.mark.parametrize("which", ["first", "middle", "last"])
+    def test_exit_fires_only_at_picked_position(self, axis_with_lib, which):
+        """After MIN_EXIT_CYCLES, exit fires at exactly the picked position and
+        nowhere else — and the position can be anywhere in the cycle (uniform
+        exit POSITION, replacing the obsolete pos/n ramp)."""
         axis = axis_with_lib
-        axis._loop._cycle_count = 5
-        # At position near end of loop, probability is high
-        n = len(axis._loop.loop_genomes)
-        axis._loop._loop_step = n - 1  # last position: prob = (n-1)/n
-        # Run many times — should exit at least once
-        exits = sum(axis._loop.should_exit_loop() for _ in range(100))
-        assert exits > 0
-
-    def test_exit_prob_increases_with_position(self, axis_with_lib):
-        """Exit probability increases with position in cycle."""
-        axis = axis_with_lib
-        axis._loop._cycle_count = 10  # well past minimum
-
-        n = len(axis._loop.loop_genomes)
-        if n < 3:
-            pytest.skip("Need at least 3 genomes for position test")
-
-        # Position 0: prob = 0/n = 0 (never exits)
-        axis._loop._loop_step = 0
-        exits_start = sum(axis._loop.should_exit_loop() for _ in range(200))
-
-        # Position n-1: prob = (n-1)/n (almost always exits)
-        axis._loop._loop_step = n - 1
-        exits_end = sum(axis._loop.should_exit_loop() for _ in range(200))
-
-        assert exits_start == 0  # 0/n = 0 probability
-        assert exits_end > exits_start
+        lp = axis._loop
+        cyc = lp._loop_cycle_len
+        if cyc < 3:
+            pytest.skip("Need cycle_len >= 3 for first/middle/last positions")
+        lp._cycle_count = lp.MIN_EXIT_CYCLES
+        lp._exit_at = {"first": 0, "middle": cyc // 2, "last": cyc - 1}[which]
+        fired = []
+        for step in range(cyc):
+            lp._loop_step = step
+            if lp.should_exit_loop():
+                fired.append(step)
+        assert fired == [lp._exit_at]
 
 
 # ----------------------------------------------------------------
@@ -585,6 +584,67 @@ class TestModeMovementReshape:
         axis.tick(_make_audio(mode='energy'), 1 / 60, 1000.0)
         assert axis.target_genome is not tgt0        # energy centroid WALKED
         assert axis._loop.loop_step == step0         # walk doesn't advance loop
+
+
+# ----------------------------------------------------------------
+# Beat loop BREAK (pick-the-exit-node wired into _pick_next_target): in BEAT, when
+# the loop player signals an exit, the pick LEAVES the current loop for a new one
+# (BREAK) instead of FOLLOWing it. Loop changes stay beat-only — idle/energy never
+# break, they WALK, even when should_exit_loop is forced True.
+#
+# MUTATION GUARD: if _pick_next_target dropped the should_exit_loop() check (always
+# FOLLOW), test_beat_breaks_loop_on_exit_signal reddens (active_loop_id wouldn't
+# change). If the Mode.BEAT gate were dropped, the idle/energy tests redden.
+# ----------------------------------------------------------------
+
+class TestBeatLoopBreak:
+    def _in_beat_loop(self, axis):
+        axis._mode = Mode.BEAT
+        axis.current_genome = axis._loop.loop_genomes[0]
+        assert axis.current_genome.db_id is not None
+
+    def test_beat_breaks_loop_on_exit_signal(self, axis_with_lib, monkeypatch):
+        """Forced should_exit_loop True → BREAK: a new loop is committed (2-loop
+        library → somewhere to go). Returns True (dwell releases)."""
+        axis = axis_with_lib
+        self._in_beat_loop(axis)
+        monkeypatch.setattr(axis._loop, 'should_exit_loop', lambda: True)
+        old_loop = axis.active_loop_id
+        assert axis._pick_next_target() is True       # BREAK committed
+        assert axis.active_loop_id != old_loop        # left for a different loop
+
+    def test_beat_follows_when_no_exit_signal(self, axis_with_lib, monkeypatch):
+        """Forced should_exit_loop False → FOLLOW: stay in the loop, advance."""
+        axis = axis_with_lib
+        self._in_beat_loop(axis)
+        monkeypatch.setattr(axis._loop, 'should_exit_loop', lambda: False)
+        old_loop = axis.active_loop_id
+        step0 = axis._loop.loop_step
+        axis._pick_next_target()
+        assert axis.active_loop_id == old_loop        # stayed in the loop
+        assert axis._loop.loop_step == step0 + 1      # FOLLOW advanced the seq
+
+    def test_idle_never_breaks(self, axis_with_lib, monkeypatch):
+        """idle WALKS even with should_exit forced True — loops are beat-only."""
+        axis = axis_with_lib
+        axis._mode = Mode.IDLE
+        monkeypatch.setattr(axis._loop, 'should_exit_loop', lambda: True)
+        old_loop = axis.active_loop_id
+        step0 = axis._loop.loop_step
+        axis._pick_next_target()
+        assert axis.active_loop_id == old_loop        # no break
+        assert axis._loop.loop_step == step0          # walked, loop untouched
+
+    def test_energy_never_breaks(self, axis_with_lib, monkeypatch):
+        """energy WALKS even with should_exit forced True."""
+        axis = axis_with_lib
+        axis._mode = Mode.ENERGY
+        monkeypatch.setattr(axis._loop, 'should_exit_loop', lambda: True)
+        old_loop = axis.active_loop_id
+        step0 = axis._loop.loop_step
+        axis._pick_next_target()
+        assert axis.active_loop_id == old_loop
+        assert axis._loop.loop_step == step0
 
 
 # ----------------------------------------------------------------
