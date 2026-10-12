@@ -243,6 +243,93 @@ def test_stdout_loop_dispatches_plan_response():
 
 
 # ================================================================
+# 5. PlanCache — the render-side target slot (step 4, stage S1)
+# ================================================================
+#
+# Spec: the worker answers PLANs async on the reader thread; the move path reads
+# a branch's pre-decided target by the arrival genome it is moving away from. A
+# single latest-slot (one arrival in flight per dwell). Serves a target ONLY on
+# an arrival_id match; any mismatch (not landed yet, or superseded) -> None,
+# which the move path reads as "defer". MUTATION GUARD: drop the arrival_id check
+# in get_target and test_get_target_rejects_stale_arrival reddens; break the
+# branch map and test_get_target_branch_mapping reddens.
+#
+# NOT tested here (notated): true concurrent reader/render access -- the lock is
+# exercised structurally (every path takes it) but a race is not deterministically
+# reproducible in a unit test; the single-slot design is what removes the hazard.
+
+def _resp(arrival_id, follow_id=None, break_id=None, walk_id=None):
+    """Build a parsed PlanResponse via the real wire path (round-tripped), so the
+    cache sees exactly what the reader thread would hand it."""
+    def tw(gid):
+        return None if gid is None else target_to_wire(_mk_genome({0}, db_id=gid))
+    wire = make_plan_response(1, arrival_id,
+                              tw(follow_id), tw(break_id), tw(walk_id))
+    return parse_plan_response(json.loads(json.dumps(wire))['plan'])
+
+
+def test_get_target_before_ingest_is_none():
+    assert pp.PlanCache().get_target(7, 'follow') is None
+
+
+def test_get_target_matching_arrival_returns_branch():
+    c = pp.PlanCache()
+    c.ingest(_resp(7, follow_id=70, break_id=71, walk_id=72))
+    assert c.get_target(7, 'follow').id == 70
+    assert c.get_target(7, 'break').id == 71
+    assert c.get_target(7, 'walk').id == 72
+
+
+def test_get_target_rejects_stale_arrival():
+    """A plan is served only for the arrival it was computed from."""
+    c = pp.PlanCache()
+    c.ingest(_resp(7, follow_id=70))
+    assert c.get_target(8, 'follow') is None   # different arrival -> defer
+    assert c.get_target(7, 'follow').id == 70   # same arrival -> served
+
+
+def test_get_target_branch_mapping():
+    """'break' maps to the break_ field, not follow/walk."""
+    c = pp.PlanCache()
+    c.ingest(_resp(7, follow_id=70, break_id=71, walk_id=72))
+    # each token resolves to its OWN target, proving no cross-wiring
+    assert (c.get_target(7, 'follow').id,
+            c.get_target(7, 'break').id,
+            c.get_target(7, 'walk').id) == (70, 71, 72)
+
+
+def test_latest_ingest_supersedes():
+    c = pp.PlanCache()
+    c.ingest(_resp(7, follow_id=70))
+    c.ingest(_resp(8, follow_id=80))
+    assert c.get_target(7, 'follow') is None    # superseded
+    assert c.get_target(8, 'follow').id == 80
+
+
+def test_get_target_none_branch_on_match():
+    """A branch the worker couldn't plan (e.g. no loops -> break None) returns
+    None even on an arrival match."""
+    c = pp.PlanCache()
+    c.ingest(_resp(7, follow_id=70, break_id=None))
+    assert c.get_target(7, 'break') is None
+    assert c.get_target(7, 'follow').id == 70
+
+
+def test_get_target_none_arrival_is_none():
+    c = pp.PlanCache()
+    c.ingest(_resp(7, follow_id=70))
+    assert c.get_target(None, 'follow') is None
+
+
+def test_get_target_unknown_branch_raises():
+    import pytest
+    c = pp.PlanCache()
+    c.ingest(_resp(7, follow_id=70))
+    with pytest.raises(ValueError):
+        c.get_target(7, 'sideways')
+
+
+# ================================================================
 # NOT TESTED HERE (notated skips):
 #   * The real worker SUBPROCESS: stdin line -> planner thread -> real Library
 #     plan -> stdout response, answered CONCURRENTLY with an in-flight cold

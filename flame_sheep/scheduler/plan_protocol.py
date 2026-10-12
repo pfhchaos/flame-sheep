@@ -33,6 +33,7 @@ exact pick — see :func:`check_walk_structure` / :func:`check_break_structure`.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -150,6 +151,55 @@ def parse_plan_response(spec: dict) -> PlanResponse:
         break_=target_from_wire(spec.get('break')),
         walk=target_from_wire(spec.get('walk')),
     )
+
+
+# --- render-side target cache (shader-warming.md step 4, stage S1) ---------
+#
+# The worker answers PLAN requests ASYNCHRONOUSLY on the driver's stdout reader
+# thread; the render thread reads the pre-decided targets later, at move time.
+# This is the thread-safe hand-off slot between them. Step 4 stages flip the
+# move path to read it; S1 only populates it (render still uses `_loop.*`).
+
+# Branch token -> PlanResponse field.
+_BRANCH_FIELD = {'follow': 'follow', 'break': 'break_', 'walk': 'walk'}
+
+
+class PlanCache:
+    """Thread-safe latest-plan slot. Only the most recent arrival's targets are
+    kept -- one arrival is in flight per dwell, so a single slot (not a growing
+    map) matches the cadence and can't leak. A target is served only when its
+    ``arrival_id`` matches the genome the render thread is moving away from; a
+    mismatch (the plan for THIS arrival hasn't landed yet, or a newer arrival
+    superseded it) returns ``None``, which the move path reads as "defer"."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._resp: PlanResponse | None = None
+
+    def ingest(self, resp: PlanResponse) -> None:
+        """Store the latest response (reader-thread side). Replaces any prior."""
+        with self._lock:
+            self._resp = resp
+
+    def get_target(self, arrival_id: int | None, branch: str) -> PlanTarget | None:
+        """Return the ``branch`` target the worker planned FROM ``arrival_id``,
+        or ``None`` if no matching plan is cached yet (→ the caller defers).
+        ``branch`` is one of 'follow' / 'break' / 'walk'."""
+        field = _BRANCH_FIELD.get(branch)
+        if field is None:
+            raise ValueError(f'unknown branch {branch!r}')
+        if arrival_id is None:
+            return None
+        with self._lock:
+            r = self._resp
+        if r is None or r.arrival_id != arrival_id:
+            return None
+        return getattr(r, field)
+
+    def current_arrival(self) -> int | None:
+        """The arrival_id of the cached plan, or None. (Diagnostics/tests.)"""
+        with self._lock:
+            return self._resp.arrival_id if self._resp is not None else None
 
 
 # --- A/B comparison (render side, step 3) ---------------------------------

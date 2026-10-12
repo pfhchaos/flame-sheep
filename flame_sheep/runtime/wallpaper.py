@@ -221,10 +221,14 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # thread — NEVER the render thread — so the (DB-touching) compare can't tax
     # frames, matching the _prewarm_compare_pair precedent.
     import threading as _threading_ab
+    from ..scheduler.plan_protocol import PlanCache
     _plan_counter = [0]
     _plan_pending: dict[int, tuple] = {}
     _plan_lock = _threading_ab.Lock()
     _ab_lib_box: dict = {'lib': None, 'tried': False}
+    # Step-4 S1: the render-side target cache. Populated here on the reader
+    # thread; the move path will read it (S3+). Render still uses _loop.* today.
+    _plan_cache = PlanCache()
 
     def _ab_lib():
         """Lazily open a Library bound to the stdout reader thread (one thread,
@@ -248,6 +252,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         except Exception:
             log.exception('[plan-ab] malformed plan response: %r', inner)
             return
+        # S1: cache the worker's targets for the (future) move path.
+        _plan_cache.ingest(resp)
         with _plan_lock:
             stash = _plan_pending.pop(resp.req, None)
         if stash is None:
