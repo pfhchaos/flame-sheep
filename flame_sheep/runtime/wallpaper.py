@@ -38,9 +38,9 @@ def _enqueue_loop_change_warm(precompile_driver, loop_genomes) -> tuple[int, int
     DB-heavy 2-hop flood (near_tuples: ~31 load_genome + nearest_transitions
     queries) is NOT computed here — it's requested from the precompile
     WORKER process (request_flood), which computes it with its own Library
-    and ships the keys back for the driver to enqueue at LOW. This is the
-    whole point of step 1 of the shader-warming redesign: no DB on the
-    render thread.
+    and SELF-SCHEDULES the resulting keys into its own queue at LOW (step 2;
+    step 1 streamed them back for the driver to enqueue). This is the whole
+    point of the shader-warming redesign: no DB on the render thread.
 
     Returns (n_med_enqueued, n_seed_ids) for logging.
     """

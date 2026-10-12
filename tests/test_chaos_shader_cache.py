@@ -58,6 +58,7 @@ def _make_renderer(monkeypatch) -> FlameRenderer:
     # Real __init__ sets this; __new__ bypasses it. Default matches __init__
     # (the precompile worker's value — compiling is expected there).
     r.warn_on_inline_compile = False
+    r._last_shader_key = None  # real __init__ sets this; __new__ bypasses it
     return r
 
 

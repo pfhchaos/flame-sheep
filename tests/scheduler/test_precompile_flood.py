@@ -1,31 +1,32 @@
-"""Step-1 shader-warming redesign — the loop-change flood's near_tuples
-computation moves OFF the render thread INTO the precompile worker process.
+"""Step-2 shader-warming redesign — the flood path + the loop-change wiring.
+
+Step 1 moved near_tuples OFF the render thread INTO the worker, but the
+worker still STREAMED the flood tuples back for the driver to enqueue
+(FLOOD/FLOOD_DONE). **Step 2 removes that round-trip**: the worker computes
+the flood and SELF-SCHEDULES the tuples into its own in-process queue. So
+this file now covers:
+  * compute_flood           — precompile_worker_gl  (section 1; was
+                              handle_flood_request, minus the stdout stream)
+  * _enqueue_loop_change_warm — runtime.wallpaper   (section 2; unchanged)
+  * the driver shim's request serialization — precompile_driver (section 3;
+    was the FLOOD/FLOOD_DONE recv assembly, now deleted plumbing)
+
+The worker's in-process CompileQueue + dispatch routing (the scheduling that
+MOVED into the worker) are covered in test_precompile_worker_queue.py.
 
 Retrofitted to the component-spec / test-decomposition standard
-(shader-warming.md -> "Test method & component map"). Each touched component
-below carries a written BEHAVIOR SPEC, then the decomposition into unit (mock
+(shader-warming.md -> "Test method & component map"): each touched component
+carries a written BEHAVIOR SPEC, then the decomposition into unit (mock
 deps) / simple-integration (real seam) / e2e (GL mocked). Coverage gaps are
-NOTATED in-file with their reason (see "NOT TESTED HERE" at the bottom) —
-never silent.
+NOTATED in-file with their reason (see "NOT TESTED HERE" at the bottom).
 
-The flood-computation tests run against the in-memory ``FakeLibrary``
-(tests/scheduler/fake_library.py), not a real ``Library(data_dir=...)``: the
-real one costs ~14s to seed (Genome.random + scoring) and buys these tests
-nothing. The fake gives an EXACT graph, so the assertions are exact, not
-"== whatever near_tuples returned". The one test that DOES touch a real
-Library is the fake-fidelity proof, and it is marked ``slow`` so the default
-(fast) suite stays DB-free.
-
-Touched components (home -> spec is at the head of its section):
-  * handle_flood_request  — precompile_worker_gl  (section 1)
-  * _enqueue_loop_change_warm — runtime.wallpaper  (section 2)
-  * request_flood + the FLOOD/FLOOD_DONE recv handling — precompile_driver
-    (section 3)
+The flood tests run against the in-memory ``FakeLibrary`` (fake_library.py),
+not a real ``Library(data_dir=...)``: the real one costs ~14s to seed
+(Genome.random + scoring) and buys these tests nothing. The fake gives an
+EXACT graph, so the assertions are exact. The one test that DOES touch a
+real Library is the fake-fidelity proof, marked ``slow``.
 """
 from __future__ import annotations
-
-import io
-import types
 
 import numpy as np
 import pytest
@@ -33,9 +34,9 @@ import pytest
 from flame_sheep.genome import Genome
 from flame_sheep.storage.library import Library
 from flame_sheep.scheduler.precompile_warm import (
-    near_tuples, tuple_to_json_line, json_line_to_tuple, _genome_tuple,
+    near_tuples, _genome_tuple,
 )
-from flame_sheep.scheduler.precompile_worker_gl import handle_flood_request
+from flame_sheep.scheduler.precompile_worker_gl import compute_flood
 
 from tests.scheduler.fake_library import FakeLibrary, FakeGenome
 
@@ -70,61 +71,50 @@ _EXPECTED_FLOOD = {
 
 
 # ================================================================
-# 1. handle_flood_request  [home: precompile_worker_gl]
+# 1. compute_flood  [home: precompile_worker_gl]
 # ----------------------------------------------------------------
 # BEHAVIOR SPEC. Given the worker's own Library and a flood spec
-# {seed_ids, hops, fan_per_node}, handle_flood_request MUST:
-#   (a) compute EXACTLY the pure near_tuples flood (same DB, same math) —
+# {seed_ids, hops, fan_per_node}, compute_flood MUST:
+#   (a) return EXACTLY the pure near_tuples flood (same DB, same math) —
 #       it is the render thread's old inline work, relocated to the process,
 #       and must not alter the result;
-#   (b) stream one ``FLOOD <json>`` line per tuple then ``FLOOD_DONE <count>``;
-#   (c) on empty seeds, compute nothing and emit just ``FLOOD_DONE 0``;
+#   (b) return an empty set on empty seeds (nothing to flood from);
+#   (c) swallow a MALFORMED spec and return an empty set (the task is dropped,
+#       the worker loop keeps running) — mutation-provable. NB: per-genome DB
+#       errors are already swallowed INSIDE near_tuples, so compute_flood's own
+#       guard is what protects against bad spec FIELDS (non-int seed_ids, etc.)
+#       that raise before near_tuples is reached;
 #   (d) never touch GL (pure DB+math) — which is why it is unit-testable here.
-# Decomposition: all unit-level (deps = FakeLibrary, a StringIO for `out`).
-# The real-subprocess variant is a notated skip (see bottom of file).
+# Step 2: there is NO stdout stream anymore — the caller (worker main loop)
+# self-schedules the returned set. Decomposition: all unit-level (dep =
+# FakeLibrary). The real-subprocess variant is a notated skip (bottom).
 # ================================================================
 
-def test_handle_flood_request_computes_exact_flood():
-    lib, ids = _make_graph()
-    buf = io.StringIO()
-
-    tuples = handle_flood_request(lib, {'seed_ids': [0], 'hops': 2,
-                                        'fan_per_node': 5}, buf)
-
+def test_compute_flood_returns_exact_flood():
+    lib, _ids = _make_graph()
+    tuples = compute_flood(lib, {'seed_ids': [0], 'hops': 2,
+                                 'fan_per_node': 5})
     # (a) exact flood, AND identical to the pure near_tuples on the same lib
-    # (proves the handler is a pass-through to near_tuples, not a reimpl).
+    # (proves compute_flood is a pass-through to near_tuples, not a reimpl).
     assert tuples == _EXPECTED_FLOOD
     assert tuples == near_tuples(lib, [0], hops=2, fan_per_node=5)
 
 
-def test_handle_flood_request_protocol_roundtrips():
-    lib, ids = _make_graph()
-    buf = io.StringIO()
-
-    tuples = handle_flood_request(lib, {'seed_ids': [0], 'hops': 2,
-                                        'fan_per_node': 5}, buf)
-
-    # (b) one FLOOD line per tuple, terminal FLOOD_DONE <count>, and the
-    # streamed lines parse back to exactly the computed set.
-    lines = buf.getvalue().strip().splitlines()
-    assert lines[-1] == f'FLOOD_DONE {len(tuples)}'
-    parsed = {
-        json_line_to_tuple(ln[len('FLOOD '):])
-        for ln in lines if ln.startswith('FLOOD ')
-    }
-    assert parsed == tuples == _EXPECTED_FLOOD
+def test_compute_flood_empty_seeds():
+    # (b) nothing to flood from -> empty set, no DB work.
+    assert compute_flood(FakeLibrary(), {'seed_ids': []}) == set()
+    assert compute_flood(FakeLibrary(), {}) == set()
 
 
-def test_handle_flood_request_empty_seeds():
-    lib = FakeLibrary()
-    buf = io.StringIO()
-
-    tuples = handle_flood_request(lib, {'seed_ids': []}, buf)
-
-    # (c) nothing computed, just the terminal marker (releases the driver's
-    # send thread even on an empty/failed flood).
-    assert tuples == set()
-    assert buf.getvalue().strip() == 'FLOOD_DONE 0'
+def test_compute_flood_swallows_malformed_spec():
+    """(c) MUTATION GUARD — a malformed spec must not crash the worker's
+    compile loop; compute_flood returns an empty set and the task is dropped.
+    Delete the try/except in compute_flood and this goes red: the non-int
+    seed_id raises ValueError out of the list comprehension, before
+    near_tuples is ever called. (A raising Library would NOT prove this guard —
+    near_tuples swallows per-genome DB errors itself — so the mutation target
+    is deliberately a bad spec field.)"""
+    assert compute_flood(FakeLibrary(), {'seed_ids': ['not-an-int']}) == set()
 
 
 # ================================================================
@@ -136,12 +126,13 @@ def test_handle_flood_request_empty_seeds():
 #       cheap pure _genome_tuple math on already-loaded genomes;
 #   (b) request the 2-hop flood FROM THE WORKER (request_flood) for the loop
 #       members that have a db_id, and NEVER compute near_tuples itself (DB on
-#       the render thread is the bug step 1 removes) — mutation-provable;
+#       the render thread is the bug the redesign removes) — mutation-provable;
 #   (c) when no loop member has a db_id (factory/ephemeral), skip the flood
 #       request entirely but still warm the members.
 # Decomposition: unit-level with a mock driver (_FakeDriver captures the two
 # seams: enqueue + request_flood). The "no DB on the render thread" guarantee
-# is the durable mutation guard (test (b)).
+# is the durable mutation guard (test (b)). Unchanged by step 2 — the render
+# side still calls the same two shim methods; only the worker internals moved.
 # ================================================================
 
 class _FakeDriver:
@@ -163,14 +154,13 @@ def test_loop_change_requests_flood_not_inline(monkeypatch):
 
     Revert _enqueue_loop_change_warm to call near_tuples inline and this test
     goes red on BOTH asserts: the _boom patch fires (near_tuples ran on the
-    render thread) AND no flood is requested from the worker. (Re-verified red
-    under that mutation on 2026-10-11.)"""
+    render thread) AND no flood is requested from the worker."""
     from flame_sheep.runtime import wallpaper as wp
     import flame_sheep.scheduler.precompile_warm as pw
 
     def _boom(*a, **k):
         raise AssertionError(
-            'near_tuples ran on the render thread — step-1 regression')
+            'near_tuples ran on the render thread — redesign regression')
     monkeypatch.setattr(pw, 'near_tuples', _boom)
 
     rng = np.random.default_rng(3)
@@ -204,77 +194,74 @@ def test_loop_change_skips_flood_when_no_db_ids():
 
 
 # ================================================================
-# 3. request_flood + FLOOD/FLOOD_DONE recv  [home: precompile_driver]
+# 3. driver shim request serialization  [home: precompile_driver]
 # ----------------------------------------------------------------
-# BEHAVIOR SPEC.
-#   request_flood MUST enqueue a single 'flood' control payload (seed_ids +
-#   params) onto the SAME priority queue as compiles — so the worker computes
-#   it in priority order, not on the render thread — and MUST no-op on empty
-#   seed_ids.
-#   The recv side MUST buffer each streamed ``FLOOD <json>`` tuple and, on
-#   ``FLOOD_DONE``, enqueue the whole buffer at LOW (priority 10) IN ORDER,
-#   then reset the buffer for the next flood.
-# Decomposition: simple-integration on the real PrecompileDriver object with
-# NO subprocess started (construction + these two methods are GPU-free); the
-# IPC/queue plumbing is an INTERIM seam (step 2 collapses it into the worker),
-# so a lighter test is acceptable per the standard.
+# BEHAVIOR SPEC (step 2). The driver no longer owns a queue; enqueue /
+# request_flood just serialize ONE newline-framed JSON request to the
+# worker's stdin, and the worker queues/dedups/schedules internally:
+#   enqueue(tuples, p)       -> {"enqueue": {"priority": p,
+#                                 "tuples": [[n, hf, [sorted vars]], ...]}}
+#                               and empty tuples -> no write, returns 0.
+#   request_flood(seeds,...) -> {"flood": {"seed_ids", "hops",
+#                                 "fan_per_node", "priority"}}
+#                               and empty seeds -> no write (no-op).
+# Decomposition: simple-integration on the real PrecompileDriver with NO
+# subprocess started — a FakeProc (fake_pipe.py) captures stdin. GPU-free.
+# (The old FLOOD/FLOOD_DONE recv assembly this section used to test is DELETED
+# plumbing; its coverage is retired with it.)
 # ================================================================
 
-def test_request_flood_enqueues_control_payload():
+def _make_shim():
     from flame_sheep.scheduler.precompile_driver import PrecompileDriver
-
+    from tests.scheduler.fake_pipe import FakeProc
     drv = PrecompileDriver(canvas_w=0, canvas_h=0, policy=object(),
                            worker_module='flame_sheep.scheduler.'
                                          'precompile_worker_gl')
-    drv.request_flood([11, 12], hops=2, fan_per_node=5)
-
-    # One item on the queue: (priority, seq, payload-dict). No subprocess ran.
-    assert drv._q.qsize() == 1
-    priority, _seq, payload = drv._q.get_nowait()
-    assert payload == {'type': 'flood', 'seed_ids': [11, 12],
-                       'hops': 2, 'fan_per_node': 5}
-
-    # Empty seeds -> no-op (nothing to flood from).
-    drv.request_flood([])
-    assert drv._q.qsize() == 0
-    drv._flag.close()
+    proc = FakeProc()
+    drv._proc = proc  # no start(); no real subprocess / GL
+    return drv, proc
 
 
-def test_recv_loop_enqueues_flood_tuples_at_low(monkeypatch):
-    from flame_sheep.scheduler.precompile_driver import PrecompileDriver
-
-    drv = PrecompileDriver(canvas_w=0, canvas_h=0, policy=object(),
-                           worker_module='flame_sheep.scheduler.'
-                                         'precompile_worker_gl')
-    captured: list[tuple[int, list]] = []
-    monkeypatch.setattr(
-        drv, 'enqueue',
-        lambda tuples, priority=0: (
-            captured.append((priority, list(tuples))) or len(list(tuples))))
-
-    t_a = (3, 0, frozenset({1, 2}))
-    t_b = (0, 0, frozenset({1, 2, 5}))
-    lines = iter([
-        'FLOOD ' + tuple_to_json_line(t_a),
-        'FLOOD ' + tuple_to_json_line(t_b),
-        'FLOOD_DONE 2',
-        '',  # EOF -> recv loop exits
-    ])
-
-    class _FakeStdout:
-        def readline(self):
-            return next(lines, '')
-
-    drv._proc = types.SimpleNamespace(stdout=_FakeStdout())
+def test_enqueue_serializes_batch_request():
+    drv, proc = _make_shim()
     try:
-        drv._recv_loop()
+        t_a = (3, 1, frozenset({1, 2}))
+        t_b = (0, 0, frozenset({5, 1, 2}))
+        n = drv.enqueue([t_a, t_b], priority=-100)
     finally:
         drv._flag.close()
 
-    # FLOOD_DONE flushed the buffer to enqueue at LOW (priority 10), in order.
-    assert captured == [(10, [t_a, t_b])]
-    # Buffer reset for the next flood.
-    assert drv._flood_buf == []
+    assert n == 2  # requested count (dedup now happens in the worker)
+    objs = proc.objects_written()
+    assert len(objs) == 1
+    assert objs[0] == {'enqueue': {
+        'priority': -100,
+        # has_final preserved as 0/1; vars SORTED on the wire.
+        'tuples': [[3, 1, [1, 2]], [0, 0, [1, 2, 5]]],
+    }}
+
+
+def test_enqueue_empty_is_noop():
+    drv, proc = _make_shim()
+    try:
+        assert drv.enqueue([], priority=0) == 0
+    finally:
+        drv._flag.close()
+    assert proc.lines_written() == []  # nothing written
+
+
+def test_request_flood_serializes_request():
+    drv, proc = _make_shim()
+    try:
+        drv.request_flood([11, 12], hops=2, fan_per_node=5, priority=0)
+        # Empty seeds -> no-op (nothing to flood from).
+        drv.request_flood([])
+    finally:
+        drv._flag.close()
+
+    objs = proc.objects_written()
+    assert objs == [{'flood': {'seed_ids': [11, 12], 'hops': 2,
+                               'fan_per_node': 5, 'priority': 0}}]
 
 
 # ================================================================
@@ -341,35 +328,18 @@ def test_fake_library_matches_real(tmp_path):
 # NOT TESTED HERE — deliberate coverage gaps, with reasons
 # (shader-warming.md standard: gaps are notated in-file, never silent).
 # ----------------------------------------------------------------
-# (1) REAL-SUBPROCESS END-TO-END round-trip (render thread -> real worker
-#     stdin -> handle_flood_request -> stdout -> driver recv -> enqueue) is
-#     NOT tested. Two reasons, either sufficient:
-#       - INTERIM SEAM: this split (driver owns the queue; worker just ships
-#         tuples home) is step-1 scaffolding that step 2 collapses — the
-#         planner + queue move INTO the worker — so an e2e lock-in test here
-#         would test plumbing we are about to delete.
-#       - GPU-GATED: the real worker (precompile_worker_gl.main) creates a
-#         standalone moderngl context + FlameRenderer at startup before it ever
-#         reads stdin, so it cannot run in the headless/CI fast suite. The
-#         pieces either side of the GL boundary ARE covered in isolation:
-#         handle_flood_request (section 1, fake lib) and the driver recv
-#         (section 3, fake stdout).
+# (1) REAL-SUBPROCESS END-TO-END (render thread -> real worker stdin ->
+#     dispatch_line -> CompileQueue -> compute_flood -> self-schedule ->
+#     real GL compile) is NOT tested — GPU-GATED: the real worker
+#     (precompile_worker_gl.main) creates a standalone moderngl context +
+#     FlameRenderer at startup before it ever reads stdin, so it can't run in
+#     the headless/CI fast suite. Every piece either side of the GL boundary
+#     IS covered in isolation: compute_flood here (section 1, fake lib), the
+#     CompileQueue + dispatch routing in test_precompile_worker_queue.py, and
+#     the driver shim serialization here (section 3).
 #
 # (2) THE ACTUAL GL SHADER COMPILE (_get_chaos_shader_for_keep_vars warming
-#     Mesa's disk cache) is GPU-gated — it needs a real GL context + driver.
-#     Verified manually / on-box, not in this suite. handle_flood_request is
-#     explicitly the GPU-FREE half (pure DB+math), which is why it IS unit-
-#     tested; the compile half is not reachable without a GPU.
-#
-# (3) THE WORKER'S STDIN DISPATCH (routing a {"flood": ...} line to
-#     handle_flood_request vs. treating a line as a compile spec) is NOT
-#     unit-tested. DECISION: notated GPU-gated skip, not a unit. The routing
-#     lives INLINE in precompile_worker_gl.main()'s `for line in sys.stdin`
-#     loop, which runs only AFTER main() has created the moderngl context +
-#     FlameRenderer + Library. It is not factored into a separately-callable,
-#     GL-free function, so it cannot be exercised without initializing GL, and
-#     extracting it would mean editing the step-1 implementation (out of scope
-#     for this retrofit). handle_flood_request — the branch target — is fully
-#     covered in section 1. If step 2 factors the stdin loop out of main()
-#     (likely, since the queue moves into the worker), add the mutation-
-#     provable routing unit then.
+#     Mesa's disk cache) is GPU-gated — real GL context + driver required.
+#     Verified manually / on-box, not in this suite. compute_flood and the
+#     queue are explicitly the GPU-FREE halves, which is why they ARE unit
+#     tested; the compile half is unreachable without a GPU.

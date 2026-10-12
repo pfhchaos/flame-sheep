@@ -190,25 +190,18 @@ def _genome_pair_to_union_tuple(a: 'Genome', b: 'Genome'
     return (0, 0, va | vb)
 
 
-def tuple_to_json_line(t: tuple[int, int, frozenset[int]]) -> str:
-    """Serialize for the precompile_worker's stdin protocol."""
-    import json
-    n_tx, has_final, keep_vars = t
-    return json.dumps({
-        'n_transforms': n_tx,
-        'has_final_xform': bool(has_final),
-        'vars': sorted(keep_vars),
-    })
+def tuple_to_wire(t: tuple[int, int, frozenset[int]]) -> list:
+    """Serialize a cache-key tuple to the JSON-friendly list form
+    ``[n_transforms, has_final, [sorted vars]]`` used in the driver →
+    worker ``{"enqueue": {"tuples": [...]}}`` batch request (step 2).
+    Paired with :func:`tuple_from_wire` so the two ends can't drift."""
+    return [t[0], t[1], sorted(t[2])]
 
 
-def json_line_to_tuple(line: str) -> tuple[int, int, frozenset[int]]:
-    """Inverse of tuple_to_json_line. Used by the driver to parse the
-    flood tuples the worker streams back on stdout (worker computes
-    near_tuples with its own Library, ships the resulting cache keys
-    home for the driver to enqueue)."""
-    import json
-    spec = json.loads(line)
-    n_tx = int(spec.get('n_transforms', 0))
-    has_final = 1 if spec.get('has_final_xform') else 0
-    keep_vars = frozenset(int(v) for v in spec.get('vars', []))
-    return (n_tx, has_final, keep_vars)
+def tuple_from_wire(x) -> tuple[int, int, frozenset[int]]:
+    """Inverse of :func:`tuple_to_wire`: the wire list → the canonical
+    ``(n, 0|1, frozenset(vars))`` tuple (same shape ``_genome_tuple``
+    produces, so dedup keys round-trip byte-for-byte)."""
+    n, has_final, var_list = x
+    return (int(n), 1 if has_final else 0,
+            frozenset(int(v) for v in var_list))

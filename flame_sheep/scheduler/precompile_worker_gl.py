@@ -3,89 +3,217 @@ cache for FlameRenderer chaos programs so the wallpaper's first
 render of each new variation set doesn't pay a ~600ms compile
 stutter.
 
-Backend-twin of precompile_worker.py (Vk). Same protocol, same
-scheduler integration, swaps ChaosGame for FlameRenderer. The
-backend-agnostic scheduler infrastructure (PauseFlag, Policy,
-PrecompileDriver, near_tuples) doesn't change.
+Backend-twin of precompile_worker.py (Vk). It swaps ChaosGame for
+FlameRenderer; the backend-agnostic scheduler infrastructure
+(PauseFlag, Policy, near_tuples) doesn't change.
 
-How it works
-------------
-1. Spawned by the wallpaper with a pause-flag path on argv.
-2. Opens its OWN headless moderngl context + GpuContext + FlameRenderer.
-3. Reads tuple specs from stdin, one JSON object per line:
-       {"n_transforms": 3, "has_final_xform": false, "vars": [0,1,3,7]}
-4. For each tuple, calls
-   FlameRenderer._get_chaos_shader_for_keep_vars(keep_vars) which
-   compiles + caches. Mesa's automatic GL shader cache (under
-   ~/.cache/mesa_shader_cache) persists the compile result; when
-   the main wallpaper process compiles the same key later it's a
-   ~5ms cache hit instead of 600ms.
-5. Writes a warm marker file (shared with the wallpaper via
-   flame_sheep.rendering.vk.pipeline_warm) so FlameRenderer.is_shader_warm()
-   on the wallpaper side returns True for compiled keys.
-6. Between compiles, checks the pause flag and yields per the
-   wallpaper-signal scheduler.
+How it works (step 2 of the shader-warming redesign)
+----------------------------------------------------
+Step 1 kept the ``queue.PriorityQueue`` + dedup in ``PrecompileDriver``
+and streamed one compile-at-a-time to the worker. **Step 2 moves the
+scheduling INTO the worker** — the worker now owns the queue, the
+``(priority, counter, tuple)`` tie-break, the ``_seen`` + ``is_warm``
+dedup, and the pop-highest-priority → compile → release loop. The
+driver is reduced to a thin IPC shim that serializes requests to our
+stdin.
 
-Process isolation: own context, own everything. The kernel-panic
-risk the user repeatedly flagged is THREADS sharing a GL context,
-not subprocess EGL contexts. Per the configurability-discipline
-memory, this is the proven-reliable pattern.
+Two threads run here:
+  * a GL-FREE **stdin reader thread** (``_stdin_loop`` → ``dispatch_line``)
+    that parses each request line and mutates the ``CompileQueue``. It
+    never touches GL and never touches the Library (so SQLite stays
+    single-threaded on the main thread). This is the thread that lets a
+    late high-priority enqueue (the -100 reactive cold-miss) overtake
+    queued work: it is received even while the main thread is mid-compile,
+    so it is popped next — the same "re-prioritization reflects in the
+    next compile" guarantee step 1 got from the one-in-flight handshake,
+    now achieved naturally by the in-worker queue.
+  * the **main compile loop** (owns the GL context + Library): pops the
+    highest-priority task, and either compiles it (disk-cache warm +
+    marker write) or, for a flood task, computes ``near_tuples`` with
+    its own Library and SELF-SCHEDULES the resulting tuples back into the
+    queue at LOW. The flood round-trip to the driver (step 1's
+    FLOOD/FLOOD_DONE back-channel) is gone — the computation is now a
+    task on the worker's own queue.
 
-Canvas dimensions aren't argv args (unlike the Vk worker) because
-GL FlameRenderer doesn't use spec constants tied to canvas size —
-the trim is purely source-level. A nominal small canvas is used
-for the headless context's buffer allocation, just to satisfy
-FlameRenderer's init contract.
+Request protocol (driver → worker stdin, one JSON object per line):
+  * ``{"enqueue": {"priority": P, "tuples": [[n, hf, [v..]], ...]}}``
+  * ``{"flood":   {"seed_ids": [..], "hops": 2, "fan_per_node": 5,
+                    "priority": P}}``
+  * ``{"n_transforms": .., "has_final_xform": .., "vars": [..]}`` — a
+    single bare compile spec, accepted for back-compat / manual piping.
+
+Policy throttling is UNCHANGED by this step. The Policy decision lives in
+the driver (it owns the render-side signal sampler) and is published to
+the shared ``PauseFlag`` mmap; the worker continues to read that flag
+between compiles and PAUSE/SLOW accordingly. Moving the queue into the
+worker is orthogonal to throttling — the throttle was always the pause
+flag, never the stdin handshake.
+
+Process isolation: own GL context, own Library, own everything. The
+kernel-panic risk the user repeatedly flagged is THREADS sharing a GL
+context, not subprocess EGL contexts. The reader thread added here is
+GL-free and Library-free, so neither invariant is violated.
+
+Canvas dimensions aren't argv args (unlike the Vk worker) because GL
+FlameRenderer doesn't use spec constants tied to canvas size — the trim
+is purely source-level. A nominal small canvas is used for the headless
+context's buffer allocation, just to satisfy FlameRenderer's init
+contract.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import queue
 import sys
+import threading
 import time
 
 from .pause_flag import PauseFlagReader
 from .policy import BatchState
-from .precompile_warm import near_tuples, tuple_to_json_line
+from .precompile_warm import near_tuples, tuple_from_wire
 
 log = logging.getLogger('flame_sheep.scheduler.precompile_worker_gl')
 
+# Priority the self-scheduled flood tuples are enqueued at — LOW, the
+# cushion for walks that wander past the loop members. Matches the
+# priority the step-1 driver re-enqueued streamed flood tuples at.
+_FLOOD_RESULT_PRIORITY = 10
 
-def handle_flood_request(lib, flood_spec: dict, out) -> set:
-    """Compute the 2-hop graph flood for a loop-change request and
-    stream the resulting pipeline cache keys back to `out`.
+# Internal queue payload sentinel distinguishing a flood-compute task
+# from a compile task (a bare (n, hf, keep_vars) tuple). A compile
+# tuple's first field is an int count, never this string, so the two
+# never collide — and the monotonic counter in the queue key means two
+# payloads are never actually compared (see CompileQueue).
+_FLOOD_TASK = '__flood__'
 
-    This is the work that used to run SYNCHRONOUSLY on the render
-    thread (~31 load_genome + nearest_transitions DB queries). It now
-    runs in the worker PROCESS, using the worker's own Library — which
-    honors the "no DB on a thread" invariant (a process, not a thread).
 
-    GPU-free and pure DB+math: no GL context is touched, so this is
-    directly unit-testable with a temp Library. The driver owns the
-    queue for now (step 1 interim): we ship the tuples home and it
-    enqueues them at LOW. Returns the set of tuples computed.
+def compute_flood(lib, flood_spec: dict) -> set[tuple[int, int, frozenset[int]]]:
+    """Compute the 2-hop graph flood for a loop-change request.
 
-    Protocol: one ``FLOOD <json>`` line per tuple, then
-    ``FLOOD_DONE <count>``. On error, ``FLOOD_DONE 0`` so the driver's
-    send thread is always released.
+    This is the DB+math work that used to run SYNCHRONOUSLY on the render
+    thread (~31 load_genome + nearest_transitions queries). It runs in
+    the worker PROCESS, on the main thread that owns the Library (so the
+    single SQLite connection stays thread-local). GPU-free and pure —
+    no GL context is touched — so it is directly unit-testable with a
+    FakeLibrary.
+
+    Step 2: the result is SELF-SCHEDULED into the worker's own queue by
+    the caller (main loop) — there is no FLOOD/FLOOD_DONE stream back to
+    the driver anymore. On empty seeds, returns an empty set. On error,
+    logs and returns an empty set (the task is simply dropped).
     """
     try:
         seed_ids = [int(s) for s in flood_spec.get('seed_ids', [])]
+        if not seed_ids:
+            return set()
         hops = int(flood_spec.get('hops', 2))
         fan_per_node = int(flood_spec.get('fan_per_node', 5))
-        tuples = near_tuples(lib, seed_ids, hops=hops,
-                             fan_per_node=fan_per_node)
+        return near_tuples(lib, seed_ids, hops=hops, fan_per_node=fan_per_node)
     except Exception:
         log.exception('flood computation failed')
-        out.write('FLOOD_DONE 0\n')
-        out.flush()
         return set()
-    for t in tuples:
-        out.write('FLOOD ' + tuple_to_json_line(t) + '\n')
-    out.write(f'FLOOD_DONE {len(tuples)}\n')
-    out.flush()
-    return tuples
+
+
+class CompileQueue:
+    """The compile scheduler, moved out of ``PrecompileDriver`` (step 2).
+
+    Owns the ``queue.PriorityQueue``, the ``(priority, counter, payload)``
+    tie-break, and the two dedup layers the driver used to own:
+      * ``_seen`` — a set of full ``(n, has_final, keep_vars)`` tuples, so
+        a tuple already queued this run is not re-queued;
+      * ``pipeline_warm.is_warm`` — a tuple whose Mesa disk cache was
+        already populated in any prior session is skipped (recompiling it
+        would just re-touch the same disk cache for no benefit).
+    Both are exactly the checks ``PrecompileDriver.enqueue`` did in step 1,
+    relocated verbatim so dedup/priority behavior is equivalent.
+
+    GL-free: ``enqueue`` / ``enqueue_flood`` / ``get`` are pure data ops,
+    safe to call from the stdin reader thread. The counter is monotonic
+    under ``_lock``, so it is always unique and the queue never compares
+    two payloads (which would TypeError on frozenset/str/tuple mixes).
+    """
+
+    def __init__(self):
+        self._q: queue.PriorityQueue = queue.PriorityQueue()
+        self._seen: set[tuple[int, int, frozenset[int]]] = set()
+        self._counter = 0
+        self._lock = threading.Lock()
+
+    def enqueue(self, tuples, priority: int = 0) -> int:
+        """Dedup + push compile tasks at ``priority`` (lower = served
+        first). Returns the number actually enqueued (after _seen +
+        is_warm skipping)."""
+        from flame_sheep.rendering.vk import pipeline_warm
+        added = 0
+        with self._lock:
+            for t in tuples:
+                if t in self._seen:
+                    continue
+                self._seen.add(t)
+                n_tx, has_final, keep_vars = t
+                if pipeline_warm.is_warm(n_tx, bool(has_final), keep_vars):
+                    continue
+                self._q.put((priority, self._counter, t))
+                self._counter += 1
+                added += 1
+        return added
+
+    def enqueue_flood(self, flood_spec: dict) -> None:
+        """Schedule a flood-COMPUTE task (not a compile) at the request's
+        priority. The main loop runs ``compute_flood`` when it pops this,
+        then self-schedules the results at LOW. Deliberately NOT deduped:
+        a flood is a one-shot computation, and its product tuples are
+        deduped when they re-enter via ``enqueue``."""
+        priority = int(flood_spec.get('priority', 0))
+        with self._lock:
+            self._q.put((priority, self._counter, (_FLOOD_TASK, flood_spec)))
+            self._counter += 1
+
+    def get(self, timeout: float):
+        """Pop the highest-priority task, or raise ``queue.Empty`` after
+        ``timeout`` seconds."""
+        return self._q.get(timeout=timeout)
+
+
+def dispatch_line(line: str, cq: CompileQueue) -> str:
+    """GL-FREE stdin routing: classify one request line and apply it to
+    the compile queue. Returns a short tag naming the branch taken, for
+    logging and for the mutation-provable routing unit test:
+
+        'flood'    — a {"flood": {...}} request → cq.enqueue_flood
+        'enqueue'  — a {"enqueue": {...}} compile batch → cq.enqueue
+        'empty'    — blank line (ignored)
+        'bad-json' — unparseable (ignored, logged)
+        'unknown'  — parsed but no recognized key / not an object
+                     (ignored, logged — any other control line lands here)
+
+    Factored out of ``main()`` precisely so routing is testable without a
+    GL context (step 1 had this inline in the stdin loop and notated it as
+    a GPU-gated skip; step 2 closes that gap)."""
+    line = line.strip()
+    if not line:
+        return 'empty'
+    try:
+        spec = json.loads(line)
+    except json.JSONDecodeError as e:
+        log.warning(f'bad json: {e}: {line[:200]}')
+        return 'bad-json'
+    if not isinstance(spec, dict):
+        log.warning(f'unexpected request (not an object): {line[:200]}')
+        return 'unknown'
+    if 'flood' in spec:
+        cq.enqueue_flood(spec['flood'])
+        return 'flood'
+    if 'enqueue' in spec:
+        req = spec['enqueue']
+        priority = int(req.get('priority', 0))
+        tuples = [tuple_from_wire(x) for x in req.get('tuples', [])]
+        cq.enqueue(tuples, priority)
+        return 'enqueue'
+    log.warning(f'unknown request, ignoring: {line[:200]}')
+    return 'unknown'
 
 
 def main():
@@ -97,9 +225,14 @@ def main():
     parser.add_argument('--verbose', action='store_true')
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format='[precompile-gl %(levelname)s] %(message)s')
+    # Log to flame-sheep.log (the rotating file the wallpaper uses) so worker
+    # activity is watchable alongside the render thread instead of stranded on
+    # the inherited stderr/tty. NOTE: two processes then share one
+    # RotatingFileHandler path — appends interleave fine, but rotation (at 5MB)
+    # is racy across processes. Acceptable for short verification runs; the
+    # proper fix (QueueHandler, or a separate worker logfile) is deferred.
+    from ..logging_config import setup_logging
+    setup_logging(level='DEBUG' if args.verbose else 'INFO')
 
     # Defer GL imports until after argv parsing so --help doesn't
     # drag in a full moderngl context.
@@ -118,51 +251,65 @@ def main():
     log.info(f'GL renderer: {ctx.info["GL_RENDERER"]}')
     gpu = GpuContext(ctx, canvas_w=256, canvas_h=256, ppmm=1.0)
     renderer = FlameRenderer(gpu)
-    # Own Library (own SQLite connection — a process, so DB work here is
-    # fine). Lets the worker compute the loop-change flood (near_tuples)
-    # off the render thread; see handle_flood_request.
+    # Own Library (own SQLite connection). Touched ONLY on this main
+    # thread (compute_flood runs here), so the connection stays
+    # thread-local; the stdin reader thread never touches it.
     lib = Library()
-    log.info('FlameRenderer + Library initialized; ready for tuples on stdin')
+    log.info('FlameRenderer + Library initialized; ready for requests on stdin')
+
+    cq = CompileQueue()
+    stop = threading.Event()
+
+    def _stdin_loop():
+        """GL-free: read request lines, route them into the queue. EOF
+        (driver closed stdin → shutdown) stops the main loop."""
+        try:
+            for line in sys.stdin:
+                if stop.is_set():
+                    break
+                dispatch_line(line, cq)
+        except (KeyboardInterrupt, BrokenPipeError):
+            pass
+        finally:
+            stop.set()
+
+    reader_t = threading.Thread(target=_stdin_loop,
+                                name='precompile-stdin', daemon=True)
+    reader_t.start()
 
     compiled = 0
     skipped = 0
-    # Keys compiled this run, for dedup. We deliberately do NOT retain the
-    # compiled programs (see the release in the loop below), so we can't
-    # dedup against renderer._chaos_shader_cache — track keys in a cheap
+    # Keys compiled this run, for the compile-time dedup layer (keyed on
+    # keep_vars, since for GL only keep_vars affects the shader). We do
+    # NOT retain the compiled programs (see the release below), so we
+    # can't dedup against renderer._chaos_shader_cache — track a cheap
     # set of frozensets instead (bytes, not ~0.9MB/key of GL program).
-    seen: set[frozenset] = set()
+    seen_keepvars: set[frozenset] = set()
     t_start = time.perf_counter()
 
-    sys.stdout.write('READY\n')
-    sys.stdout.flush()
-
     try:
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
+        while not stop.is_set():
             try:
-                spec = json.loads(line)
-            except json.JSONDecodeError as e:
-                log.warning(f'bad json: {e}: {line[:200]}')
-                sys.stdout.write('DONE 0 err\n')
-                sys.stdout.flush()
+                priority, _seq, payload = cq.get(timeout=0.5)
+            except queue.Empty:
                 continue
 
-            # Flood request: compute near_tuples with our Library and
-            # stream the keys back. This is the DB/graph work that used
-            # to run inline on the render thread (step 1 of the
-            # shader-warming redesign). Not a compile — no pause-gate.
-            if 'flood' in spec:
-                handle_flood_request(lib, spec['flood'], sys.stdout)
+            # Flood-compute task: run near_tuples with our Library (on
+            # this main thread) and self-schedule the result at LOW.
+            if isinstance(payload, tuple) and len(payload) == 2 \
+                    and payload[0] == _FLOOD_TASK:
+                result = compute_flood(lib, payload[1])
+                if result:
+                    n_added = cq.enqueue(result, priority=_FLOOD_RESULT_PRIORITY)
+                    log.debug(f'flood self-scheduled {n_added} tuple(s) at LOW')
                 continue
 
-            # n_transforms / has_final_xform are part of the Vk
-            # tuple protocol (spec constants there) but don't change
-            # the GL shader — only vars matters. Accept them in the
-            # JSON for protocol compatibility, then ignore.
-            keep_vars = frozenset(int(v) for v in spec.get('vars', []))
+            # Compile task: payload is (n_transforms, has_final, keep_vars).
+            keep_vars = payload[2]
 
+            # Policy enforcement (unchanged): read the shared pause flag
+            # the driver's policy loop publishes, and PAUSE/SLOW between
+            # compiles. Flood tasks are not gated (cheap DB, not a compile).
             while True:
                 state = reader.state
                 if state is BatchState.PAUSE:
@@ -172,10 +319,8 @@ def main():
                     time.sleep(args.slow_delay_ms / 1000.0)
                 break
 
-            if keep_vars in seen:
+            if keep_vars in seen_keepvars:
                 skipped += 1
-                sys.stdout.write('DONE 0 dup\n')
-                sys.stdout.flush()
                 continue
 
             t0 = time.perf_counter()
@@ -189,18 +334,17 @@ def main():
             # on a long run). Drop it immediately.
             renderer._chaos_shader_cache.pop(keep_vars, None)
             prog.release()
-            seen.add(keep_vars)
+            seen_keepvars.add(keep_vars)
             compiled += 1
             cache_status = 'hit' if dt < 20.0 else 'cold'
             log.info(
                 f'compiled keep_vars=({len(keep_vars)} vars) in '
                 f'{dt:.1f}ms [{cache_status}] '
                 f'[total: {compiled} compiled, {skipped} skipped]')
-            sys.stdout.write(f'DONE {dt:.2f} {cache_status}\n')
-            sys.stdout.flush()
     except (KeyboardInterrupt, BrokenPipeError):
         pass
     finally:
+        stop.set()
         elapsed = time.perf_counter() - t_start
         log.info(f'exiting after {elapsed:.2f}s: compiled={compiled} '
                   f'skipped={skipped}')

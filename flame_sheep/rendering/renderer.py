@@ -133,6 +133,9 @@ class FlameRenderer:
         # compiles off the hot path. Left False in the precompile worker,
         # where compiling IS the job and the quiet [gl-chaos-trim] applies.
         self.warn_on_inline_compile = False
+        # Last variation-set handed to _get_chaos_shader_for_keep_vars, so the
+        # "loaded precompiled shader" telemetry fires once per shader-swap.
+        self._last_shader_key: "frozenset[int] | None" = None
 
         self._load_shaders(scoring=scoring)
         self._create_resources()
@@ -257,9 +260,22 @@ class FlameRenderer:
         when the wallpaper hits the same key, the compile completes
         in ~5ms (cache hit) instead of 600ms (cold).
         """
+        changed = keep_vars != self._last_shader_key
+        self._last_shader_key = keep_vars
         cached = self._chaos_shader_cache.get(keep_vars)
         if cached is not None:
             self._chaos_shader_cache.move_to_end(keep_vars)  # LRU: mark used
+            # BEHAVIOR SPEC (observability): on the LIVE render thread, a cache
+            # hit on a NEW variation-set means the precompile worker warmed it
+            # ahead of us (no cold compile) — the positive "precompile working"
+            # signal the COLD/warm miss logs can't give. Keyed on shader-CHANGE
+            # so it's one line per swap, not per frame; gated on
+            # warn_on_inline_compile (True only on the live renderer, False in
+            # the worker, so the worker doesn't spam it). NOT unit-tested —
+            # observability, verified by watching flame-sheep.log.
+            if self.warn_on_inline_compile and changed:
+                log.info(f'[gl-chaos-trim] loaded precompiled shader '
+                         f'|vars|={len(keep_vars)} (cache hit)')
             self._sync_chaos_program_uniforms(cached)
             return cached
         _t0 = _time.perf_counter()
