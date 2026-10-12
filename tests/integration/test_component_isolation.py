@@ -446,8 +446,10 @@ class TestGenomeAxisStateMachine:
         assert axis.current_genome is initial_target
         assert axis._morph.state == MorphState.DWELL
 
-    def test_new_target_after_morph_complete(self):
-        """After morph completes, target_genome changes."""
+    def test_new_target_after_morph_and_dwell(self):
+        """The target changes after a morph completes AND the dwell releases.
+        The steady pick moved to dwell-release (step-4 S2), not morph-complete,
+        so we tick through the dwell too (poll until it changes, with margin)."""
         from flame_sheep.axes._morph_cycle import MorphState
         axis = self._make_axis()
         axis._morph.state = MorphState.MORPHING
@@ -455,11 +457,15 @@ class TestGenomeAxisStateMachine:
 
         dt = 1/60
         clock = 0.0
-        for _ in range(self._morph_frames(axis) + 10):
+        changed = False
+        # generous bound: covers the morph AND the dwell timeout with margin
+        for _ in range(self._morph_frames(axis) + 2000):
             clock += dt
             axis.tick(_audio(mode='idle'), dt, clock)
-
-        assert id(axis.target_genome) != old_target
+            if id(axis.target_genome) != old_target:
+                changed = True
+                break
+        assert changed
 
     # --- Full cycle ---
 

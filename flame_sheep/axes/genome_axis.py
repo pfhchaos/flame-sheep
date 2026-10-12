@@ -207,8 +207,12 @@ class GenomeAxis:
                 if self._mode == Mode.BEAT:
                     self._morph.enter_swap_ready()
                 else:
-                    # Idle/energy mode: swap immediately
+                    # Idle/energy: ARRIVE at the completed target. Fire the PLAN
+                    # request for the just-arrived genome, then either take a loop
+                    # CHANGE immediately (BREAK — no dwell, as before) or enter
+                    # DWELL and defer the steady FOLLOW/WALK pick to dwell-release.
                     self.current_genome = self.target_genome
+                    self._emit_arrival()
                     if self._next_loop_pending:
                         self._next_loop_pending = False
                         self.next_loop()
@@ -216,11 +220,7 @@ class GenomeAxis:
                     elif self._loop.has_loop and self._loop.should_exit_loop():
                         self.next_loop()
                         self._morph.start_morph()
-                    elif self._loop.has_loop:
-                        self._swap_next_genome()
-                        self._morph.commit_swap(clock)
                     else:
-                        self._graph_walk_next()
                         self._morph.commit_swap(clock)
 
         elif self._morph.in_dwell:
@@ -229,9 +229,13 @@ class GenomeAxis:
                 # Beat releases dwell (handled in event loop above)
                 pass
             elif self._mode in (Mode.ENERGY, Mode.IDLE):
-                # Timeout releases dwell
+                # Timeout → DEPART: pick the steady FOLLOW/WALK target now, then
+                # morph. The pick moved here from morph-complete so the dwell is
+                # the worker's think-window (S3). Behaviorally identical while the
+                # source is still render-side: same deterministic next genome.
                 dwell_duration = self.DWELL_BEATS * 60.0 / bpm
                 if clock - self._morph.dwell_start >= dwell_duration:
+                    self._pick_next_target()
                     self._morph.release_dwell()
                     log.debug(f"[dwell] {self._mode.value} timeout → MORPHING")
 
@@ -290,17 +294,22 @@ class GenomeAxis:
                 action = self._beat.process_kick(
                     event, self._morph.in_swap_ready, self._morph.in_dwell)
                 if action == BeatAction.COMMIT_SWAP:
+                    # ARRIVE: fire the PLAN request for the just-arrived genome.
+                    # Loop CHANGE morphs immediately (BREAK); otherwise enter DWELL
+                    # and defer the FOLLOW pick to the dwell-release kick.
                     self.current_genome = self.target_genome
+                    self._emit_arrival()
                     if self._next_loop_pending:
                         self._next_loop_pending = False
                         self.next_loop()
                         self._morph.start_morph()
                         log.debug(f'[swap on beat] next loop pending, kick energy={event.energy:.2f}')
                     else:
-                        self._swap_next_genome()
                         self._morph.commit_swap(clock)
-                        log.debug(f'[swap on beat] kick energy={event.energy:.2f}')
+                        log.debug(f'[arrive on beat] kick energy={event.energy:.2f}')
                 elif action == BeatAction.RELEASE_DWELL:
+                    # DEPART on the kick: pick the steady FOLLOW/WALK target, morph.
+                    self._pick_next_target()
                     self._morph.release_dwell()
             elif event.kind == self._role.band_for_role(BACKBEAT):
                 action = self._beat.process_downbeat(
@@ -460,10 +469,20 @@ class GenomeAxis:
             log.exception('[genome-axis] arrival hook failed')
 
     def _swap_next_genome(self) -> None:
-        self._emit_arrival()
         candidate = self._loop.swap_next(self.current_genome)
         if self._accept_target(candidate):
             self.target_genome = candidate
+
+    def _pick_next_target(self) -> None:
+        """Pick the next steady-cycle target at DEPARTURE (dwell-release / the
+        release-kick): FOLLOW in a loop, WALK otherwise. Centralized so the
+        dwell-depart path has one owner — S3 swaps `_loop.*` here for the cached
+        worker target. The arrival PLAN request already fired at the commit
+        (`_emit_arrival`), so the dwell was the worker's think-window."""
+        if self._loop.has_loop:
+            self._swap_next_genome()   # FOLLOW
+        else:
+            self._graph_walk_next()    # WALK
 
     def _graph_walk_next(self) -> None:
         candidate = self._loop.graph_walk(self.current_genome)

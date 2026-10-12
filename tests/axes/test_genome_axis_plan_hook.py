@@ -1,22 +1,29 @@
-"""GenomeAxis step-3 PLAN/A-B arrival hook (shader-warming.md step 3, render
-side).
+"""GenomeAxis PLAN/A-B arrival hook (shader-warming.md step 3; updated for
+step-4 S2).
 
-BEHAVIOR SPEC. When a plan hook is wired via ``set_plan_hook`` and the axis makes
-a loop-mode swap (``_swap_next_genome``), the axis fires
-``on_arrival(arrival_genome, loop_id, loop_step, expected_follow)`` EXACTLY ONCE,
-BEFORE the sequence advances, where:
+BEHAVIOR SPEC. When a plan hook is wired via ``set_plan_hook``, the axis fires
+``on_arrival(arrival_genome, loop_id, loop_step, expected_follow)`` at each
+loop-mode ARRIVAL — via ``_emit_arrival``, called when a swap commits
+(morph-complete / the commit-kick), BEFORE the next pick advances the sequence —
+where:
   * arrival_genome is the current (just-arrived) genome,
-  * loop_step is the position arrived at (pre-advance),
+  * loop_step is the position arrived at (the next pick will advance it),
   * expected_follow is the render thread's OWN upcoming FOLLOW
     (``_loop.peek_next_in_sequence`` at that step).
-It is purely observational: the REAL swap still comes from ``_loop`` (authority
-stays render-side until step 4), and the hook must not change which target the
-axis commits. It does NOT fire for a lerp-intermediate arrival (db_id None) or
+It is purely observational: ``_emit_arrival`` is a PURE PEEK (it must not advance
+the sequence or change which target the axis commits — authority is render-side
+until S3). It does NOT fire for a lerp-intermediate arrival (db_id None) or
 outside loop mode.
 
-Decomposition: unit — white-box, with the LoopPlayer's loop state populated
-directly (no Library, no GL). Mutation-provable: if the emit moved AFTER
-swap_next, loop_step would come back advanced and the assert would go red.
+NOTE (S2): the hook used to be fired from inside ``_swap_next_genome``; the pick
+moved to dwell-release, so ``_emit_arrival`` now fires at the arrival/commit and
+``_swap_next_genome`` is just the pick. These tests target ``_emit_arrival``
+directly (the emitter unit); that it fires at the morph-complete commit is
+covered by ``test_genome_axis.py::TestPickRelocation``.
+
+Decomposition: unit — white-box, LoopPlayer state populated directly (no Library,
+no GL). Mutation-provable: if ``_emit_arrival`` advanced the sequence, loop_step
+would come back changed and the asserts would go red.
 """
 from __future__ import annotations
 
@@ -55,7 +62,7 @@ def _load_loop_state(axis, genomes, structure='cyclic', step=1, loop_id=10):
     lp.active_loop_id = loop_id
 
 
-def test_arrival_hook_fires_with_preadvance_state(axis):
+def test_arrival_hook_fires_with_arrival_state(axis):
     g0, g1, g2 = (trivial_genome(i) for i in range(3))
     for i, g in enumerate((g0, g1, g2)):
         g.db_id = i
@@ -65,21 +72,18 @@ def test_arrival_hook_fires_with_preadvance_state(axis):
     calls = []
     axis.set_plan_hook(lambda *a: calls.append(a))
 
-    axis._swap_next_genome()
+    axis._emit_arrival()
 
-    # Fired exactly once, with the PRE-advance step and the render-side peek.
+    # Fired exactly once, with the arrived position and the render-side peek.
     assert len(calls) == 1
     arrival, loop_id, loop_step, expected_follow = calls[0]
     assert arrival is g0
     assert loop_id == 10
-    assert loop_step == 1                                  # pre-advance
+    assert loop_step == 1
     assert expected_follow is follow_after([g0, g1, g2], 'cyclic', 1)
     assert expected_follow is g1
-
-    # Authority UNCHANGED: the real swap still came from _loop (the sequence
-    # advanced and target is the loop's pick, not anything the hook supplied).
-    assert axis._loop._loop_step == 2
-    assert axis.target_genome is g1
+    # PURE PEEK: _emit_arrival must NOT advance the live sequence.
+    assert axis._loop._loop_step == 1
 
 
 def test_no_hook_for_db_id_none_arrival(axis):
@@ -91,7 +95,7 @@ def test_no_hook_for_db_id_none_arrival(axis):
     axis.current_genome = g0            # db_id stays None
     calls = []
     axis.set_plan_hook(lambda *a: calls.append(a))
-    axis._swap_next_genome()
+    axis._emit_arrival()
     assert calls == []
 
 
@@ -103,12 +107,13 @@ def test_no_hook_without_loop(axis):
     axis.current_genome = g
     calls = []
     axis.set_plan_hook(lambda *a: calls.append(a))
-    axis._swap_next_genome()
+    axis._emit_arrival()
     assert calls == []
 
 
-def test_hook_exception_does_not_break_swap(axis):
-    """A throwing hook must not break the real swap (observational only)."""
+def test_hook_exception_does_not_propagate(axis):
+    """A throwing hook must not escape _emit_arrival (observational only) nor
+    disturb the sequence."""
     g0, g1, g2 = (trivial_genome(i) for i in range(3))
     g0.db_id, g1.db_id, g2.db_id = 0, 1, 2
     _load_loop_state(axis, [g0, g1, g2], step=1, loop_id=3)
@@ -118,5 +123,5 @@ def test_hook_exception_does_not_break_swap(axis):
         raise RuntimeError('hook blew up')
     axis.set_plan_hook(_boom)
 
-    axis._swap_next_genome()            # must not raise
-    assert axis._loop._loop_step == 2   # swap still happened
+    axis._emit_arrival()                 # must not raise
+    assert axis._loop._loop_step == 1    # pure peek, unchanged

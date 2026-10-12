@@ -394,6 +394,57 @@ class TestSongStart:
 
 
 # ----------------------------------------------------------------
+# Pick relocation (step-4 S2): the steady FOLLOW/WALK pick happens at DEPARTURE
+# (dwell-release), NOT at morph-complete; the arrival PLAN hook fires at the
+# COMMIT. Still render-side source, so motion is unchanged — this just opens the
+# empty dwell window S3's async worker answer slots into.
+#
+# MUTATION GUARD: move the pick back to morph-complete (the pre-S2 code) and
+# test_pick_deferred_to_dwell_release reddens (target would already differ from
+# current right after the morph completes).
+# ----------------------------------------------------------------
+
+class TestPickRelocation:
+    def _complete_morph(self, axis, clock, mode='idle'):
+        """Force the in-flight morph to finish on the next tick."""
+        axis._morph.state = MorphState.MORPHING
+        axis._morph.t = 1.0 - axis.MORPH_SPEED * 0.5
+        axis.tick(_make_audio(mode=mode), 1.0 / 60, clock)
+
+    def test_pick_deferred_to_dwell_release(self, axis_with_lib):
+        axis = axis_with_lib
+        # ARRIVE: complete a morph in idle+loop mode.
+        self._complete_morph(axis, clock=1000.0)
+        assert axis._morph.state == MorphState.DWELL
+        # The pick has NOT happened yet: target is the just-arrived genome.
+        assert axis.target_genome is axis.current_genome
+        # DEPART: release the dwell by timeout.
+        dwell = axis.DWELL_BEATS * 60.0 / 120.0
+        axis.tick(_make_audio(mode='idle'), 1.0 / 60, 1000.0 + dwell + 1.0)
+        assert axis._morph.state == MorphState.MORPHING
+        # The pick happened at release: a new target, distinct from current.
+        assert axis.target_genome is not axis.current_genome
+
+    def test_arrival_hook_fires_at_commit(self, axis_with_lib):
+        axis = axis_with_lib
+        arrivals = []
+        axis.set_plan_hook(lambda g, lid, step, exp: arrivals.append(
+            getattr(g, 'db_id', None)))
+        self._complete_morph(axis, clock=1000.0)        # arrive
+        assert arrivals, "arrival hook must fire at the morph-complete commit"
+
+    def test_pick_next_target_follows_in_loop(self, axis_with_lib):
+        axis = axis_with_lib
+        step0 = axis._loop.loop_step
+        axis._pick_next_target()
+        assert axis._loop.loop_step != step0            # FOLLOW advanced the seq
+
+    def test_pick_next_target_walks_without_loop(self, axis):
+        axis._pick_next_target()                        # no loop -> WALK (factory)
+        assert axis.target_genome is not None
+
+
+# ----------------------------------------------------------------
 # Graph walk (idle/energy mode)
 # ----------------------------------------------------------------
 
