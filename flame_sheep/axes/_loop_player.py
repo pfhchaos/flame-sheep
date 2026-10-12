@@ -256,9 +256,22 @@ class LoopPlayer:
         else:
             start = self._best_entry_position(self._loop_genomes, current_genome)
 
-        for _ in range(start):
+        # `start` is a GENOME INDEX, but the live generator / `_loop_step` count
+        # in SEQUENCE POSITIONS. Those coincide only for cyclic (and palindrome's
+        # forward half); for rondo (home/episode interleave) and palindrome's
+        # backward half they don't. Map the entry genome's index to its first
+        # position in the playback sequence, then resume ONE PAST it so the first
+        # `next_in_sequence()` yields the entry's successor -- not the entry genome
+        # again (the old off-by-one dead swap) and not a wrong-structure genome.
+        index_order = []
+        idx_seq = loop_sequence(list(range(n)), self._loop_structure)
+        for _ in range(self._loop_cycle_len):
+            index_order.append(next(idx_seq))
+        entry_pos = index_order.index(start)
+        resume = (entry_pos + 1) % self._loop_cycle_len
+        for _ in range(entry_pos + 1):
             next(self._loop_sequence)
-        self._loop_step = start
+        self._loop_step = resume
 
         self.active_loop_id = loop_id
         self._cycle_count = 0
