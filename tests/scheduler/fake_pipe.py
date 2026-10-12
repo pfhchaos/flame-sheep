@@ -46,13 +46,24 @@ class CaptureStdin:
 
 class ScriptStdout:
     """A readable file-like that yields a fixed list of lines then EOF
-    (``''``), mirroring ``pipe.stdout.readline()`` semantics."""
+    (``''``), mirroring ``pipe.stdout.readline()`` semantics. Also iterable
+    (``for line in proc.stdout``) like a real text-mode pipe, so the driver's
+    ``_stdout_loop`` (which iterates) can be unit-tested with it."""
 
     def __init__(self, lines=()):
-        self._it = iter(list(lines))
+        self._lines = list(lines)
+        self._it = iter(self._lines)
 
     def readline(self) -> str:
         return next(self._it, '')
+
+    def __iter__(self):
+        # Mirror a real pipe: iteration stops at EOF; a scripted trailing ''
+        # (explicit EOF marker) also terminates, matching readline semantics.
+        for line in self._lines:
+            if line == '':
+                return
+            yield line
 
 
 class FakeProc:

@@ -39,6 +39,12 @@ Request protocol (driver → worker stdin, one JSON object per line):
   * ``{"enqueue": {"priority": P, "tuples": [[n, hf, [v..]], ...]}}``
   * ``{"flood":   {"seed_ids": [..], "hops": 2, "fan_per_node": 5,
                     "priority": P}}``
+  * ``{"plan":    {"req": R, "arrival_id": G, "loop_id": L,
+                    "loop_step": S}}`` — step 3. Routed to a DEDICATED planner
+    thread (not the compile queue), which computes the 3 next-move targets from
+    G and writes a ``{"plan": {...}}`` response to stdout. A separate thread so
+    the PLAN can never sit behind an in-flight cold compile (resolved decision
+    #3). See ``scheduler.plan_protocol`` for the wire shapes.
   * ``{"n_transforms": .., "has_final_xform": .., "vars": [..]}`` — a
     single bare compile spec, accepted for back-compat / manual piping.
 
@@ -177,13 +183,19 @@ class CompileQueue:
         return self._q.get(timeout=timeout)
 
 
-def dispatch_line(line: str, cq: CompileQueue) -> str:
+def dispatch_line(line: str, cq: CompileQueue, plan_queue=None) -> str:
     """GL-FREE stdin routing: classify one request line and apply it to
-    the compile queue. Returns a short tag naming the branch taken, for
-    logging and for the mutation-provable routing unit test:
+    the compile queue (or, for a PLAN request, the planner queue). Returns a
+    short tag naming the branch taken, for logging and for the mutation-provable
+    routing unit test:
 
         'flood'    — a {"flood": {...}} request → cq.enqueue_flood
         'enqueue'  — a {"enqueue": {...}} compile batch → cq.enqueue
+        'plan'     — a {"plan": {...}} request → plan_queue.put (step 3). This
+                     is the PREEMPT path: PLAN never enters the compile queue
+                     (cq), so it can never sit behind a 50–350ms cold compile —
+                     a separate planner thread drains plan_queue concurrently
+                     with the main thread's compiles (resolved decision #3).
         'empty'    — blank line (ignored)
         'bad-json' — unparseable (ignored, logged)
         'unknown'  — parsed but no recognized key / not an object
@@ -212,6 +224,12 @@ def dispatch_line(line: str, cq: CompileQueue) -> str:
         tuples = [tuple_from_wire(x) for x in req.get('tuples', [])]
         cq.enqueue(tuples, priority)
         return 'enqueue'
+    if 'plan' in spec:
+        if plan_queue is not None:
+            plan_queue.put(spec['plan'])
+            return 'plan'
+        log.warning('plan request but no planner queue; ignoring')
+        return 'unknown'
     log.warning(f'unknown request, ignoring: {line[:200]}')
     return 'unknown'
 
@@ -258,16 +276,21 @@ def main():
     log.info('FlameRenderer + Library initialized; ready for requests on stdin')
 
     cq = CompileQueue()
+    # PLAN request lane (step 3). GL-free + separate from the compile queue so a
+    # PLAN never waits behind an in-flight cold compile on the main thread — the
+    # dedicated planner thread below drains it concurrently (resolved decision
+    # #3: PLAN preempts compiles).
+    plan_queue: queue.Queue = queue.Queue()
     stop = threading.Event()
 
     def _stdin_loop():
-        """GL-free: read request lines, route them into the queue. EOF
-        (driver closed stdin → shutdown) stops the main loop."""
+        """GL-free: read request lines, route them into the compile queue or the
+        planner queue. EOF (driver closed stdin → shutdown) stops the loop."""
         try:
             for line in sys.stdin:
                 if stop.is_set():
                     break
-                dispatch_line(line, cq)
+                dispatch_line(line, cq, plan_queue)
         except (KeyboardInterrupt, BrokenPipeError):
             pass
         finally:
@@ -276,6 +299,55 @@ def main():
     reader_t = threading.Thread(target=_stdin_loop,
                                 name='precompile-stdin', daemon=True)
     reader_t.start()
+
+    # Planner thread (step 3). DB-ONLY (no GL), its own Library (own SQLite
+    # connection, touched only here) + its own RNG. It answers PLAN requests
+    # concurrently with the main thread's compiles and writes the response to
+    # stdout, which the driver's reader thread parses. GL-free, so running the
+    # planner on a thread violates neither invariant (no GL-on-thread; the
+    # SQLite connection stays thread-local to this thread).
+    def _planner_loop():
+        from .planner import WorkerPlanner
+        from .plan_protocol import parse_plan_request, make_plan_response
+        import numpy as _np
+        from flame_sheep.storage.library import Library as _Library
+        try:
+            planner_lib = _Library()
+        except Exception:
+            log.exception('[planner] Library init failed; planner disabled')
+            return
+        planner = WorkerPlanner(planner_lib, rng=_np.random.default_rng())
+        log.info('[planner] ready (DB-only, own Library + RNG)')
+        try:
+            while not stop.is_set():
+                try:
+                    spec = plan_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                try:
+                    req = parse_plan_request(spec)
+                    t0 = time.perf_counter()
+                    moves = planner.plan(req['arrival_id'], req['loop_id'],
+                                         req['loop_step'])
+                    resp = make_plan_response(
+                        req['req'], req['arrival_id'],
+                        moves['follow'], moves['break'], moves['walk'])
+                    sys.stdout.write(json.dumps(resp) + '\n')
+                    sys.stdout.flush()
+                    dt = (time.perf_counter() - t0) * 1000.0
+                    log.debug('[planner] answered req=%s arrival=#%s in %.1fms',
+                              req['req'], req['arrival_id'], dt)
+                except Exception:
+                    log.exception('[planner] request failed: %r', spec)
+        finally:
+            try:
+                planner_lib.close()
+            except Exception:
+                pass
+
+    planner_t = threading.Thread(target=_planner_loop,
+                                 name='precompile-planner', daemon=True)
+    planner_t.start()
 
     compiled = 0
     skipped = 0

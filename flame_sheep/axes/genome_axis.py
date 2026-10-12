@@ -97,6 +97,11 @@ class GenomeAxis:
         self.rng = rng or np.random.default_rng()
         self._is_pipeline_ready = is_pipeline_ready
         self._on_pipeline_request = on_pipeline_request
+        # Step-3 shader-warming A/B hook: called at each loop-mode arrival, just
+        # before the render-side sequence advances, so the wallpaper can fire a
+        # PLAN request to the worker and later compare the worker's targets
+        # against its own. Default None → no-op (behavior unchanged).
+        self._on_arrival: Callable[[Genome, int | None, int, Genome | None], None] | None = None
 
         # --- Mode ---
         self._mode = Mode.IDLE
@@ -425,7 +430,37 @@ class GenomeAxis:
             self.target_genome = target
             self._morph.start_morph()
 
+    def set_plan_hook(
+            self,
+            on_arrival: Callable[[Genome, int | None, int, Genome | None], None]
+            ) -> None:
+        """Late-bind the step-3 PLAN/A-B arrival hook (wired by the wallpaper
+        after the precompile driver exists). ``on_arrival(arrival_genome,
+        loop_id, loop_step, expected_follow)`` fires at each loop-mode arrival.
+        Purely observational — it must not mutate axis state (step 3 keeps target
+        authority render-side)."""
+        self._on_arrival = on_arrival
+
+    def _emit_arrival(self) -> None:
+        """Fire the step-3 arrival hook, if wired, at a loop-mode arrival. Called
+        BEFORE the sequence advances so ``loop_step`` is the position just
+        arrived at and ``peek_next_in_sequence`` is the upcoming FOLLOW. Guarded
+        to loop mode + a real db_id (the planner keys off the arrival id); lerp
+        intermediates (centroid/section swaps, db_id None) are skipped."""
+        if self._on_arrival is None or not self._loop.has_loop:
+            return
+        g = self.current_genome
+        if g is None or getattr(g, 'db_id', None) is None:
+            return
+        try:
+            expected_follow = self._loop.peek_next_in_sequence()
+            self._on_arrival(g, self._loop.active_loop_id,
+                             self._loop.loop_step, expected_follow)
+        except Exception:
+            log.exception('[genome-axis] arrival hook failed')
+
     def _swap_next_genome(self) -> None:
+        self._emit_arrival()
         candidate = self._loop.swap_next(self.current_genome)
         if self._accept_target(candidate):
             self.target_genome = candidate

@@ -211,6 +211,79 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     class _NoSignal:
         available = False
         def sample(self): return None
+
+    # --- Step-3 shader-warming A/B verification (PLAN protocol) ---
+    # The worker's planner computes the 3 next-move targets (FOLLOW/BREAK/WALK)
+    # from each arrival genome and ships them back; here we COMPARE them against
+    # the render thread's own picks WITHOUT consuming them for the actual swap
+    # (authority stays render-side until step 4). The only visible effect is new
+    # [plan-ab] log lines. All of this runs on the driver's stdout reader
+    # thread — NEVER the render thread — so the (DB-touching) compare can't tax
+    # frames, matching the _prewarm_compare_pair precedent.
+    import threading as _threading_ab
+    _plan_counter = [0]
+    _plan_pending: dict[int, tuple] = {}
+    _plan_lock = _threading_ab.Lock()
+    _ab_lib_box: dict = {'lib': None, 'tried': False}
+
+    def _ab_lib():
+        """Lazily open a Library bound to the stdout reader thread (one thread,
+        so one thread-local SQLite connection). Independent of the render
+        thread's lib — that independence is the point of the A/B check."""
+        if _ab_lib_box['lib'] is None and not _ab_lib_box['tried']:
+            _ab_lib_box['tried'] = True
+            try:
+                from ..storage import Library as _Library
+                _ab_lib_box['lib'] = _Library()
+            except Exception:
+                log.exception('[plan-ab] reader-thread Library init failed')
+        return _ab_lib_box['lib']
+
+    def _handle_plan_response(inner: dict) -> None:
+        from ..scheduler.plan_protocol import (
+            parse_plan_response, compare_follow,
+            check_walk_structure, check_break_structure)
+        try:
+            resp = parse_plan_response(inner)
+        except Exception:
+            log.exception('[plan-ab] malformed plan response: %r', inner)
+            return
+        with _plan_lock:
+            stash = _plan_pending.pop(resp.req, None)
+        if stash is None:
+            return  # unknown/expired request id
+        arrival_id, loop_id, exp_follow_id, exp_follow_kv = stash
+
+        follow_v = compare_follow(resp.follow, exp_follow_id, exp_follow_kv)
+
+        ab = _ab_lib()
+        walk_v = break_v = 'no-lib'
+        if ab is not None:
+            try:
+                neigh = [b for b, _ in ab.nearest_transitions(arrival_id, n=10)]
+            except Exception:
+                neigh = []
+            walk_v = check_walk_structure(resp.walk, neigh)
+            try:
+                entries = [e for _l, _f, _d, e in ab.nearest_loop_transitions(
+                    arrival_id, exclude_loop=loop_id, n=3)]
+            except Exception:
+                entries = []
+            break_v = check_break_structure(resp.break_, entries)
+
+        w_follow = resp.follow.id if resp.follow else None
+        w_walk = resp.walk.id if resp.walk else None
+        w_break = resp.break_.id if resp.break_ else None
+        line = (f'[plan-ab] arrival=#{arrival_id} loop={loop_id} '
+                f'FOLLOW={follow_v} (worker=#{w_follow} expect=#{exp_follow_id}) '
+                f'WALK={walk_v} (worker=#{w_walk}) '
+                f'BREAK={break_v} (worker=#{w_break})')
+        if follow_v == 'mismatch' or walk_v == 'structural-fail' \
+                or break_v == 'structural-fail':
+            log.warning(line)
+        else:
+            log.info(line)
+
     try:
         # Policy with unavailable sampler stays in RUN forever — see
         # Policy.__init__: state = RUN if not sampler.available.
@@ -221,7 +294,8 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         precompile_driver = PrecompileDriver(
             canvas_w=0, canvas_h=0,  # GL worker ignores canvas dims
             policy=precompile_policy,
-            worker_module='flame_sheep.scheduler.precompile_worker_gl')
+            worker_module='flame_sheep.scheduler.precompile_worker_gl',
+            on_plan_response=_handle_plan_response)
         precompile_driver.start()
         log.info('[precompile-gl] driver started (no signal — runs at '
                  'nice +19, OS handles contention)')
@@ -336,6 +410,34 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     core._genome_axis.set_pipeline_readiness(
         is_ready=_genome_is_ready,
         on_request=_genome_request_precompile)
+
+    # Step-3 PLAN/A-B arrival hook: at each loop-mode arrival, fire a PLAN
+    # request to the worker and stash the render thread's OWN expected FOLLOW so
+    # the response handler can A/B-compare. This does NOT change the swap — the
+    # axis still uses its own _loop.* for the real move (step 4 flips authority).
+    if precompile_driver is not None:
+        def _on_arrival(arrival_genome, loop_id, loop_step, expected_follow):
+            try:
+                from ..scheduler.precompile_warm import _genome_tuple
+                arrival_id = arrival_genome.db_id
+                if arrival_id is None:
+                    return
+                exp_id = getattr(expected_follow, 'db_id', None) \
+                    if expected_follow is not None else None
+                exp_kv = (_genome_tuple(expected_follow)[2]
+                          if expected_follow is not None else None)
+                with _plan_lock:
+                    _plan_counter[0] += 1
+                    req = _plan_counter[0]
+                    # Bound the stash: drop stale unanswered requests.
+                    if len(_plan_pending) > 64:
+                        _plan_pending.clear()
+                    _plan_pending[req] = (arrival_id, loop_id, exp_id, exp_kv)
+                precompile_driver.request_plan(
+                    req, arrival_id, loop_id, loop_step)
+            except Exception:
+                log.exception('[plan-ab] arrival hook failed')
+        core._genome_axis.set_plan_hook(_on_arrival)
 
     # --- background workers ---
     # GPU render worker is NOT started here — it competes for the GPU and

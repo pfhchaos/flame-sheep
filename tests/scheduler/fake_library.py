@@ -30,17 +30,15 @@ lightweight ``FakeGenome`` stubs (exact ``keep_vars`` with no ``Genome.random``
 cost); the fidelity test hands it the same real ``Genome`` objects it saved to
 a real ``Library`` so the two can be compared tuple-for-tuple.
 
-EXTENSION POINTS (later planner steps — build when the step needs them)
-----------------------------------------------------------------------
-The planner (shader-warming.md, Option A) will also call
-``nearest_loop_transitions`` and ``genome_scores``. They are deliberately NOT
-built now (don't gold-plate a fake for code that doesn't exist yet). The
-scaffolding to add them is already here:
-  * ``add_genome(id, genome, scores=...)`` already accepts and stores a scores
-    dict, so ``genome_scores`` becomes a one-line dict lookup.
-  * a loop table (``add_loop``) + reusing ``_transitions`` is all
-    ``nearest_loop_transitions`` needs.
-Stubs that raise ``NotImplementedError`` mark the exact spots below.
+PLANNER READ PATH (shader-warming.md step 3 — now built)
+--------------------------------------------------------
+The worker planner (Option A: FOLLOW/BREAK/WALK) also calls ``genome_scores``,
+``loop_count``, ``loop_type``, ``load_loop``, ``top_loops`` and
+``nearest_loop_transitions``. These were ``NotImplementedError`` extension
+points through step 2; step 3 builds them out (they mirror the real Library's
+signatures + observable semantics). Populate loops with ``add_loop(id,
+genome_ids, structure=..., fitness=...)`` and per-genome scores via
+``add_genome(id, genome, scores=...)``.
 """
 from __future__ import annotations
 
@@ -103,6 +101,8 @@ class FakeLibrary:
         # a -> {b: distance}; dict-of-dict gives the real table's
         # INSERT-OR-REPLACE semantics (a later identical edge overwrites).
         self._transitions: dict[int, dict[int, float]] = {}
+        # loop_id -> {'genome_ids': [...], 'structure': str, 'fitness': float}
+        self._loops: dict[int, dict] = {}
 
     # -- population helpers (test-facing; not part of the real interface) --
 
@@ -124,6 +124,18 @@ class FakeLibrary:
             return
         self._transitions.setdefault(genome_a, {})[genome_b] = distance
         self._transitions.setdefault(genome_b, {})[genome_a] = distance
+
+    def add_loop(self, loop_id: int, genome_ids: list[int],
+                 structure: str = 'cyclic', fitness: float = 1.0) -> int:
+        """Register a loop (ordered genome ids). Built for the planner's
+        FOLLOW/BREAK path (shader-warming.md Option A) — see module docstring's
+        extension-point note. Genomes must already be added."""
+        self._loops[loop_id] = {
+            'genome_ids': list(genome_ids),
+            'structure': structure,
+            'fitness': fitness,
+        }
+        return loop_id
 
     # -- the real Library read interface the flood uses --
 
@@ -148,17 +160,68 @@ class FakeLibrary:
     def close(self) -> None:  # parity with Library; nothing to release.
         pass
 
-    # -- EXTENSION POINTS: planner steps 2+ (shader-warming.md Option A) --
-    # Not built now; the storage above (self._scores, self._transitions) makes
-    # each a few lines. Wire them up in the step that first needs them.
+    # -- planner read path (shader-warming.md Option A, step 3) --
+    # Previously NotImplementedError extension points; built out now that the
+    # worker planner (WALK/BREAK/FOLLOW) needs them. Each mirrors the real
+    # Library's signature + observable semantics.
 
     def genome_scores(self, genome_id: int) -> dict[str, float]:
-        raise NotImplementedError(
-            'FakeLibrary.genome_scores: extension point — return '
-            'self._scores[genome_id] when a planner test needs scores')
+        """Return the scores dict passed to ``add_genome`` (empty if none).
+        The real one returns coverage/entropy/... (no ``cnn_score``);
+        ``graph_walk`` reads ``cnn_score`` then falls back to ``coverage``, so a
+        test pins whichever it wants to drive the softmax."""
+        if genome_id not in self._genomes:
+            raise KeyError(f'No genome with id {genome_id}')
+        return dict(self._scores.get(genome_id, {}))
 
-    def nearest_loop_transitions(self, genome_id: int, **kwargs):
-        raise NotImplementedError(
-            'FakeLibrary.nearest_loop_transitions: extension point — add a '
-            'loop table + reuse self._transitions when a planner test '
-            'needs loop reachability')
+    def loop_count(self) -> int:
+        return len(self._loops)
+
+    def loop_type(self, loop_id: int) -> str:
+        loop = self._loops.get(loop_id)
+        return loop['structure'] if loop else 'cyclic'
+
+    def load_loop(self, loop_id: int):
+        """[(genome_id, genome, motion_field=None), ...] in order — same shape
+        as the real Library (motion fields are irrelevant to the planner)."""
+        loop = self._loops.get(loop_id)
+        if loop is None:
+            raise KeyError(f'No loop with id {loop_id}')
+        return [(gid, self.load_genome(gid), None)
+                for gid in loop['genome_ids']]
+
+    def top_loops(self, n: int = 10) -> list[tuple[int, dict]]:
+        ordered = sorted(self._loops.items(),
+                         key=lambda kv: kv[1]['fitness'], reverse=True)
+        return [(lid, {'fitness': info['fitness']})
+                for lid, info in ordered[:n]]
+
+    def nearest_loop_transitions(self, genome_id: int,
+                                  exclude_loop: int | None = None,
+                                  exclude_loops: set[int] | None = None,
+                                  n: int = 3) -> list[tuple[int, float, float, int]]:
+        """Mirror of the real query: for each transition edge genome_id→b where
+        b belongs to a loop, that loop is reachable with entry genome b at the
+        edge distance. Dedup to the closest entry per loop, sorted by distance,
+        skipping excluded loops. Returns [(loop_id, fitness, distance, entry_gid)]."""
+        exclude = set(exclude_loops or ())
+        if exclude_loop is not None:
+            exclude.add(exclude_loop)
+        # genome -> loops containing it
+        edges = self._transitions.get(genome_id, {})
+        rows = []  # (distance, loop_id, fitness, entry_gid)
+        for b, dist in edges.items():
+            for lid, info in self._loops.items():
+                if b in info['genome_ids']:
+                    rows.append((dist, lid, info['fitness'], b))
+        rows.sort(key=lambda r: r[0])
+        seen = set()
+        result = []
+        for dist, lid, fitness, entry_gid in rows:
+            if lid in exclude or lid in seen:
+                continue
+            seen.add(lid)
+            result.append((lid, fitness, dist, entry_gid))
+            if len(result) >= n:
+                break
+        return result

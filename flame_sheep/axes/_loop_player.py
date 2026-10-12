@@ -24,6 +24,29 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def follow_after(loop_genomes: list, structure: str, loop_step: int):
+    """Pure peek: the genome ``next_in_sequence()`` returns when the live
+    ``_loop_step`` equals ``loop_step`` — WITHOUT mutating any state.
+
+    ``next_in_sequence`` calls ``next()`` on a ``loop_sequence`` generator that
+    has already been advanced ``_loop_step`` times (``start`` advances at load +
+    one per prior ``next_in_sequence`` call). So the genome it yields at step
+    ``S`` is reproduced by building a fresh sequence, advancing ``S`` times, and
+    taking the next element. This is the single source of truth for "what is the
+    FOLLOW move": the render thread peeks it (``LoopPlayer.peek_next_in_sequence``)
+    and the worker planner recomputes it from (loop_id, loop_step) — both call
+    THIS function, so they cannot drift (shader-warming.md step 3 A/B check).
+
+    Returns ``None`` for an empty loop.
+    """
+    if not loop_genomes:
+        return None
+    seq = loop_sequence(loop_genomes, structure)
+    for _ in range(max(0, int(loop_step))):
+        next(seq)
+    return next(seq)
+
+
 class LoopPlayer:
     """Manages loop playback, graph walk, and genome prefetch."""
 
@@ -77,6 +100,25 @@ class LoopPlayer:
             log.debug(f"[loop] cycle {self._cycle_count} complete "
                       f"({self._loop_structure}, {len(self._loop_genomes)} genomes)")
         return genome
+
+    @property
+    def loop_step(self) -> int:
+        return self._loop_step
+
+    @property
+    def loop_structure(self) -> str:
+        return self._loop_structure
+
+    def peek_next_in_sequence(self):
+        """Non-mutating peek of the next FOLLOW genome at the current loop
+        position. Returns ``None`` if there is no loop. Used by the render
+        thread's step-3 A/B check to compute what its OWN loop sequencing would
+        pick, without disturbing the live generator / step counter that the real
+        swap still drives. Shares ``follow_after`` with the worker planner."""
+        if not self._loop_genomes:
+            return None
+        return follow_after(self._loop_genomes, self._loop_structure,
+                            self._loop_step)
 
     def next_loop(self, current_genome: Genome,
                   exclude_loop: int | None = None) -> Genome | None:

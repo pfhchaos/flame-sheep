@@ -71,12 +71,21 @@ class PrecompileDriver:
     """
 
     def __init__(self, canvas_w: int, canvas_h: int, policy: Policy,
-                 worker_module: str = 'flame_sheep.scheduler.precompile_worker'):
+                 worker_module: str = 'flame_sheep.scheduler.precompile_worker',
+                 on_plan_response=None):
         """worker_module: dotted path to the subprocess entry point.
         Default is the Vk worker. Pass 'flame_sheep.scheduler.
         precompile_worker_gl' for the GL backend. The request protocol
         (enqueue/flood JSON on stdin) is the same for both — only the
-        actual compile target differs."""
+        actual compile target differs.
+
+        on_plan_response: optional callback(inner_plan_dict) invoked on the
+        driver's stdout reader thread for each ``{"plan": {...}}`` response the
+        worker emits (step 3). When supplied, ``start`` opens the worker's stdout
+        as a pipe and spawns the reader; when None (the step-2 default), stdout
+        is inherited and there is NO reader thread (unchanged from step 2). The
+        callback runs OFF the render thread, so the A/B compare + its DB queries
+        never tax frames."""
         self.canvas_w = canvas_w
         self.canvas_h = canvas_h
         self.policy = policy
@@ -84,6 +93,8 @@ class PrecompileDriver:
         self._flag = PauseFlag('precompile')
         self._proc: subprocess.Popen | None = None
         self._policy_t: threading.Thread | None = None
+        self._reader_t: threading.Thread | None = None
+        self._on_plan_response = on_plan_response
         self._stop = threading.Event()
         # Serializes concurrent writes to the worker's stdin — several
         # render-side threads call enqueue (render loop, compare-prewarm,
@@ -102,12 +113,14 @@ class PrecompileDriver:
             argv += ['--canvas-w', str(self.canvas_w),
                      '--canvas-h', str(self.canvas_h)]
         log.info(f'[precompile] spawning: {" ".join(argv)}')
+        # The worker emits PLAN responses on stdout (step 3). Only pipe + drain
+        # stdout when a plan-response handler is wired; otherwise inherit (step-2
+        # behavior) so there's nothing to drain.
+        want_stdout = self._on_plan_response is not None
         self._proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
-            stdout=None,        # inherit; worker logs via logging→stderr.
-                                # No stdout protocol anymore, so nothing to
-                                # drain and no recv thread.
+            stdout=(subprocess.PIPE if want_stdout else None),
             stderr=None,        # inherit; worker logs flow to parent stderr
             text=True,
             preexec_fn=_child_preexec,
@@ -117,6 +130,39 @@ class PrecompileDriver:
             target=self._policy_loop, name='precompile-policy',
             daemon=True)
         self._policy_t.start()
+        if want_stdout:
+            self._reader_t = threading.Thread(
+                target=self._stdout_loop, name='precompile-stdout',
+                daemon=True)
+            self._reader_t.start()
+
+    def _stdout_loop(self):
+        """Drain the worker's stdout; dispatch PLAN responses to the handler.
+        Runs on its own thread so the (potentially DB-touching) A/B compare the
+        handler does never runs on the render thread."""
+        import json as _json
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return
+        try:
+            for line in proc.stdout:
+                if self._stop.is_set():
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    spec = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue  # non-JSON noise on stdout — ignore
+                if isinstance(spec, dict) and 'plan' in spec \
+                        and self._on_plan_response is not None:
+                    try:
+                        self._on_plan_response(spec['plan'])
+                    except Exception:
+                        log.exception('[precompile] plan-response handler failed')
+        except (BrokenPipeError, OSError, ValueError):
+            pass
 
     def drain_state_distribution(self) -> dict:
         """Pass-through to the policy — see Policy.drain_state_distribution."""
@@ -169,6 +215,16 @@ class PrecompileDriver:
             'fan_per_node': fan_per_node,
             'priority': priority,
         }})
+
+    def request_plan(self, req: int, arrival_id: int, loop_id: int | None,
+                     loop_step: int) -> None:
+        """Ask the worker to plan the 3 next-move targets from genome
+        ``arrival_id`` (step 3). Serializes a ``{"plan": {...}}`` request to the
+        worker's stdin; the worker answers on stdout (→ ``on_plan_response``).
+        Cheap enough to call from the render thread (same non-blocking stdin
+        write as ``enqueue``). No-op if the worker isn't up."""
+        from .plan_protocol import make_plan_request
+        self._write(make_plan_request(req, arrival_id, loop_id, loop_step))
 
     def _policy_loop(self):
         """Tick the policy at its natural cadence; mirror state into the
