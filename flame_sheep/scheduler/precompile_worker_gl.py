@@ -47,8 +47,45 @@ import time
 
 from .pause_flag import PauseFlagReader
 from .policy import BatchState
+from .precompile_warm import near_tuples, tuple_to_json_line
 
 log = logging.getLogger('flame_sheep.scheduler.precompile_worker_gl')
+
+
+def handle_flood_request(lib, flood_spec: dict, out) -> set:
+    """Compute the 2-hop graph flood for a loop-change request and
+    stream the resulting pipeline cache keys back to `out`.
+
+    This is the work that used to run SYNCHRONOUSLY on the render
+    thread (~31 load_genome + nearest_transitions DB queries). It now
+    runs in the worker PROCESS, using the worker's own Library — which
+    honors the "no DB on a thread" invariant (a process, not a thread).
+
+    GPU-free and pure DB+math: no GL context is touched, so this is
+    directly unit-testable with a temp Library. The driver owns the
+    queue for now (step 1 interim): we ship the tuples home and it
+    enqueues them at LOW. Returns the set of tuples computed.
+
+    Protocol: one ``FLOOD <json>`` line per tuple, then
+    ``FLOOD_DONE <count>``. On error, ``FLOOD_DONE 0`` so the driver's
+    send thread is always released.
+    """
+    try:
+        seed_ids = [int(s) for s in flood_spec.get('seed_ids', [])]
+        hops = int(flood_spec.get('hops', 2))
+        fan_per_node = int(flood_spec.get('fan_per_node', 5))
+        tuples = near_tuples(lib, seed_ids, hops=hops,
+                             fan_per_node=fan_per_node)
+    except Exception:
+        log.exception('flood computation failed')
+        out.write('FLOOD_DONE 0\n')
+        out.flush()
+        return set()
+    for t in tuples:
+        out.write('FLOOD ' + tuple_to_json_line(t) + '\n')
+    out.write(f'FLOOD_DONE {len(tuples)}\n')
+    out.flush()
+    return tuples
 
 
 def main():
@@ -69,6 +106,7 @@ def main():
     import moderngl
     from viz_authoring.gpu_context import GpuContext
     from flame_sheep.rendering import FlameRenderer
+    from flame_sheep.storage.library import Library
 
     reader = PauseFlagReader(args.pause_flag)
 
@@ -80,7 +118,11 @@ def main():
     log.info(f'GL renderer: {ctx.info["GL_RENDERER"]}')
     gpu = GpuContext(ctx, canvas_w=256, canvas_h=256, ppmm=1.0)
     renderer = FlameRenderer(gpu)
-    log.info('FlameRenderer initialized; ready for tuples on stdin')
+    # Own Library (own SQLite connection — a process, so DB work here is
+    # fine). Lets the worker compute the loop-change flood (near_tuples)
+    # off the render thread; see handle_flood_request.
+    lib = Library()
+    log.info('FlameRenderer + Library initialized; ready for tuples on stdin')
 
     compiled = 0
     skipped = 0
@@ -105,6 +147,14 @@ def main():
                 log.warning(f'bad json: {e}: {line[:200]}')
                 sys.stdout.write('DONE 0 err\n')
                 sys.stdout.flush()
+                continue
+
+            # Flood request: compute near_tuples with our Library and
+            # stream the keys back. This is the DB/graph work that used
+            # to run inline on the render thread (step 1 of the
+            # shader-warming redesign). Not a compile — no pause-gate.
+            if 'flood' in spec:
+                handle_flood_request(lib, spec['flood'], sys.stdout)
                 continue
 
             # n_transforms / has_final_xform are part of the Vk
@@ -155,6 +205,10 @@ def main():
         log.info(f'exiting after {elapsed:.2f}s: compiled={compiled} '
                   f'skipped={skipped}')
         reader.close()
+        try:
+            lib.close()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

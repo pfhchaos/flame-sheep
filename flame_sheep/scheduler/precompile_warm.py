@@ -199,3 +199,16 @@ def tuple_to_json_line(t: tuple[int, int, frozenset[int]]) -> str:
         'has_final_xform': bool(has_final),
         'vars': sorted(keep_vars),
     })
+
+
+def json_line_to_tuple(line: str) -> tuple[int, int, frozenset[int]]:
+    """Inverse of tuple_to_json_line. Used by the driver to parse the
+    flood tuples the worker streams back on stdout (worker computes
+    near_tuples with its own Library, ships the resulting cache keys
+    home for the driver to enqueue)."""
+    import json
+    spec = json.loads(line)
+    n_tx = int(spec.get('n_transforms', 0))
+    has_final = 1 if spec.get('has_final_xform') else 0
+    keep_vars = frozenset(int(v) for v in spec.get('vars', []))
+    return (n_tx, has_final, keep_vars)

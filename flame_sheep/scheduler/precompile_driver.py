@@ -60,6 +60,10 @@ class PrecompileDriver:
         # Set of cache keys already enqueued so we don't double-add.
         self._seen: set = set()
         self._seen_lock = threading.Lock()
+        # Accumulates flood tuples the worker streams back (FLOOD lines)
+        # until its FLOOD_DONE, then they're enqueued at LOW. Touched
+        # only by recv_thread, so no lock needed.
+        self._flood_buf: list[tuple[int, int, frozenset[int]]] = []
         self._flag = PauseFlag('precompile')
         self._proc: subprocess.Popen | None = None
         self._send_t: threading.Thread | None = None
@@ -142,20 +146,57 @@ class PrecompileDriver:
                 f'skipped_warm={skipped_warm} (already in Mesa cache)')
         return added
 
+    def request_flood(self, seed_ids: Iterable[int], hops: int = 2,
+                      fan_per_node: int = 5, priority: int = 0) -> None:
+        """Ask the worker to compute the 2-hop graph flood for these
+        seed genome ids. The worker runs near_tuples with ITS Library
+        (DB work in the worker process, NOT on the render thread) and
+        streams the resulting cache keys back; recv_thread enqueues them
+        at LOW. The request itself rides the same stdin pipe as compiles,
+        so it goes through the priority queue (default MED, so it's
+        computed right after the loop-member tuples the render thread
+        enqueues alongside it).
+
+        Step-1 interim: the driver still owns the queue; step 2 moves it
+        into the worker.
+        """
+        seed_ids = [int(s) for s in seed_ids]
+        if not seed_ids:
+            return
+        with self._counter_lock:
+            n = self._counter
+            self._counter += 1
+        self._q.put((priority, n, {
+            'type': 'flood',
+            'seed_ids': seed_ids,
+            'hops': hops,
+            'fan_per_node': fan_per_node,
+        }))
+
     def _send_loop(self):
         """Pull from queue, write to worker stdin. Wait for the
         worker to signal READY between sends (one-at-a-time, so
         re-prioritization always reflects in next compile)."""
+        import json as _json
         from .precompile_warm import tuple_to_json_line
         # First send waits for the worker's initial READY.
         self._worker_ready.wait()
         while not self._stop.is_set():
             try:
-                priority, _seq, t = self._q.get(timeout=0.5)
+                priority, _seq, payload = self._q.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
-                line = tuple_to_json_line(t)
+                if isinstance(payload, dict) and payload.get('type') == 'flood':
+                    # Flood-compute request: worker runs near_tuples and
+                    # streams the keys back (recv_loop enqueues them).
+                    line = _json.dumps({'flood': {
+                        'seed_ids': payload['seed_ids'],
+                        'hops': payload['hops'],
+                        'fan_per_node': payload['fan_per_node'],
+                    }})
+                else:
+                    line = tuple_to_json_line(payload)
                 self._worker_ready.clear()  # consumed; worker won't be
                                               # ready again until next ack
                 self._proc.stdin.write(line + '\n')
@@ -183,6 +224,24 @@ class PrecompileDriver:
             line = line.strip()
             if line == 'READY':
                 self._worker_ready.set()
+                continue
+            if line.startswith('FLOOD_DONE'):
+                # Worker finished a flood computation. Enqueue the keys it
+                # streamed at LOW (same priority the render thread used to
+                # enqueue the inline-computed flood). Dedup (_seen +
+                # is_warm) applies via enqueue(), as before.
+                tuples = self._flood_buf
+                self._flood_buf = []
+                if tuples:
+                    self.enqueue(tuples, priority=10)
+                self._worker_ready.set()
+                continue
+            if line.startswith('FLOOD '):
+                from .precompile_warm import json_line_to_tuple
+                try:
+                    self._flood_buf.append(json_line_to_tuple(line[len('FLOOD '):]))
+                except Exception as e:
+                    log.warning(f'[precompile] bad FLOOD line: {e}')
                 continue
             if line.startswith('DONE'):
                 parts = line.split()

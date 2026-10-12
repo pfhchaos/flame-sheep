@@ -29,6 +29,30 @@ from .command_handlers import WallpaperCommands
 log = logging.getLogger(__name__)
 
 
+def _enqueue_loop_change_warm(precompile_driver, loop_genomes) -> tuple[int, int]:
+    """On an active-loop change, warm the shaders the new loop needs.
+
+    Called from the render loop. It does NO DB/graph work on the render
+    thread: the loop-member tuples are just _genome_tuple() on genomes
+    already loaded into the loop (cheap, pure math), enqueued at MED. The
+    DB-heavy 2-hop flood (near_tuples: ~31 load_genome + nearest_transitions
+    queries) is NOT computed here — it's requested from the precompile
+    WORKER process (request_flood), which computes it with its own Library
+    and ships the keys back for the driver to enqueue at LOW. This is the
+    whole point of step 1 of the shader-warming redesign: no DB on the
+    render thread.
+
+    Returns (n_med_enqueued, n_seed_ids) for logging.
+    """
+    from ..scheduler.precompile_warm import _genome_tuple
+    loop_tuples = [_genome_tuple(g) for g in loop_genomes]
+    n_med = precompile_driver.enqueue(loop_tuples, priority=0)
+    seed_ids = [g.db_id for g in loop_genomes if g.db_id is not None]
+    if seed_ids:
+        precompile_driver.request_flood(seed_ids, hops=2, fan_per_node=5)
+    return n_med, len(seed_ids)
+
+
 def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                    blur_radius: float = 1.0,
                    log_features: bool = False, log_file: str | None = None,
@@ -258,8 +282,9 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # current, target) lerp-intermediate shader) → defer swap +
     # request both compiles + stay on current genome.
     #
-    # In practice the flood-fill on loop change (see render-loop
-    # near_tuples enqueue below) already pre-warms transitions as
+    # In practice the flood-fill on loop change (see the
+    # _enqueue_loop_change_warm call in the render loop, which requests
+    # the flood from the worker) already pre-warms transitions as
     # well as endpoints, so this predicate is the fallback for
     # unanticipated target picks (centroid swaps, random graph
     # walks) where the union shader wasn't in the flood.
@@ -544,28 +569,19 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
                         loop_id = core._genome_axis.active_loop_id
                         if loop_id != last_loop_id:
                             last_loop_id = loop_id
-                            from ..scheduler.precompile_warm import (
-                                _genome_tuple, near_tuples)
                             loop_genomes = (
                                 core._genome_axis._loop.loop_genomes)
-                            loop_tuples = [_genome_tuple(g)
-                                           for g in loop_genomes]
-                            n_med = precompile_driver.enqueue(
-                                loop_tuples, priority=0)
-                            seed_ids = [g.db_id for g in loop_genomes
-                                         if g.db_id is not None]
-                            n_low = 0
-                            if seed_ids and lib is not None:
-                                flood = near_tuples(lib, seed_ids,
-                                                      hops=2,
-                                                      fan_per_node=5)
-                                n_low = precompile_driver.enqueue(
-                                    flood, priority=10)
-                            if n_med or n_low:
+                            # Loop members (MED) stay here — cheap, no DB.
+                            # The DB-heavy 2-hop flood is computed in the
+                            # worker process (request_flood), not inline.
+                            n_med, n_seeds = _enqueue_loop_change_warm(
+                                precompile_driver, loop_genomes)
+                            if n_med or n_seeds:
                                 log.info(
                                     f'[precompile-gl] loop #{loop_id}: '
                                     f'MED={n_med} (loop members) '
-                                    f'LOW={n_low} (2-hop flood)')
+                                    f'flood requested from worker '
+                                    f'({n_seeds} seeds)')
                     except Exception:
                         log.exception(
                             '[precompile-gl] loop hint failed')
