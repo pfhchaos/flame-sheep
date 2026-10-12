@@ -370,6 +370,9 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # _loop.* for the real move (step 4 flips authority).
     if precompile_driver is not None:
         core._genome_axis.set_plan_hook(_plan_coord.on_arrival)
+        # Step-4 S3: the move path consumes the worker's pre-decided FOLLOW
+        # target from the cache (defers into dwell if not yet answered).
+        core._genome_axis.set_plan_provider(_plan_coord.plan_target)
 
     # --- background workers ---
     # GPU render worker is NOT started here — it competes for the GPU and

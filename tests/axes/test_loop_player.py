@@ -88,6 +88,21 @@ def test_first_follow_is_entry_successor(structure, entry_index):
     assert first.db_id == expected
 
 
+def test_advance_step_mirrors_next_in_sequence_counter():
+    """advance_step (step-4 S3: worker supplies the FOLLOW genome, render keeps
+    the counter) moves loop_step/cycle exactly like next_in_sequence, minus the
+    yield — so the two paths stay consistent."""
+    p1, ids = _player('cyclic', 5)
+    p1._start_loop(1, _G(999), entry_genome_id=ids[0])
+    p2, _ = _player('cyclic', 5)
+    p2._start_loop(1, _G(999), entry_genome_id=ids[0])
+    for _ in range(7):                       # past a wrap (cycle_len 5)
+        p1.next_in_sequence()
+        p2.advance_step()
+    assert p2.loop_step == p1.loop_step
+    assert p2.cycle_count == p1.cycle_count
+
+
 @pytest.mark.parametrize("structure", STRUCTURES)
 def test_full_cycle_matches_pure_sequence_from_successor(structure):
     """Beyond the first step: the whole cycle after entry must track the pure

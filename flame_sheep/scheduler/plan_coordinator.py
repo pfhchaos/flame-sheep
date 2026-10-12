@@ -86,6 +86,14 @@ class PlanCoordinator:
         except Exception:
             self._log.exception('[plan-ab] arrival hook failed')
 
+    # -- render thread (move-path consumption, step 4 S3+) -------------------
+    def plan_target(self, arrival_id, branch: str):
+        """Return the worker's pre-decided target GENOME for ``branch`` planned
+        FROM ``arrival_id``, or None if no matching plan is cached yet (the move
+        path reads None as 'defer'). ``branch`` is 'follow'/'break'/'walk'."""
+        t = self.cache.get_target(arrival_id, branch)
+        return None if t is None else t.genome
+
     # -- reader thread -------------------------------------------------------
     def handle_response(self, inner: dict) -> None:
         """Parse a worker PLAN response, cache its targets (for the move path),

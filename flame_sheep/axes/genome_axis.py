@@ -102,6 +102,12 @@ class GenomeAxis:
         # PLAN request to the worker and later compare the worker's targets
         # against its own. Default None → no-op (behavior unchanged).
         self._on_arrival: Callable[[Genome, int | None, int, Genome | None], None] | None = None
+        # Step-4 S3: the worker's pre-decided-target provider. get_target(
+        # arrival_id, branch) -> Genome | None (None = not answered yet -> defer).
+        # When None (precompile unavailable), FOLLOW falls back to the render-side
+        # loop pick so the wallpaper still runs. Wired by the wallpaper.
+        self._plan_provider: Callable[[int | None, str], Genome | None] | None = None
+        self._follow_deferring = False
 
         # --- Mode ---
         self._mode = Mode.IDLE
@@ -235,9 +241,10 @@ class GenomeAxis:
                 # source is still render-side: same deterministic next genome.
                 dwell_duration = self.DWELL_BEATS * 60.0 / bpm
                 if clock - self._morph.dwell_start >= dwell_duration:
-                    self._pick_next_target()
-                    self._morph.release_dwell()
-                    log.debug(f"[dwell] {self._mode.value} timeout → MORPHING")
+                    if self._pick_next_target():
+                        self._morph.release_dwell()
+                        log.debug(f"[dwell] {self._mode.value} timeout → MORPHING")
+                    # else: DEFER — stay in DWELL (affines rotate), retry next tick
 
         # --- Rotation (all modes) ---
         self._rotation.tick(bpm, self._beat.break_damping)
@@ -309,8 +316,10 @@ class GenomeAxis:
                         log.debug(f'[arrive on beat] kick energy={event.energy:.2f}')
                 elif action == BeatAction.RELEASE_DWELL:
                     # DEPART on the kick: pick the steady FOLLOW/WALK target, morph.
-                    self._pick_next_target()
-                    self._morph.release_dwell()
+                    # If the worker hasn't answered, DEFER — stay dwelling, retry
+                    # on the next kick.
+                    if self._pick_next_target():
+                        self._morph.release_dwell()
             elif event.kind == self._role.band_for_role(BACKBEAT):
                 action = self._beat.process_downbeat(
                     event, clock, audio, self._lib is not None)
@@ -450,6 +459,15 @@ class GenomeAxis:
         authority render-side)."""
         self._on_arrival = on_arrival
 
+    def set_plan_provider(
+            self,
+            get_target: Callable[[int | None, str], Genome | None]) -> None:
+        """Late-bind the worker's pre-decided-target provider (step 4 S3). Wired
+        by the wallpaper to the PlanCoordinator's cache. ``get_target(arrival_id,
+        branch)`` returns the worker's FOLLOW/BREAK/WALK genome or None (not
+        answered yet → the move path defers)."""
+        self._plan_provider = get_target
+
     def _emit_arrival(self) -> None:
         """Fire the step-3 arrival hook, if wired, at a loop-mode arrival. Called
         BEFORE the sequence advances so ``loop_step`` is the position just
@@ -473,16 +491,41 @@ class GenomeAxis:
         if self._accept_target(candidate):
             self.target_genome = candidate
 
-    def _pick_next_target(self) -> None:
+    def _pick_next_target(self) -> bool:
         """Pick the next steady-cycle target at DEPARTURE (dwell-release / the
-        release-kick): FOLLOW in a loop, WALK otherwise. Centralized so the
-        dwell-depart path has one owner — S3 swaps `_loop.*` here for the cached
-        worker target. The arrival PLAN request already fired at the commit
-        (`_emit_arrival`), so the dwell was the worker's think-window."""
+        release-kick): FOLLOW in a loop, WALK otherwise. Returns False iff the
+        pick DEFERRED (worker hasn't answered / shader not warm) — the caller
+        then stays in DWELL and retries, affines still rotating."""
         if self._loop.has_loop:
-            self._swap_next_genome()   # FOLLOW
-        else:
-            self._graph_walk_next()    # WALK
+            return self._follow_pick()   # FOLLOW via the worker (S3)
+        self._graph_walk_next()          # WALK — render-side (S4 flips this)
+        return True
+
+    def _follow_pick(self) -> bool:
+        """FOLLOW using the worker's pre-decided target (step 4 S3). The render
+        thread does NO loop computation for the pick — it consumes the worker's
+        serialized genome and only keeps the loop_step bookkeeping. DEFERS (False)
+        when the worker hasn't answered for this arrival or the shader isn't warm.
+        With no provider wired (precompile unavailable) it falls back to the
+        render-side loop pick so the wallpaper still runs."""
+        if self._plan_provider is None:
+            self._swap_next_genome()               # render-side FOLLOW (no worker)
+            return True
+        arrival_id = getattr(self.current_genome, 'db_id', None)
+        target = (self._plan_provider(arrival_id, 'follow')
+                  if arrival_id is not None else None)
+        if target is None:
+            if not self._follow_deferring:
+                self._follow_deferring = True
+                log.warning('[warming] FOLLOW not ready from worker; deferring '
+                            '(arrival #%s) — dwelling until it lands', arrival_id)
+            return False
+        self._follow_deferring = False
+        if not self._accept_target(target):
+            return False                            # shader cold: gate defers
+        self.target_genome = target
+        self._loop.advance_step()                  # render keeps loop_step
+        return True
 
     def _graph_walk_next(self) -> None:
         candidate = self._loop.graph_walk(self.current_genome)

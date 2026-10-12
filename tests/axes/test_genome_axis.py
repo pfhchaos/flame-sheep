@@ -445,6 +445,74 @@ class TestPickRelocation:
 
 
 # ----------------------------------------------------------------
+# FOLLOW authority flip (step-4 S3): the steady loop FOLLOW consumes the WORKER's
+# pre-decided target (not the render-side loop pick), DEFERS into dwell when the
+# worker hasn't answered, and falls back to render-side only when no provider is
+# wired (precompile unavailable).
+#
+# MUTATION GUARD #8: if _follow_pick used next_in_sequence instead of the
+# provider, test_follow_consumes_worker_target reddens (it would commit the
+# loop's genome, not the injected sentinel).
+# ----------------------------------------------------------------
+
+class TestFollowAuthority:
+    def _in_loop_with_dbid(self, axis):
+        axis.current_genome = axis._loop.loop_genomes[0]
+        assert axis.current_genome.db_id is not None
+
+    def test_follow_consumes_worker_target(self, axis_with_lib):
+        axis = axis_with_lib
+        self._in_loop_with_dbid(axis)
+        sentinel = trivial_genome(777)
+        sentinel.db_id = 777
+        axis.set_plan_provider(
+            lambda aid, branch: sentinel if branch == 'follow' else None)
+        step0 = axis._loop.loop_step
+        assert axis._pick_next_target() is True
+        assert axis.target_genome is sentinel           # worker's, not loop's
+        assert axis._loop.loop_step == step0 + 1          # bookkeeping advanced
+
+    def test_follow_defers_when_worker_not_ready(self, axis_with_lib):
+        axis = axis_with_lib
+        self._in_loop_with_dbid(axis)
+        axis.set_plan_provider(lambda aid, branch: None)  # not answered yet
+        tgt0, step0 = axis.target_genome, axis._loop.loop_step
+        assert axis._pick_next_target() is False          # deferred
+        assert axis.target_genome is tgt0                 # unchanged
+        assert axis._loop.loop_step == step0              # NOT advanced
+
+    def test_follow_falls_back_without_provider(self, axis_with_lib):
+        axis = axis_with_lib                              # no provider wired
+        step0 = axis._loop.loop_step
+        assert axis._pick_next_target() is True
+        assert axis._loop.loop_step == step0 + 1          # render-side pick ran
+
+    def test_dwell_release_stays_dwelling_on_defer(self, axis_with_lib):
+        axis = axis_with_lib
+        self._in_loop_with_dbid(axis)
+        axis.set_plan_provider(lambda aid, b: None)       # worker not ready
+        axis._mode = Mode.IDLE
+        axis._morph.state = MorphState.DWELL
+        axis._morph.dwell_start = 0.0
+        axis.tick(_make_audio(mode='idle'), 1 / 60, 100000.0)  # past timeout
+        assert axis._morph.state == MorphState.DWELL      # deferred, dwelling
+
+    def test_dwell_release_morphs_when_ready(self, axis_with_lib):
+        axis = axis_with_lib
+        self._in_loop_with_dbid(axis)
+        sentinel = trivial_genome(888)
+        sentinel.db_id = 888
+        axis.set_plan_provider(
+            lambda aid, b: sentinel if b == 'follow' else None)
+        axis._mode = Mode.IDLE
+        axis._morph.state = MorphState.DWELL
+        axis._morph.dwell_start = 0.0
+        axis.tick(_make_audio(mode='idle'), 1 / 60, 100000.0)
+        assert axis._morph.state == MorphState.MORPHING
+        assert axis.target_genome is sentinel
+
+
+# ----------------------------------------------------------------
 # Graph walk (idle/energy mode)
 # ----------------------------------------------------------------
 

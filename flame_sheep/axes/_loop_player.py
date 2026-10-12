@@ -101,6 +101,19 @@ class LoopPlayer:
                       f"({self._loop_structure}, {len(self._loop_genomes)} genomes)")
         return genome
 
+    def advance_step(self) -> None:
+        """Advance the loop position WITHOUT producing a genome — used when the
+        worker supplies the FOLLOW target (step 4 S3) while the render thread
+        keeps the loop_step/cycle bookkeeping. Mirrors ``next_in_sequence``'s
+        counter + generator advance exactly (minus the yield), so ``follow_after``
+        / ``should_exit_loop`` / the interrupt paths' ``next_in_sequence`` stay
+        consistent."""
+        next(self._loop_sequence)
+        self._loop_step += 1
+        if self._loop_step >= self._loop_cycle_len:
+            self._loop_step = 0
+            self._cycle_count += 1
+
     @property
     def loop_step(self) -> int:
         return self._loop_step
