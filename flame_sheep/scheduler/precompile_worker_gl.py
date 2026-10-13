@@ -172,7 +172,13 @@ class CompileQueue:
                     continue                      # same-or-worse -> already covered
                 self._seen[t] = priority          # new, or an upgrade
                 n_tx, has_final, keep_vars = t
-                if pipeline_warm.is_warm(n_tx, bool(has_final), keep_vars):
+                # Warm markers are keyed (0, False, keep_vars): for the GL chaos
+                # shader only keep_vars matters, so that is how both renderer
+                # (_get_chaos_shader_for_keep_vars / is_shader_warm) and the
+                # worker WRITE them. Check with the SAME key — checking with the
+                # real (n_tx, has_final) means a real genome tuple (n_tx != 0)
+                # never matches its own marker and the disk-warm skip is inert.
+                if pipeline_warm.is_warm(0, False, keep_vars):
                     continue
                 self._q.put((priority, self._counter, t))
                 self._counter += 1

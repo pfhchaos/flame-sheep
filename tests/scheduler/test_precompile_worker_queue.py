@@ -92,6 +92,24 @@ def test_enqueue_skips_is_warm(monkeypatch):
     assert _drain(cq) == [cold]                       # warm one skipped
 
 
+def test_enqueue_skips_disk_warm_by_keep_vars_regardless_of_n_tx():
+    """REGRESSION (is_warm key mismatch): warm MARKERS are written as
+    (0, False, keep_vars) — for GL only keep_vars affects the shader — but the
+    dedup checked is_warm with the REAL (n_tx, has_final) off the compile tuple,
+    so a real genome tuple (n_tx != 0) never matched its own marker and the
+    disk-warm skip was INERT for every real genome. This uses the REAL is_warm +
+    a real marker (sandboxed by the autouse warm-marker fixture), so it catches
+    what the function-stubbing no_warm fixture structurally can't."""
+    from flame_sheep.rendering.vk import pipeline_warm
+    cq = CompileQueue()
+    kv = frozenset({3, 4})
+    pipeline_warm.mark_warm(0, False, kv)            # how the system actually writes markers
+    # A real genome tuple (n_tx != 0, has_final = 1) with the SAME keep_vars is
+    # disk-warm (keep_vars is all that affects the GL shader) → must be skipped.
+    added = cq.enqueue([(2, 1, kv)], priority=0)
+    assert added == 0                                # today: 1 (checked is_warm(2,1,kv)) → RED
+
+
 # ================================================================
 # 2. CompileQueue — priority + FIFO tie-break
 # ----------------------------------------------------------------
