@@ -353,9 +353,18 @@ def main():
                         moves['follow'], moves['break'], moves['walk'])
                     sys.stdout.write(json.dumps(resp) + '\n')
                     sys.stdout.flush()
+                    # Pre-warm feed (step 4+): the render now has its targets;
+                    # enqueue their shaders so the worker warms WHERE THE RENDER
+                    # WILL GO. MED priority (0) — above the background flood (10),
+                    # below the render's imminent -100; the priority-aware dedup
+                    # upgrades the tuple if the render later -100's it on arrival.
+                    warm = moves.get('warm')
+                    if warm:
+                        cq.enqueue(warm, priority=0)
                     dt = (time.perf_counter() - t0) * 1000.0
-                    log.debug('[planner] answered req=%s arrival=#%s in %.1fms',
-                              req['req'], req['arrival_id'], dt)
+                    log.debug('[planner] answered req=%s arrival=#%s in %.1fms '
+                              '(+%d warm)', req['req'], req['arrival_id'], dt,
+                              len(warm) if warm else 0)
                 except Exception:
                     log.exception('[planner] request failed: %r', spec)
         finally:

@@ -38,6 +38,7 @@ import numpy as np
 
 from flame_sheep.axes._loop_player import LoopPlayer, follow_after
 from flame_sheep.scheduler.plan_protocol import target_to_wire
+from flame_sheep.scheduler.precompile_warm import plan_warm_tuples
 
 log = logging.getLogger(__name__)
 
@@ -56,19 +57,25 @@ class WorkerPlanner:
 
         Returns the three ``target_to_wire`` dicts (or ``None`` per move when
         the move is unreachable) under keys ``follow``/``break``/``walk``, ready
-        for :func:`plan_protocol.make_plan_response`. Never raises: each move is
-        isolated so one failing (bad id, empty graph) still ships the others.
+        for :func:`plan_protocol.make_plan_response`, plus ``warm``: the compile
+        tuples the worker should pre-warm for these moves (endpoint + arrival->
+        target union per non-None target). Never raises: each move is isolated so
+        one failing (bad id, empty graph) still ships the others.
         """
         try:
             G = self._lib.load_genome(arrival_id)
         except Exception:
             log.exception('[planner] load arrival genome #%s failed', arrival_id)
-            return {'follow': None, 'break': None, 'walk': None}
-        return {
+            return {'follow': None, 'break': None, 'walk': None, 'warm': []}
+        moves = {
             'follow': self._follow(loop_id, loop_step),
             'break': self._break(G, loop_id),
             'walk': self._walk(G),
         }
+        # Pre-warm feed (step 4+): the worker warms WHERE THE RENDER WILL GO —
+        # each move target's endpoint + the arrival->target union (morph) shader.
+        moves['warm'] = plan_warm_tuples(G, moves)
+        return moves
 
     # -- individual moves --
 

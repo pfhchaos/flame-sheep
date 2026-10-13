@@ -304,10 +304,12 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
     # unanticipated target picks (centroid swaps, random graph
     # walks) where the union shader wasn't in the flood.
     def _union_keep_vars(a, b):
-        a_gpu = a.to_gpu_arrays()
-        b_gpu = b.to_gpu_arrays()
-        return (renderer._extract_keep_vars(a_gpu)
-                | renderer._extract_keep_vars(b_gpu))
+        # Single source of truth shared with the worker planner's pre-warm
+        # (precompile_warm.union_keep_vars) so the render's morph-shader key is
+        # exactly the one the worker warms. Same extraction as before
+        # (_genome_tuple == renderer._extract_keep_vars), via one definition.
+        from ..scheduler.precompile_warm import union_keep_vars
+        return union_keep_vars(a, b)
 
     def _genome_is_ready(candidate, current) -> bool:
         try:

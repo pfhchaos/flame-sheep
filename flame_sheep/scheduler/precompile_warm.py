@@ -39,6 +39,37 @@ def _genome_tuple(genome) -> tuple[int, int, frozenset[int]]:
     return (n_tx, has_final, keep_vars)
 
 
+def union_keep_vars(a, b) -> frozenset[int]:
+    """Keep-vars a morph a->b needs: the union of both genomes' active variations
+    (a var fading OUT of a and one fading IN to b are both nonzero mid-blend). Uses
+    the SAME extraction as ``_genome_tuple`` / ``renderer._extract_keep_vars``, so
+    the union key computed here (in the worker) matches the one the render
+    marks/checks — the single source of truth for the morph-shader key."""
+    return _genome_tuple(a)[2] | _genome_tuple(b)[2]
+
+
+def plan_warm_tuples(arrival_genome, moves: dict
+                     ) -> list[tuple[int, int, frozenset[int]]]:
+    """Compile tuples to pre-warm for an arrival's planned moves, so the worker
+    warms WHERE THE RENDER WILL GO (step 4+). For each non-None move target: its
+    ENDPOINT tuple + the arrival->target UNION (morph) tuple. ``moves`` is the wire
+    dict ``WorkerPlanner.plan`` built (follow/break/walk -> target_to_wire | None);
+    the target genome is recovered from the wire so the keep_vars are exactly what
+    the render will receive and check."""
+    from flame_sheep.scheduler.plan_protocol import target_from_wire
+    tuples: list[tuple[int, int, frozenset[int]]] = []
+    for key in ('follow', 'break', 'walk'):
+        wire = moves.get(key)
+        if wire is None:
+            continue
+        tgt = target_from_wire(wire)
+        if tgt is None or tgt.genome is None:
+            continue
+        tuples.append(_genome_tuple(tgt.genome))                            # endpoint
+        tuples.append((0, 0, union_keep_vars(arrival_genome, tgt.genome)))  # union (morph)
+    return tuples
+
+
 def enumerate_catalog_tuples(lib: Library | None = None
                               ) -> set[tuple[int, int, frozenset[int]]]:
     """Walk all non-archived genomes in the catalog, return the

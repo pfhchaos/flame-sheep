@@ -159,15 +159,51 @@ def test_break_none_when_no_loops_at_all():
 def test_plan_bad_arrival_id_all_none_no_raise():
     wp = _planner()
     moves = wp.plan(arrival_id=999, loop_id=10, loop_step=0)
-    assert moves == {'follow': None, 'break': None, 'walk': None}
+    assert moves == {'follow': None, 'break': None, 'walk': None, 'warm': []}
 
 
 def test_plan_full_shape():
     wp = _planner(seed=5)
     moves = wp.plan(arrival_id=0, loop_id=10, loop_step=1)
-    assert set(moves) == {'follow', 'break', 'walk'}
+    assert set(moves) == {'follow', 'break', 'walk', 'warm'}
     # follow at step 1 of [0,1,2] cyclic == genome 1.
     assert target_from_wire(moves['follow']).id == 1
+
+
+# ================================================================
+# 5. plan() warm-tuple feed (step 4+): pre-warm where the render will GO
+# ----------------------------------------------------------------
+# BEHAVIOR SPEC. plan() also returns, under 'warm', the compile tuples the worker
+# should pre-warm for this arrival's moves: for each NON-None target, its ENDPOINT
+# tuple + the arrival->target UNION (morph) tuple. Marker-matching is the whole
+# point — the union uses the SAME keep_vars extraction the render does
+# (_genome_tuple == renderer._extract_keep_vars), so the pre-warmed union key
+# equals the key the render's is_shader_warm will check. A None move warms nothing.
+# ================================================================
+def test_plan_warm_has_endpoint_and_union_per_target():
+    from flame_sheep.scheduler.precompile_warm import _genome_tuple
+    lib = _graph()
+    wp = WorkerPlanner(lib, rng=np.random.default_rng(0))
+    arrival = lib.load_genome(0)
+    arrival_kv = _genome_tuple(arrival)[2]
+    moves = wp.plan(arrival_id=0, loop_id=10, loop_step=1)
+    warm = moves.get('warm')
+    assert warm, "plan() must carry non-empty 'warm' tuples"   # today: no key -> RED
+    for key in ('follow', 'break', 'walk'):
+        wire = moves[key]
+        if wire is None:
+            continue
+        endpoint = _genome_tuple(target_from_wire(wire).genome)
+        union = (0, 0, arrival_kv | endpoint[2])
+        assert endpoint in warm, f'{key} endpoint tuple missing from warm'
+        assert union in warm, f'{key} union tuple missing from warm'
+
+
+def test_plan_warm_empty_when_all_moves_none():
+    """A bad arrival id -> all moves None -> nothing to warm (and no raise)."""
+    wp = _planner()
+    moves = wp.plan(arrival_id=999, loop_id=None, loop_step=0)
+    assert moves['warm'] == []
 
 
 # ================================================================
