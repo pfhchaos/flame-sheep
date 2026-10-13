@@ -63,25 +63,33 @@ def tick_for(core, clock, duration: float, fps: float = 60.0):
 class TestGenomeSwapRate:
 
     def test_swaps_at_expected_rate(self, core, clock):
-        """Genome should swap after morph completes."""
+        """Genome progression swaps over time. Beat progression is MORPH-GATED —
+        one swap per morph+downbeat cycle — and a morph is ~1/morph_speed frames
+        (currently ~16.7s), so the window must exceed a morph cycle. The old fixed
+        10s bound was shorter than a single morph and only ever passed because
+        centroid mid-morph swaps (now correctly ENERGY-only) papered over it; it
+        was a vacuous-adjacent pass riding on a mechanism that no longer applies in
+        beat mode. Tie the window to the real morph duration instead."""
+        from flame_sheep.axes._morph_cycle import MorphState
+        from flame_sheep.config import cfg
         dt = 1.0 / 60
+        morph_frames = int(1.0 / cfg.drift.morph_speed)
+        frames = morph_frames * 3  # room for a couple of full morph+downbeat cycles
         swaps = 0
         prev_target = id(core.target_genome)
 
-        # Force into morphing state so morph can complete
-        from flame_sheep.axes._morph_cycle import MorphState
+        # Force into morphing so a cycle can begin.
         core._genome_axis._morph.state = MorphState.MORPHING
 
-        for _ in range(int(10.0 * 60)):  # 10 seconds at 60fps
+        for _ in range(frames):
             clock.advance(dt)
             _tick(core, dt)
             if id(core.target_genome) != prev_target:
                 swaps += 1
                 prev_target = id(core.target_genome)
 
-        # Morph should complete and swap at least once in 10s
         assert swaps >= 1, \
-            f"Expected at least 1 genome swap in 10s, got {swaps}"
+            f"Expected >=1 swap within 3 morph cycles ({frames} frames), got {swaps}"
 
     def test_not_every_low_swaps(self, core, clock):
         """During dwell, beats should not cause genome swaps."""
