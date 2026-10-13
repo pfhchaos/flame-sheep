@@ -99,8 +99,12 @@ def test_no_hook_for_db_id_none_arrival(axis):
     assert calls == []
 
 
-def test_no_hook_without_loop(axis):
-    """Outside loop mode (empty loop), no FOLLOW to compare → no hook fire."""
+def test_hook_fires_without_loop(axis):
+    """S4a BEHAVIOR CHANGE: a NO-LOOP arrival with a real db_id now FIRES the hook
+    (it used not to), so the worker gets an id to plan WALK from — closing the
+    populated-but-no-loop bootstrap gap where idle/energy would otherwise DB on the
+    render thread. loop_id is None (no active loop), loop_step 0, and
+    expected_follow is None (``peek_next_in_sequence`` with no loop)."""
     axis._loop._loop_genomes = []
     g = trivial_genome(0)
     g.db_id = 5
@@ -108,7 +112,12 @@ def test_no_hook_without_loop(axis):
     calls = []
     axis.set_plan_hook(lambda *a: calls.append(a))
     axis._emit_arrival()
-    assert calls == []
+    assert len(calls) == 1
+    arrival, loop_id, loop_step, expected_follow = calls[0]
+    assert arrival is g
+    assert loop_id is None
+    assert loop_step == 0
+    assert expected_follow is None
 
 
 def test_hook_exception_does_not_propagate(axis):

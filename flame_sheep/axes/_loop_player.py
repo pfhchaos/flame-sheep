@@ -190,7 +190,11 @@ class LoopPlayer:
                         cnn = scores.get('cnn_score') or scores.get('coverage', 0.5)
                         score = max(cnn, 0.01) / (1.0 + dist)
                         scored.append((g, score))
-                    except (KeyError, Exception):
+                    except KeyError:
+                        # A missing neighbor (stale graph edge) is the expected
+                        # skippable case. Any OTHER error (a real load_genome /
+                        # genome_scores failure) must propagate, not vanish into a
+                        # silent random-fallback downgrade of a connected genome.
                         continue
 
                 if scored:

@@ -108,6 +108,7 @@ class GenomeAxis:
         # loop pick so the wallpaper still runs. Wired by the wallpaper.
         self._plan_provider: Callable[[int | None, str], Genome | None] | None = None
         self._follow_deferring = False
+        self._walk_deferring = False
 
         # --- Mode ---
         self._mode = Mode.IDLE
@@ -480,9 +481,15 @@ class GenomeAxis:
         """Fire the step-3 arrival hook, if wired, at a loop-mode arrival. Called
         BEFORE the sequence advances so ``loop_step`` is the position just
         arrived at and ``peek_next_in_sequence`` is the upcoming FOLLOW. Guarded
-        to loop mode + a real db_id (the planner keys off the arrival id); lerp
-        intermediates (centroid/section swaps, db_id None) are skipped."""
-        if self._on_arrival is None or not self._loop.has_loop:
+        to a real db_id (the planner keys off the arrival id); lerp intermediates
+        (centroid/section swaps, db_id None) are skipped.
+
+        Fires in NO-LOOP mode too (S4a): a populated-but-no-loop arrival with a
+        real db_id gives the worker an id to plan WALK from (loop_id=None,
+        loop_step=0, expected_follow = peek → None with no loop). This closes the
+        bootstrap-stage-1 gap where idle/energy with no loop would otherwise never
+        get a worker WALK and would DB on the render thread."""
+        if self._on_arrival is None:
             return
         g = self.current_genome
         if g is None or getattr(g, 'db_id', None) is None:
@@ -515,8 +522,7 @@ class GenomeAxis:
             if self._loop.should_exit_loop():
                 return self._break_pick()    # leave the loop (BREAK)
             return self._follow_pick()   # beat: follow the loop (S3 worker FOLLOW)
-        self._graph_walk_next()          # idle/energy or no-loop: one-step walk
-        return True
+        return self._walk_pick()         # idle/energy or no-loop: one-step walk (S4a worker WALK)
 
     def _break_pick(self) -> bool:
         """Leave the current loop (BREAK). Render-side next_loop for now (the
@@ -555,6 +561,38 @@ class GenomeAxis:
             return False                            # shader cold: gate defers
         self.target_genome = target
         self._loop.advance_step()                  # render keeps loop_step
+        return True
+
+    def _walk_pick(self) -> bool:
+        """WALK using the worker's pre-decided target (step 4 S4a). Mirrors
+        ``_follow_pick`` for idle/energy (and no-loop) movement: the render thread
+        does NO graph computation (``nearest_transitions`` + ``load_genome``) for
+        the pick — it consumes the worker's serialized genome. DEFERS (False) when
+        the worker hasn't answered for this arrival or the shader isn't warm.
+
+        Two render-side fallbacks remain, and both are CPU-only (NOT a DB hit):
+          * no provider wired (precompile unavailable) → render-side graph walk.
+          * arrival_id is None (bootstrap/factory genome — no db_id for the worker
+            to plan from) → the empty-graph path, which hits ``Genome.random``.
+        Unlike FOLLOW there's no loop_step bookkeeping — WALK isn't a loop move."""
+        if self._plan_provider is None:
+            self._graph_walk_next()                # render-side WALK (no worker)
+            return True
+        arrival_id = getattr(self.current_genome, 'db_id', None)
+        if arrival_id is None:
+            self._graph_walk_next()                # bootstrap/factory: nothing to plan from
+            return True
+        target = self._plan_provider(arrival_id, 'walk')
+        if target is None:
+            if not self._walk_deferring:
+                self._walk_deferring = True
+                log.warning('[warming] WALK not ready from worker; deferring '
+                            '(arrival #%s) — dwelling until it lands', arrival_id)
+            return False
+        self._walk_deferring = False
+        if not self._accept_target(target):
+            return False                            # shader cold: gate defers
+        self.target_genome = target
         return True
 
     def _graph_walk_next(self) -> None:

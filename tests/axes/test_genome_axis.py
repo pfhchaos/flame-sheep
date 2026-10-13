@@ -524,6 +524,67 @@ class TestFollowAuthority:
 
 
 # ----------------------------------------------------------------
+# WALK authority flip (step-4 S4a, mirror of FOLLOW/S3): the idle/energy (and
+# no-loop) one-step WALK consumes the WORKER's pre-decided target (not the
+# render-side graph_walk, which DBs on the render thread), DEFERS into dwell when
+# the worker hasn't answered, and falls back to render-side ONLY for the bootstrap
+# cases — no provider wired, or a factory genome with no db_id (CPU, not DB).
+#
+# MUTATION GUARD (mirror of FOLLOW #8): if _walk_pick used graph_walk instead of
+# the provider, test_walk_consumes_worker_target reddens — it would commit a
+# library/factory genome, not the injected sentinel (db_id 777, which graph_walk
+# can never produce from this library).
+# ----------------------------------------------------------------
+
+class TestWalkAuthority:
+    def _idle_with_dbid(self, axis):
+        axis._mode = Mode.IDLE          # WALK is idle/energy after the reshape
+        axis.current_genome = axis._loop.loop_genomes[0]
+        assert axis.current_genome.db_id is not None
+
+    def test_walk_consumes_worker_target(self, axis_with_lib):
+        axis = axis_with_lib
+        self._idle_with_dbid(axis)
+        sentinel = trivial_genome(777)
+        sentinel.db_id = 777
+        axis.set_plan_provider(
+            lambda aid, branch: sentinel if branch == 'walk' else None)
+        step0 = axis._loop.loop_step
+        assert axis._pick_next_target() is True
+        assert axis.target_genome is sentinel           # worker's, not graph_walk's
+        assert axis._loop.loop_step == step0            # WALK: no loop bookkeeping
+
+    def test_walk_defers_when_worker_not_ready(self, axis_with_lib):
+        axis = axis_with_lib
+        self._idle_with_dbid(axis)
+        axis.set_plan_provider(lambda aid, branch: None)  # not answered yet
+        tgt0 = axis.target_genome
+        assert axis._pick_next_target() is False          # deferred
+        assert axis.target_genome is tgt0                 # unchanged
+
+    def test_walk_falls_back_without_provider(self, axis_with_lib):
+        axis = axis_with_lib                              # no provider wired
+        axis._mode = Mode.IDLE
+        axis.current_genome = axis._loop.loop_genomes[0]
+        assert axis._pick_next_target() is True           # render-side WALK ran
+        assert axis.target_genome is not None
+
+    def test_walk_falls_back_when_arrival_id_none(self, axis_with_lib):
+        axis = axis_with_lib
+        axis._mode = Mode.IDLE
+        sentinel = trivial_genome(999)
+        sentinel.db_id = 999
+        consulted = []
+        axis.set_plan_provider(
+            lambda aid, b: consulted.append((aid, b)) or sentinel)
+        axis.current_genome = trivial_genome(123)         # bootstrap: db_id None
+        assert axis.current_genome.db_id is None
+        assert axis._pick_next_target() is True           # render-side fallback
+        assert consulted == []                            # provider NOT consulted
+        assert axis.target_genome is not sentinel         # didn't use worker target
+
+
+# ----------------------------------------------------------------
 # Mode → movement reshape (DECISIONS 2026-10-12): IDLE/ENERGY one-step WALK even
 # with a loop loaded; loops are BEAT-only (they encode rhythmic cadence). Walking
 # idle/energy also surfaces non-loop genomes for voting (GA coverage).
@@ -666,6 +727,57 @@ class TestGraphWalk:
         axis.tick(audio, 1.0 / 60, 1000.0)
         # Should have graph-walked to a new target
         assert axis.target_genome is not None
+
+
+# ----------------------------------------------------------------
+# graph_walk narrowed-except (S4a): a missing neighbor (KeyError) is the only
+# expected-skippable case; any OTHER error inside the scoring loop (a real
+# load_genome/genome_scores failure) must PROPAGATE, not vanish into a silent
+# random-fallback downgrade of a connected genome.
+#
+# MUTATION GUARD: widening the except back to `(KeyError, Exception)` reddens
+# test_graph_walk_propagates_non_keyerror (the RuntimeError would be swallowed and
+# the call would return the factory genome instead of raising).
+# ----------------------------------------------------------------
+
+class _NeighborLib:
+    """Minimal Library stub: one neighbor, load_genome raises a chosen error."""
+    def __init__(self, exc):
+        self._exc = exc
+
+    def nearest_transitions(self, gid, n=10):
+        return [(1, 0.5)]
+
+    def load_genome(self, gid):
+        raise self._exc
+
+    def genome_scores(self, gid):  # pragma: no cover - not reached (load raises first)
+        return {}
+
+
+def _lp_with(lib, factory_genome, cur):
+    from flame_sheep.axes._loop_player import LoopPlayer
+    return LoopPlayer(lib, lambda: factory_genome, cur,
+                      np.random.default_rng(0))
+
+
+def test_graph_walk_propagates_non_keyerror():
+    """A non-KeyError from load_genome bubbles out of graph_walk."""
+    cur = trivial_genome(0)
+    cur.db_id = 42
+    lp = _lp_with(_NeighborLib(RuntimeError('db exploded')),
+                  trivial_genome(99), cur)
+    with pytest.raises(RuntimeError, match='db exploded'):
+        lp.graph_walk(cur)
+
+
+def test_graph_walk_swallows_keyerror_falls_back():
+    """A KeyError (missing neighbor) is skipped → random-factory fallback."""
+    cur = trivial_genome(0)
+    cur.db_id = 42
+    factory_marker = trivial_genome(99)
+    lp = _lp_with(_NeighborLib(KeyError(1)), factory_marker, cur)
+    assert lp.graph_walk(cur) is factory_marker   # skipped, fell back to factory
 
 
 # ----------------------------------------------------------------
