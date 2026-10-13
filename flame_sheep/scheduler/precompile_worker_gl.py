@@ -143,21 +143,34 @@ class CompileQueue:
 
     def __init__(self):
         self._q: queue.PriorityQueue = queue.PriorityQueue()
-        self._seen: set[tuple[int, int, frozenset[int]]] = set()
+        # tuple -> best (lowest) priority queued for it this run. PRIORITY-AWARE
+        # dedup: a plain set would drop a later re-request outright, silently
+        # swallowing the reactive -100 "about to show this" warm whenever its
+        # target was already queued at LOW(10) by the loop-change flood -> the
+        # candidate stays buried behind the flood and the render thread cold-
+        # compiles it. Keyed on the best priority instead, an UPGRADE re-queues.
+        self._seen: dict[tuple[int, int, frozenset[int]], int] = {}
         self._counter = 0
         self._lock = threading.Lock()
 
     def enqueue(self, tuples, priority: int = 0) -> int:
-        """Dedup + push compile tasks at ``priority`` (lower = served
-        first). Returns the number actually enqueued (after _seen +
-        is_warm skipping)."""
+        """Dedup + push compile tasks at ``priority`` (lower = served first).
+        Returns the number actually enqueued (after the priority-aware _seen +
+        is_warm skipping).
+
+        A tuple already queued is re-pushed ONLY if ``priority`` is strictly
+        better (lower) than the best it was queued at — the imminent-warm
+        preemption. ``queue.PriorityQueue`` has no decrease-key, so the upgrade
+        is a second push; the stale worse-priority entry pops later and is
+        skipped by the main loop's compile-time ``seen_keepvars`` dedup."""
         from flame_sheep.rendering.vk import pipeline_warm
         added = 0
         with self._lock:
             for t in tuples:
-                if t in self._seen:
-                    continue
-                self._seen.add(t)
+                prev = self._seen.get(t)
+                if prev is not None and prev <= priority:
+                    continue                      # same-or-worse -> already covered
+                self._seen[t] = priority          # new, or an upgrade
                 n_tx, has_final, keep_vars = t
                 if pipeline_warm.is_warm(n_tx, bool(has_final), keep_vars):
                     continue

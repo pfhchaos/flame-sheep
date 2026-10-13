@@ -134,6 +134,71 @@ def test_mixed_priority_same_as_distinct(no_warm):
 
 
 # ================================================================
+# 2b. CompileQueue — priority-aware dedup (imminent-warm preemption)
+# ----------------------------------------------------------------
+# BEHAVIOR SPEC. The two dedup layers (sec. 1) must not defeat the priority
+# system (sec. 2). A tuple already queued at a WORSE priority MUST be movable to
+# a BETTER one by a later enqueue — because the reactive "about to show this
+# genome" warm fires at -100 for a candidate that the loop-change flood already
+# queued at LOW(10). Today `_seen` is a plain set keyed on the tuple alone, so
+# that -100 re-request hits `if t in self._seen: continue` and is SILENTLY
+# dropped (n_added=0 -> the live code at wallpaper.py `_genome_request_precompile`
+# doesn't even log it): the candidate stays buried at 10 behind the whole flood
+# batch and the render thread reaches it first -> COLD inline compile. The fix
+# makes dedup priority-aware: re-queue when (and only when) the new priority is
+# strictly better than the best already seen for that tuple.
+#
+# NOTE (stale duplicate is tolerated, by design): `queue.PriorityQueue` has no
+# decrease-key, so the fix re-PUSHES at the better priority and leaves the old
+# worse-priority entry in the heap. The better copy pops first and compiles; the
+# stale copy pops later and is skipped by the main loop's compile-time
+# `seen_keepvars` dedup (GL-bound, notated skip). So these tests assert the FIRST
+# pop / the add-count, never a once-only full drain of a re-preempted tuple.
+# Decomposition: unit (CompileQueue + patched is_warm).
+# ================================================================
+
+def test_seen_tuple_is_repreempted_at_better_priority(no_warm):
+    """REGRESSION (priority inversion): a tuple sitting in the LOW(10) flood
+    batch, behind earlier-FIFO siblings, MUST jump to the front when the reactive
+    -100 imminent warm re-requests it. `target` is enqueued AFTER `filler` so the
+    preempt has to actually overtake FIFO order (not pass by accident). Today the
+    _seen set drops the -100 re-request -> target stays at (10, counter 1) behind
+    filler (10, counter 0) -> first pop is filler -> RED."""
+    cq = CompileQueue()
+    filler = (0, 0, frozenset({1}))    # LOW 10, counter 0
+    target = (0, 0, frozenset({2}))    # LOW 10, counter 1 (behind filler)
+    cq.enqueue([filler], priority=10)
+    cq.enqueue([target], priority=10)
+    cq.enqueue([target], priority=-100)            # imminent: must preempt
+    assert cq.get(timeout=0)[2] == target          # target first, ahead of filler
+
+
+def test_better_priority_reenqueue_reports_added(no_warm):
+    """The reactive warm must REPORT the upgrade (n_added>=1) so it isn't a
+    silent no-op — the live `_genome_request_precompile` only logs when n_added>0,
+    so a swallowed preempt is currently invisible. Same priority still dedups."""
+    cq = CompileQueue()
+    t = (0, 0, frozenset({5}))
+    assert cq.enqueue([t], priority=10) == 1       # new
+    assert cq.enqueue([t], priority=10) == 0       # same priority -> still deduped
+    assert cq.enqueue([t], priority=-100) == 1     # BETTER priority -> re-queued
+
+
+def test_worse_priority_reenqueue_still_deduped(no_warm):
+    """GREEN GUARD against over-fixing: once a tuple holds a GOOD priority, a
+    later WORSE-priority request must NOT downgrade it or add a duplicate. This
+    passes today and must stay green — it constrains the fix to upgrade-only."""
+    cq = CompileQueue()
+    t = (0, 0, frozenset({5}))
+    other = (0, 0, frozenset({6}))
+    assert cq.enqueue([t], priority=-100) == 1
+    assert cq.enqueue([t], priority=10) == 0       # worse -> no re-queue, no dup
+    cq.enqueue([other], priority=-100)
+    # t keeps its -100 slot (counter 0) ahead of other (counter 1); no dup of t.
+    assert _drain(cq) == [t, other]
+
+
+# ================================================================
 # 3. CompileQueue — flood-compute task scheduling
 # ----------------------------------------------------------------
 # BEHAVIOR SPEC. enqueue_flood(spec) MUST schedule ONE flood-COMPUTE task
