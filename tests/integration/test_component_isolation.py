@@ -213,12 +213,12 @@ class TestRoleMapper:
 
 class TestZoomAxisUnit:
 
-    def test_kick_adds_boost(self):
+    def test_downbeat_adds_boost(self):
         axis = ZoomAxis(role=_default_role)
         axis.tick(_audio(events=[BeatEvent('low', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost > 0
 
-    def test_non_kick_ignored(self):
+    def test_non_downbeat_ignored(self):
         axis = ZoomAxis(role=_default_role)
         axis.tick(_audio(events=[BeatEvent('high', 1.0)], rms=0.0), 1/60, 0.0)
         assert axis.zoom_boost == 0.0
@@ -481,13 +481,13 @@ class TestGenomeAxisStateMachine:
         assert axis._morph.state == MorphState.DWELL
 
     def test_full_cycle_beat(self):
-        """DWELL → (kick) → MORPHING → (complete) → SWAP_READY → (kick) → DWELL."""
+        """DWELL → (downbeat) → MORPHING → (complete) → SWAP_READY → (downbeat) → DWELL."""
         from flame_sheep.axes._morph_cycle import MorphState
         axis = self._make_axis()
         initial_genome = axis.current_genome
         dt = 1/60
 
-        # Kick releases dwell (SUBDIVISION is now 'low')
+        # Downbeat releases dwell (DOWNBEAT role maps to the 'low' band)
         axis.tick(_audio(events=[BeatEvent('low', 0.5)], mode='beat'), dt, 0.5)
         assert axis._morph.state == MorphState.MORPHING
 
@@ -496,7 +496,7 @@ class TestGenomeAxisStateMachine:
                       clock0=0.5)
         assert axis._morph.state == MorphState.SWAP_READY
 
-        # Kick commits the swap → DWELL
+        # Downbeat commits the swap → DWELL
         t += dt
         axis.tick(_audio(events=[BeatEvent('low', 0.5)], mode='beat'), dt, t)
         assert axis.current_genome is not initial_genome
@@ -519,18 +519,11 @@ class TestGenomeAxisStateMachine:
 
     # --- Beat boost ---
 
-    def test_beat_boosts_rotation(self):
-        """Downbeat increases rotation speed temporarily."""
-        axis = self._make_axis()
-        axis.tick(_audio(mode='beat'), 1/60, 0.0)
-        phase_after_quiet = axis._rotation.phase
-
-        axis2 = self._make_axis()
-        axis2.tick(_audio(events=[BeatEvent('low', 1.0)], mode='beat'), 1/60, 0.0)
-        axis2.tick(_audio(mode='beat'), 1/60, 0.1)
-        phase_after_beat = axis2._rotation.phase
-
-        assert phase_after_beat > phase_after_quiet
+    # (retired) test_beat_boosts_rotation — was vacuous: used kind='low' (the
+    # DOWNBEAT band, which does NOT boost rotation — only backbeat does) and
+    # compared a twice-ticked axis to a once-ticked one, so it passed on the
+    # extra tick alone. The real guard is
+    # tests/axes/test_genome_axis.py::TestBackbeatResponses::test_backbeat_boosts_rotation_rate.
 
     # --- Misc ---
 
@@ -710,14 +703,14 @@ class TestGenomeAxisModes:
             f"Mode change caused a visual discontinuity: {before.distance(after):.6f}"
 
     def test_beat_releases_dwell(self):
-        """In beat mode, a kick (downbeat-role band) releases a held dwell.
+        """In beat mode, a downbeat (downbeat-role band) releases a held dwell.
 
         Was previously vacuous: its only assertion sat inside `if state == DWELL`,
         so it passed without checking anything whenever the axis wasn't in dwell at
         that point. Now the precondition is driven deterministically and the
         release is asserted UNCONDITIONALLY. (The state is set directly rather than
         by switching INTO beat, because entering beat can itself trigger
-        next_loop -> MORPHING and mask the very kick-release under test.)
+        next_loop -> MORPHING and mask the very downbeat-release under test.)
         """
         from flame_sheep.axes._morph_cycle import MorphState
         axis = self._make()

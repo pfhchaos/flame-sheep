@@ -131,7 +131,7 @@ class TestMorphCycle:
         assert axis._morph.t == 0.0
 
     def test_morph_completes_in_beat_goes_swap_ready(self, axis):
-        """In beat mode, morph completion waits for kick (SWAP_READY)."""
+        """In beat mode, morph completion waits for downbeat (SWAP_READY)."""
         axis._morph.state = MorphState.MORPHING
         axis._morph.t = 1.0 - axis.MORPH_SPEED * 0.5
         axis._mode = Mode.BEAT
@@ -139,12 +139,12 @@ class TestMorphCycle:
         axis.tick(audio, 1.0 / 60, 1000.0)
         assert axis._morph.state == MorphState.SWAP_READY
 
-    def test_kick_releases_swap_ready(self, axis):
-        """In beat mode, a kick event commits the pending swap."""
+    def test_downbeat_releases_swap_ready(self, axis):
+        """In beat mode, a downbeat event commits the pending swap."""
         axis._morph.state = MorphState.SWAP_READY
         axis._mode = Mode.BEAT
-        kick = BeatEvent(kind='low', energy=0.8)
-        audio = _make_audio(mode='beat', events=[kick])
+        downbeat = BeatEvent(kind='low', energy=0.8)
+        audio = _make_audio(mode='beat', events=[downbeat])
         axis.tick(audio, 1.0 / 60, 1000.0)
         assert axis._morph.state == MorphState.DWELL
         assert axis._morph.t == 0.0
@@ -321,35 +321,97 @@ class TestUserNext:
 # ----------------------------------------------------------------
 
 class TestBeatHandling:
-    def test_kick_releases_dwell_in_beat_mode(self, axis):
+    def test_downbeat_releases_dwell_in_beat_mode(self, axis):
         axis._mode = Mode.BEAT
         axis._morph.state = MorphState.DWELL
-        kick = BeatEvent(kind='low', energy=0.8)
-        audio = _make_audio(mode='beat', events=[kick])
+        downbeat = BeatEvent(kind='low', energy=0.8)
+        audio = _make_audio(mode='beat', events=[downbeat])
         axis.tick(audio, 1.0 / 60, 1000.0)
         assert axis._morph.state == MorphState.MORPHING
 
-    def test_downbeat_boosts_rotation(self, axis):
-        axis._mode = Mode.BEAT
-        axis._morph.state = MorphState.MORPHING
-        axis._morph.t = 0.3
-        initial_phase = axis._rotation.phase
-        downbeat = BeatEvent(kind='mid', energy=0.9)
-        audio = _make_audio(mode='beat', events=[downbeat])
-        axis.tick(audio, 1.0 / 60, 1000.0)
-        # Rotation should have advanced more than just base speed
-        assert axis._rotation.phase > initial_phase
+    # (retired) test_downbeat_boosts_rotation — was vacuous: used kind='mid'
+    # (the BACKBEAT band, misnamed "downbeat") and only asserted phase advanced
+    # after a full tick, which base rotation does regardless of the boost. The
+    # real guard is TestBackbeatResponses::test_backbeat_boosts_rotation_rate.
 
-    def test_kick_in_idle_does_not_release_dwell(self, axis):
+    def test_downbeat_in_idle_does_not_release_dwell(self, axis):
         """Beat events are ignored in idle mode."""
         axis._mode = Mode.IDLE
         axis._morph.state = MorphState.DWELL
         axis._morph.dwell_start = 1000.0
-        kick = BeatEvent(kind='low', energy=0.8)
-        audio = _make_audio(mode='idle', events=[kick])
+        downbeat = BeatEvent(kind='low', energy=0.8)
+        audio = _make_audio(mode='idle', events=[downbeat])
         axis.tick(audio, 1.0 / 60, 1000.01)
         # Still in dwell (timeout hasn't elapsed)
         assert axis._morph.state == MorphState.DWELL
+
+
+# ----------------------------------------------------------------
+# Backbeat → speed responses (the two beat→speed wirings in
+# _process_beat_events' BACKBEAT branch, genome_axis.py ~333/335):
+#   * MORPH nudge:    _morph.nudge(last_morph_nudge)       — nudges morph_t.
+#   * ROTATION boost: _rotation.boost(last_morph_nudge/0.05) — the dwell nudge,
+#                     the "move faster" that speeds the rotation rate.
+# These are driven off the BACKBEAT-role band (default mapping: 'mid').
+# last_morph_nudge = event.energy * 0.05, so boost() receives event.energy.
+#
+# We call _process_beat_events directly (not the full tick) so the per-frame
+# _morph.advance() and _rotation.tick() don't confound the measurement: the
+# nudge/boost are the ONLY things the call applies.
+#
+# MUTATION GUARDS:
+#   * drop `_morph.nudge(...)` (line ~333) -> test_backbeat_nudges_morph_while_morphing
+#   * drop `_rotation.boost(...)` (line ~335) -> test_backbeat_boosts_rotation_rate
+# ----------------------------------------------------------------
+
+class TestBackbeatResponses:
+    def test_backbeat_nudges_morph_while_morphing(self, axis):
+        """A backbeat while MORPHING advances morph_t by the nudge
+        (energy * 0.05), on top of nothing else (we don't run a full tick)."""
+        axis._mode = Mode.BEAT
+        axis._morph.state = MorphState.MORPHING
+        axis._morph.t = 0.3
+        backbeat = BeatEvent(kind='mid', energy=0.8)
+        axis._process_beat_events(_make_audio(mode='beat', events=[backbeat]),
+                                  1000.0)
+        assert axis._morph.t == pytest.approx(0.3 + 0.8 * 0.05)
+
+    def test_backbeat_does_not_nudge_morph_while_dwelling(self, axis):
+        """A backbeat while DWELLING does NOT move morph_t — nudge is morph-only."""
+        axis._mode = Mode.BEAT
+        axis._morph.state = MorphState.DWELL
+        axis._morph.t = 0.0
+        backbeat = BeatEvent(kind='mid', energy=0.8)
+        axis._process_beat_events(_make_audio(mode='beat', events=[backbeat]),
+                                  1000.0)
+        assert axis._morph.t == 0.0
+
+    def test_backbeat_boosts_rotation_rate(self, axis, rng):
+        """A backbeat boosts the rotation rate: the next rotation tick advances
+        phase MORE than an identical tick with no backbeat (the dwell nudge /
+        "move faster"). Observable via phase gain, not the internal envelope."""
+        bpm = 120.0
+
+        # Boosted: feed a backbeat, then take ONE rotation tick.
+        axis._mode = Mode.BEAT
+        axis._morph.state = MorphState.MORPHING
+        backbeat = BeatEvent(kind='mid', energy=0.9)
+        axis._process_beat_events(_make_audio(mode='beat', events=[backbeat],
+                                              bpm=bpm), 1000.0)
+        before = axis._rotation.phase
+        axis._rotation.tick(bpm, axis._beat.break_damping)
+        boosted_gain = axis._rotation.phase - before
+
+        # Control: a fresh axis, no backbeat, same single rotation tick.
+        _seed = iter(range(5000, 6000))
+        ctrl = GenomeAxis(
+            genome_factory=lambda: trivial_genome(next(_seed)),
+            role=RoleMapper(), lib=None, rng=rng)
+        before_c = ctrl._rotation.phase
+        ctrl._rotation.tick(bpm, ctrl._beat.break_damping)
+        base_gain = ctrl._rotation.phase - before_c
+
+        assert boosted_gain > base_gain
 
 
 # ----------------------------------------------------------------
@@ -498,16 +560,16 @@ class TestFollowAuthority:
         assert axis._pick_next_target() is True
         assert axis._loop.loop_step == step0 + 1          # render-side pick ran
 
-    # FOLLOW is beat-only now, and beat's dwell is released by a KICK (not a
+    # FOLLOW is beat-only now, and beat's dwell is released by a DOWNBEAT (not a
     # timeout) — so the defer-at-release integration lives in beat mode.
     def test_beat_release_stays_dwelling_on_defer(self, axis_with_lib):
         axis = axis_with_lib
         self._in_loop_with_dbid(axis)                     # beat mode
         axis.set_plan_provider(lambda aid, b: None)       # FOLLOW not ready
         axis._morph.state = MorphState.DWELL
-        kick = BeatEvent(kind='low', energy=0.8)
-        axis.tick(_make_audio(mode='beat', events=[kick]), 1 / 60, 1000.0)
-        assert axis._morph.state == MorphState.DWELL      # kick couldn't release
+        downbeat = BeatEvent(kind='low', energy=0.8)
+        axis.tick(_make_audio(mode='beat', events=[downbeat]), 1 / 60, 1000.0)
+        assert axis._morph.state == MorphState.DWELL      # downbeat couldn't release
 
     def test_beat_release_morphs_when_ready(self, axis_with_lib):
         axis = axis_with_lib
@@ -517,8 +579,8 @@ class TestFollowAuthority:
         axis.set_plan_provider(
             lambda aid, b: sentinel if b == 'follow' else None)
         axis._morph.state = MorphState.DWELL
-        kick = BeatEvent(kind='low', energy=0.8)
-        axis.tick(_make_audio(mode='beat', events=[kick]), 1 / 60, 1000.0)
+        downbeat = BeatEvent(kind='low', energy=0.8)
+        axis.tick(_make_audio(mode='beat', events=[downbeat]), 1 / 60, 1000.0)
         assert axis._morph.state == MorphState.MORPHING
         assert axis.target_genome is sentinel
 

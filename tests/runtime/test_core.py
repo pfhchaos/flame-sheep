@@ -205,7 +205,7 @@ class TestMorphInvariants:
 
 
 # ----------------------------------------------------------------
-# Zoom pulse (high-band axis)
+# Zoom pulse (downbeat axis)
 # ----------------------------------------------------------------
 
 class TestZoomPulse:
@@ -219,11 +219,11 @@ class TestZoomPulse:
             assert core.zoom_boost <= core._zoom_axis.ZOOM_BOOST_MAX + 1e-6, \
                 f"zoom_boost {core.zoom_boost} exceeds max {core._zoom_axis.ZOOM_BOOST_MAX}"
 
-    def test_zoom_decays_without_highs(self, core, clock):
-        """zoom_boost should decay toward 0 between high-band events."""
+    def test_zoom_decays_without_downbeats(self, core, clock):
+        """zoom_boost should decay toward 0 between downbeat events."""
         dt = 1.0 / 60
 
-        # Tick until we get a zoom boost (high-band every 0.25s)
+        # Tick until we get a zoom boost (downbeat every 0.5s)
         boosted = False
         for _ in range(int(2.0 * 60)):
             clock.advance(dt)
@@ -233,12 +233,12 @@ class TestZoomPulse:
                 break
 
         if not boosted:
-            pytest.skip("No high-band event fired in warmup period")
+            pytest.skip("No downbeat event fired in warmup period")
 
         # Tick a few frames without advancing clock much — zoom should decay
         peak = core.zoom_boost
         for _ in range(10):
-            _tick(core, dt)  # don't advance clock — no new high-band events
+            _tick(core, dt)  # don't advance clock — no new downbeat events
         assert core.zoom_boost < peak, \
             f"zoom_boost should decay: was {peak}, now {core.zoom_boost}"
 
