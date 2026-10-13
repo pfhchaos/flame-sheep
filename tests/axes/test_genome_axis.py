@@ -22,6 +22,7 @@ from flame_sheep_audio._types import BandState
 from flame_sheep_audio.mode import Mode
 
 from viz_helpers import trivial_genome
+from tests.sim import run_ticks
 
 
 # ----------------------------------------------------------------
@@ -107,12 +108,9 @@ class TestMorphCycle:
 
     def test_idle_dwell_releases_on_timeout(self, axis):
         audio = _make_audio(mode='idle')
-        clock = 1000.0
-        axis._morph.dwell_start = clock
+        axis._morph.dwell_start = 1000.0
         # DWELL_BEATS=16 at 120BPM = 8 seconds = 480 frames
-        for _ in range(600):
-            clock += 1.0 / 60
-            axis.tick(audio, 1.0 / 60, clock)
+        run_ticks(axis, audio, 600, clock0=1000.0)
         assert axis._morph.state != MorphState.DWELL
 
     def test_morphing_advances_morph_t(self, axis):

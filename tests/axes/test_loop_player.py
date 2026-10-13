@@ -31,6 +31,7 @@ import pytest
 from flame_sheep.axes._loop_player import LoopPlayer
 from flame_sheep.loops.sequence import loop_sequence, cycle_length
 from tests.scheduler.fake_library import FakeLibrary
+from tests.sim import run_until_exit
 
 STRUCTURES = ["cyclic", "palindrome", "rondo"]
 
@@ -71,20 +72,8 @@ def _expected_successor_id(ids, structure, entry_index):
     return ids[order[(pos + 1) % len(order)]]
 
 
-def run_until_exit(player) -> int:
-    """Simulate ONE loop lifetime: step the loaded loop via the real
-    ``next_in_sequence`` path until ``should_exit_loop`` fires, and return the
-    exit POSITION (loop_step). Opens the MIN_EXIT_CYCLES gate first.
-
-    The reusable "simulate a loop" primitive — use this instead of re-inlining the
-    step loop. (Promote to a shared tests module when a second file needs it.)"""
-    player._cycle_count = player.MIN_EXIT_CYCLES          # open the exit gate
-    bound = player._loop_cycle_len * (player.MIN_EXIT_CYCLES + 3)
-    for _ in range(bound):
-        if player.should_exit_loop():
-            return player.loop_step
-        player.next_in_sequence()
-    raise AssertionError("should_exit_loop never fired within the step bound")
+# `run_until_exit` — the "simulate a loop" primitive — now lives in tests.sim
+# (imported above), shared with the exit-position uniformity test below.
 
 
 @pytest.mark.parametrize("structure", STRUCTURES)
