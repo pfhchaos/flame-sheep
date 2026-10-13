@@ -1,12 +1,9 @@
-"""PLAN protocol (shader-warming.md step 3): the render ↔ worker wire format,
-the render-side A/B comparison, and the worker/driver plumbing that carries it —
-WITHOUT a real subprocess or GL.
+"""PLAN protocol (shader-warming.md): the render ↔ worker wire format and the
+worker/driver plumbing that carries it — WITHOUT a real subprocess or GL.
 
 Covers (component map #6/#7-ish for the render side, #13 IPC framing):
   * wire framing round-trip (request / target / response), incl. a serialized
     Genome inside a target;
-  * the A/B comparison logic — FOLLOW exact-match, WALK/BREAK structural —
-    which handles the worker-vs-render RNG divergence (the critical subtlety);
   * ``dispatch_line`` routing a PLAN to the PREEMPT lane (plan_queue), never the
     compile queue (resolved decision #3);
   * ``PrecompileDriver.request_plan`` serialization + the stdout reader
@@ -27,9 +24,7 @@ from flame_sheep.scheduler import plan_protocol as pp
 from flame_sheep.scheduler.plan_protocol import (
     make_plan_request, parse_plan_request,
     make_plan_response, parse_plan_response,
-    target_to_wire, target_from_wire, PlanTarget,
-    compare_follow, check_walk_structure, check_break_structure,
-    MATCH, MISMATCH, STRUCTURAL_OK, STRUCTURAL_FAIL, EMPTY,
+    target_to_wire, target_from_wire,
 )
 from flame_sheep.scheduler.precompile_worker_gl import dispatch_line
 
@@ -112,54 +107,7 @@ def test_response_roundtrip():
 
 
 # ================================================================
-# 2. A/B comparison — the RNG-divergence-aware verdicts
-# ----------------------------------------------------------------
-# FOLLOW is deterministic -> exact match. WALK/BREAK are independent-RNG picks
-# -> validate STRUCTURE (neighborhood membership), never the exact pick.
-# ================================================================
-def _target(db_id, keep_vars=frozenset()):
-    return PlanTarget(id=db_id, keep_vars=keep_vars,
-                      genome=Genome(), neighborhood=None)
-
-
-def test_compare_follow_exact_match_and_mismatch():
-    w = _target(5, frozenset({0, 1}))
-    assert compare_follow(w, 5, frozenset({0, 1})) == MATCH
-    # MUTATION GUARD: wrong id OR wrong keep_vars is a mismatch (a real planner
-    # bug — FOLLOW is supposed to be deterministic).
-    assert compare_follow(w, 6, frozenset({0, 1})) == MISMATCH
-    assert compare_follow(w, 5, frozenset({0, 2})) == MISMATCH
-
-
-def test_compare_follow_empty_and_half_present():
-    assert compare_follow(None, None, None) == EMPTY
-    assert compare_follow(None, 5, frozenset()) == MISMATCH
-    assert compare_follow(_target(5), None, None) == MISMATCH
-
-
-def test_compare_follow_ignores_keepvars_when_not_supplied():
-    # When the render side didn't stash keep_vars, id agreement alone matches.
-    assert compare_follow(_target(5, frozenset({9})), 5, None) == MATCH
-
-
-def test_check_walk_structure():
-    assert check_walk_structure(_target(2), [1, 2, 3]) == STRUCTURAL_OK
-    # MUTATION GUARD: a pick outside G's neighborhood is a structural failure
-    # (the worker planner wandered off the right graph node).
-    assert check_walk_structure(_target(9), [1, 2, 3]) == STRUCTURAL_FAIL
-    assert check_walk_structure(None, [1, 2, 3]) == EMPTY
-    assert check_walk_structure(_target(2), []) == EMPTY
-
-
-def test_check_break_structure():
-    assert check_break_structure(_target(3), [3, 7]) == STRUCTURAL_OK
-    assert check_break_structure(_target(5), [3, 7]) == STRUCTURAL_FAIL
-    assert check_break_structure(None, [3]) == EMPTY
-    assert check_break_structure(_target(3), []) == EMPTY
-
-
-# ================================================================
-# 3. dispatch_line — PLAN goes to the preempt lane, not the compile queue
+# 2. dispatch_line — PLAN goes to the preempt lane, not the compile queue
 # ================================================================
 class _RecordingCompileQueue:
     def __init__(self):
@@ -203,7 +151,7 @@ def test_dispatch_plan_without_queue_is_unknown():
 
 
 # ================================================================
-# 4. Driver — request serialization + stdout response dispatch
+# 3. Driver — request serialization + stdout response dispatch
 # ----------------------------------------------------------------
 # Decomposition: simple-integration on the real PrecompileDriver with NO
 # subprocess — a FakeProc captures stdin / scripts stdout. GPU-free.
@@ -243,7 +191,7 @@ def test_stdout_loop_dispatches_plan_response():
 
 
 # ================================================================
-# 5. PlanCache — the render-side target slot (step 4, stage S1)
+# 4. PlanCache — the render-side target slot (step 4, stage S1)
 # ================================================================
 #
 # Spec: the worker answers PLANs async on the reader thread; the move path reads

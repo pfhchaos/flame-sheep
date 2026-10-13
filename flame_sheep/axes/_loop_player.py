@@ -1,20 +1,17 @@
-"""Loop player — loop sequence, graph walk, prefetch, and loop progression.
+"""Loop player — loop sequence, graph walk, and loop progression.
 
 Owns the loop lifecycle: loading, stepping, cycle counting, history tracking,
 graph-based next-loop selection, and the loop exit probability model.
-Also handles genome prefetch for non-loop (graph walk) mode.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 from collections import deque
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from flame_sheep.config import cfg
 from flame_sheep.loops import loop_sequence, cycle_length
 from flame_sheep.genome import Genome
 
@@ -48,7 +45,7 @@ def follow_after(loop_genomes: list, structure: str, loop_step: int):
 
 
 class LoopPlayer:
-    """Manages loop playback, graph walk, and genome prefetch."""
+    """Manages loop playback and graph walk."""
 
     LOOP_HISTORY_SIZE = 8
     MIN_EXIT_CYCLES = 3  # Minimum full cycles before exit probability kicks in
@@ -73,10 +70,6 @@ class LoopPlayer:
         # once per loop entry in _start_loop. should_exit_loop fires when
         # _loop_step lands on it (after MIN_EXIT_CYCLES). Uniform exit POSITION.
         self._exit_at: int = 0
-
-        # Prefetch (for non-loop graph walk mode)
-        self._next_genome: Genome | None = None
-        self._genome_lock = threading.Lock()
 
     @property
     def has_loop(self) -> bool:
@@ -211,20 +204,15 @@ class LoopPlayer:
         return target
 
     def swap_next(self, current_genome: Genome) -> Genome:
-        """Get next genome — from loop sequence or prefetch/factory."""
+        """Get next genome — from loop sequence, or a fresh factory genome in
+        no-loop mode (interrupt paths: accept_handoff / force_swap). The steady
+        no-loop move path is _walk_pick / _graph_walk_next, not this."""
         if self._loop_genomes:
             return self.next_in_sequence()
-        else:
-            with self._genome_lock:
-                if self._next_genome is not None:
-                    target = self._next_genome
-                    self._next_genome = None
-                else:
-                    target = self._genome_factory()
-            self._prefetch_genome(current_genome)
-            from flame_sheep.axes.genome_axis import _describe_genome
-            log.debug(f"[genome] {_describe_genome(target)}")
-            return target
+        target = self._genome_factory()
+        from flame_sheep.axes.genome_axis import _describe_genome
+        log.debug(f"[genome] {_describe_genome(target)}")
+        return target
 
     def should_exit_loop(self) -> bool:
         """Loop progression: PICK-THE-EXIT-NODE. After MIN_EXIT_CYCLES, exit the
@@ -249,15 +237,6 @@ class LoopPlayer:
                      f"exit_at={self._exit_at})")
             return True
         return False
-
-    def _load_top_loop(self, current_genome: Genome) -> Genome | None:
-        """Load the best available loop at startup."""
-        if self._lib is None or self._lib.loop_count() < 1:
-            self._loop_genomes = []
-            self.active_loop_id = None
-            self._prefetch_genome(current_genome)
-            return None
-        return self.next_loop(current_genome)
 
     def _start_loop(self, loop_id: int, current_genome: Genome,
                     entry_genome_id: int | None = None) -> Genome:
@@ -333,19 +312,3 @@ class LoopPlayer:
                 best_idx = i
 
         return best_idx
-
-    def _prefetch_genome(self, current_genome: Genome) -> None:
-        """Background-prefetch next genome for non-loop mode."""
-        current_snapshot = current_genome
-        factory = self._genome_factory
-        min_dist = cfg.drift.min_genome_distance
-
-        def _gen():
-            for _ in range(20):
-                g = factory()
-                if g.distance(current_snapshot) >= min_dist:
-                    break
-            with self._genome_lock:
-                self._next_genome = g
-
-        threading.Thread(target=_gen, daemon=True).start()

@@ -436,7 +436,7 @@ class TestPickRelocation:
     def test_arrival_hook_fires_at_commit(self, axis_with_lib):
         axis = axis_with_lib
         arrivals = []
-        axis.set_plan_hook(lambda g, lid, step, exp: arrivals.append(
+        axis.set_plan_hook(lambda g, lid, step: arrivals.append(
             getattr(g, 'db_id', None)))
         self._complete_morph(axis, clock=1000.0)        # arrive
         assert arrivals, "arrival hook must fire at the morph-complete commit"

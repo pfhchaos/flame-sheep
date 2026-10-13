@@ -212,29 +212,17 @@ def _run_wallpaper(audio_device: str | int | None, test_audio: bool,
         available = False
         def sample(self): return None
 
-    # --- Step-3 shader-warming A/B verification (PLAN protocol) ---
+    # --- Shader-warming PLAN protocol ---
     # The worker's planner computes the 3 next-move targets (FOLLOW/BREAK/WALK)
-    # from each arrival genome and ships them back; here we COMPARE them against
-    # the render thread's own picks WITHOUT consuming them for the actual swap
-    # (authority stays render-side until step 4). The only visible effect is new
-    # [plan-ab] log lines. All of this runs on the driver's stdout reader
-    # thread — NEVER the render thread — so the (DB-touching) compare can't tax
-    # frames, matching the _prewarm_compare_pair precedent.
+    # from each arrival genome and ships them back; the render thread consumes
+    # them live at move time (via the PlanCache the genome axis reads).
     from ..scheduler.plan_coordinator import PlanCoordinator
 
-    def _ab_lib_factory():
-        """Open a reader-thread-local Library for the A/B neighborhood checks —
-        its own thread-local SQLite conn, independent of the render thread's lib
-        (that independence is the point of the A/B check)."""
-        from ..storage import Library as _Library
-        return _Library()
-
     # Render-side PLAN coordination (shader-warming S2-0b, extracted from the old
-    # closures): request ids + stash, the PlanCache the move path reads (S3+),
-    # and the step-3 A/B compare/log. `.driver` is wired after the driver is
-    # built (below). on_arrival runs on the render thread; handle_response on the
-    # driver's stdout reader thread — never the render thread.
-    _plan_coord = PlanCoordinator(ab_lib_factory=_ab_lib_factory, logger=log)
+    # closures): request ids + the PlanCache the move path reads. `.driver` is
+    # wired after the driver is built (below). on_arrival runs on the render
+    # thread; handle_response on the driver's stdout reader thread.
+    _plan_coord = PlanCoordinator(logger=log)
 
     try:
         # Policy with unavailable sampler stays in RUN forever — see

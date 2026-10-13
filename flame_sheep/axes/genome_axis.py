@@ -97,11 +97,10 @@ class GenomeAxis:
         self.rng = rng or np.random.default_rng()
         self._is_pipeline_ready = is_pipeline_ready
         self._on_pipeline_request = on_pipeline_request
-        # Step-3 shader-warming A/B hook: called at each loop-mode arrival, just
-        # before the render-side sequence advances, so the wallpaper can fire a
-        # PLAN request to the worker and later compare the worker's targets
-        # against its own. Default None → no-op (behavior unchanged).
-        self._on_arrival: Callable[[Genome, int | None, int, Genome | None], None] | None = None
+        # Shader-warming arrival hook: called at each loop-mode arrival so the
+        # wallpaper can fire a PLAN request to the worker (which then computes
+        # this arrival's FOLLOW/BREAK/WALK targets). Default None → no-op.
+        self._on_arrival: Callable[[Genome, int | None, int], None] | None = None
         # Step-4 S3: the worker's pre-decided-target provider. get_target(
         # arrival_id, branch) -> Genome | None (None = not answered yet -> defer).
         # When None (precompile unavailable), FOLLOW falls back to the render-side
@@ -147,14 +146,14 @@ class GenomeAxis:
         # --- Rotation ---
         self._rotation = RotationDriver()
 
-        # Boot: load loop or start prefetch
+        # Boot: load a loop if one is available. No-loop mode needs no boot
+        # prefetch — the worker (or _graph_walk_next fallback) supplies the next
+        # target at move time.
         if lib is not None and lib.loop_count() > 0:
             target = self._loop.next_loop(self.current_genome)
             if target is not None:
                 self.target_genome = target
                 self._morph.start_morph()
-        else:
-            self._loop._prefetch_genome(self.current_genome)
 
     # --- Properties ---
 
@@ -459,13 +458,13 @@ class GenomeAxis:
 
     def set_plan_hook(
             self,
-            on_arrival: Callable[[Genome, int | None, int, Genome | None], None]
+            on_arrival: Callable[[Genome, int | None, int], None]
             ) -> None:
-        """Late-bind the step-3 PLAN/A-B arrival hook (wired by the wallpaper
-        after the precompile driver exists). ``on_arrival(arrival_genome,
-        loop_id, loop_step, expected_follow)`` fires at each loop-mode arrival.
-        Purely observational — it must not mutate axis state (step 3 keeps target
-        authority render-side)."""
+        """Late-bind the PLAN arrival hook (wired by the wallpaper after the
+        precompile driver exists). ``on_arrival(arrival_genome, loop_id,
+        loop_step)`` fires at each loop-mode arrival so the worker can compute
+        this arrival's targets. Purely observational — it must not mutate axis
+        state."""
         self._on_arrival = on_arrival
 
     def set_plan_provider(
@@ -478,26 +477,23 @@ class GenomeAxis:
         self._plan_provider = get_target
 
     def _emit_arrival(self) -> None:
-        """Fire the step-3 arrival hook, if wired, at a loop-mode arrival. Called
-        BEFORE the sequence advances so ``loop_step`` is the position just
-        arrived at and ``peek_next_in_sequence`` is the upcoming FOLLOW. Guarded
-        to a real db_id (the planner keys off the arrival id); lerp intermediates
-        (centroid/section swaps, db_id None) are skipped.
+        """Fire the arrival hook, if wired, at a loop-mode arrival. Called BEFORE
+        the sequence advances so ``loop_step`` is the position just arrived at.
+        Guarded to a real db_id (the planner keys off the arrival id); lerp
+        intermediates (centroid/section swaps, db_id None) are skipped.
 
         Fires in NO-LOOP mode too (S4a): a populated-but-no-loop arrival with a
         real db_id gives the worker an id to plan WALK from (loop_id=None,
-        loop_step=0, expected_follow = peek → None with no loop). This closes the
-        bootstrap-stage-1 gap where idle/energy with no loop would otherwise never
-        get a worker WALK and would DB on the render thread."""
+        loop_step=0). This closes the bootstrap-stage-1 gap where idle/energy with
+        no loop would otherwise never get a worker WALK and would DB on the render
+        thread."""
         if self._on_arrival is None:
             return
         g = self.current_genome
         if g is None or getattr(g, 'db_id', None) is None:
             return
         try:
-            expected_follow = self._loop.peek_next_in_sequence()
-            self._on_arrival(g, self._loop.active_loop_id,
-                             self._loop.loop_step, expected_follow)
+            self._on_arrival(g, self._loop.active_loop_id, self._loop.loop_step)
         except Exception:
             log.exception('[genome-axis] arrival hook failed')
 
