@@ -710,28 +710,25 @@ class TestGenomeAxisModes:
             f"Mode change caused a visual discontinuity: {before.distance(after):.6f}"
 
     def test_beat_releases_dwell(self):
-        """In beat mode, a downbeat event should release dwell."""
-        axis = self._make()
+        """In beat mode, a kick (downbeat-role band) releases a held dwell.
+
+        Was previously vacuous: its only assertion sat inside `if state == DWELL`,
+        so it passed without checking anything whenever the axis wasn't in dwell at
+        that point. Now the precondition is driven deterministically and the
+        release is asserted UNCONDITIONALLY. (The state is set directly rather than
+        by switching INTO beat, because entering beat can itself trigger
+        next_loop -> MORPHING and mask the very kick-release under test.)
+        """
         from flame_sheep.axes._morph_cycle import MorphState
-        # Start morphing by advancing past dwell in idle
-        dt = 1 / 60
-        idle = _audio(rms=0.0, mode='idle')
-        clock = run_ticks(axis, idle, 2000)
-        # Advance until morph completes and enters dwell
-        clock = run_ticks(axis, idle, 2000, clock0=clock)
+        axis = self._make()
+        axis._mode = Mode.BEAT
+        axis._morph.state = MorphState.DWELL
+        assert axis._morph.in_dwell                       # precondition, explicit
 
-        # Switch to beat mode — if in dwell, beat should release it
-        # First enter beat mode (resets dwell wait)
-        clock += dt
-        axis.tick(_audio(rms=0.1, mode='beat'), dt, clock)
+        axis.tick(_audio(rms=0.1, mode='beat',
+                         events=[BeatEvent(kind='low', energy=0.8)]), 1 / 60, 1000.0)
 
-        # If we left dwell on mode change, we're morphing now
-        # If not, send a beat to release it
-        if axis._morph.state == MorphState.DWELL:
-            clock += dt
-            axis.tick(_audio(rms=0.1, mode='beat',
-                            events=[BeatEvent(kind='low', energy=0.8)]), dt, clock)
-            assert axis._morph.state == MorphState.MORPHING
+        assert axis._morph.state == MorphState.MORPHING   # released — unconditional
 
     def test_morph_speed_constant_across_modes(self):
         """Morph speed should be the same in all modes."""
