@@ -149,3 +149,31 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'xdg-data'))
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg-config'))
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_warm_markers(tmp_path, monkeypatch):
+    """Redirect the shader warm-marker dir to a per-test temp location so no test
+    reads the real ~/.cache/flame-sheep/warm-keys (populated by the LIVE
+    wallpaper) or writes into it.
+
+    Why patch the attribute, not the env var: pipeline_warm.WARM_DIR is computed
+    from XDG_CACHE_HOME at IMPORT, so setenv is too late. Every caller resolves
+    the marker path through this one module global at call time (is_warm,
+    mark_warm, and renderer.is_shader_warm's disk half), so one setattr isolates
+    all three at the storage layer.
+
+    Why redirect the dir rather than stub is_warm/mark_warm: it keeps the
+    functions REAL and round-trippable (mark_warm -> is_warm == True inside the
+    sandbox), so the warm PATH stays testable; stubbing the function would throw
+    away the logic under test. Without this, a test touching the real marker dir
+    is non-hermetic — is_warm flips with whatever the running wallpaper has
+    compiled on this machine, exactly the cross-run leak class _isolate_data_dir
+    fixes for AGC state. The per-test no_warm / mark_warm patches now sit on top
+    of this as belt-and-suspenders rather than being load-bearing."""
+    from flame_sheep.rendering.vk import pipeline_warm
+    warm_dir = tmp_path / 'cache' / 'flame-sheep' / 'warm-keys'
+    warm_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'cache'))
+    monkeypatch.setattr(pipeline_warm, 'WARM_DIR', warm_dir)
+    yield
