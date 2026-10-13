@@ -196,7 +196,7 @@ class GenomeAxis:
         # --- Centroid swap (ENERGY mode only) ---
         # A centroid/timbral shift is ENERGY's reactivity: WALK toward a spectral
         # neighbor. BEAT does NOT swap on centroid — its loop advances on the beat
-        # (kicks), not on timbre. (Firing in beat too was drift; it both broke the
+        # (downbeats), not on timbre. (Firing in beat too was drift; it both broke the
         # rhythm-only loop and walked onto un-warmed genomes = cold compiles.)
         if self._mode == Mode.ENERGY:
             low_density = self._role.band_state(audio, DOWNBEAT).onset_density
@@ -294,33 +294,33 @@ class GenomeAxis:
 
     def _process_beat_events(self, audio: AudioState, clock: float) -> None:
         """Process beat events in beat mode via BeatResponder."""
-        kick_band = self._role.band_for_role(DOWNBEAT)
+        downbeat_band = self._role.band_for_role(DOWNBEAT)
         for event in audio.events:
-            if event.kind == kick_band:
-                action = self._beat.process_kick(
+            if event.kind == downbeat_band:
+                action = self._beat.process_downbeat(
                     event, self._morph.in_swap_ready, self._morph.in_dwell)
                 if action == BeatAction.COMMIT_SWAP:
                     # ARRIVE: fire the PLAN request for the just-arrived genome.
                     # Loop CHANGE morphs immediately (BREAK); otherwise enter DWELL
-                    # and defer the FOLLOW pick to the dwell-release kick.
+                    # and defer the FOLLOW pick to the dwell-release downbeat.
                     self.current_genome = self.target_genome
                     self._emit_arrival()
                     if self._next_loop_pending:
                         self._next_loop_pending = False
                         self.next_loop()
                         self._morph.start_morph()
-                        log.debug(f'[swap on beat] next loop pending, kick energy={event.energy:.2f}')
+                        log.debug(f'[swap on beat] next loop pending, downbeat energy={event.energy:.2f}')
                     else:
                         self._morph.commit_swap(clock)
-                        log.debug(f'[arrive on beat] kick energy={event.energy:.2f}')
+                        log.debug(f'[arrive on beat] downbeat energy={event.energy:.2f}')
                 elif action == BeatAction.RELEASE_DWELL:
-                    # DEPART on the kick: pick the steady FOLLOW/WALK target, morph.
+                    # DEPART on the downbeat: pick the steady FOLLOW/WALK target, morph.
                     # If the worker hasn't answered, DEFER — stay dwelling, retry
-                    # on the next kick.
+                    # on the next downbeat.
                     if self._pick_next_target():
                         self._morph.release_dwell()
             elif event.kind == self._role.band_for_role(BACKBEAT):
-                action = self._beat.process_downbeat(
+                action = self._beat.process_backbeat(
                     event, clock, audio, self._lib is not None)
                 if action == BeatAction.SECTION_CHANGE:
                     self.current_genome = self.current_genome.lerp(
@@ -504,7 +504,7 @@ class GenomeAxis:
 
     def _pick_next_target(self) -> bool:
         """Pick the next steady-cycle target at DEPARTURE (dwell-release / the
-        release-kick). Movement is MODE-keyed: BEAT follows a loop (loops encode
+        release-downbeat). Movement is MODE-keyed: BEAT follows a loop (loops encode
         rhythmic cadence); IDLE/ENERGY one-step WALK (no cadence to follow, and
         walking surfaces non-loop genomes for voting — DECISIONS 2026-10-12).
         Returns False iff the pick DEFERRED (worker not answered / shader not

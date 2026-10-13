@@ -1,4 +1,4 @@
-"""Zoom axis — downbeat (kick) events drive a zoom pulse that decays over time."""
+"""Zoom axis — downbeat events drive a zoom pulse that decays over time."""
 
 from __future__ import annotations
 

@@ -123,20 +123,20 @@ class BeatResponder:
         else:
             self._break_damping = min(1.0, self._break_damping / cfg.genome.break_decay)
 
-    def process_kick(self, event: BeatEvent, morph_in_swap_ready: bool,
-                     morph_in_dwell: bool) -> BeatAction | None:
-        """Process a kick event. Returns an action or None."""
+    def process_downbeat(self, event: BeatEvent, morph_in_swap_ready: bool,
+                         morph_in_dwell: bool) -> BeatAction | None:
+        """Process a downbeat event. Returns an action or None."""
         self._last_kick_energy = event.energy
         if morph_in_swap_ready:
             return BeatAction.COMMIT_SWAP
         elif morph_in_dwell:
-            log.debug(f'[kick] dwell released, energy={event.energy:.2f}')
+            log.debug(f'[downbeat] dwell released, energy={event.energy:.2f}')
             return BeatAction.RELEASE_DWELL
         return None
 
-    def process_downbeat(self, event: BeatEvent, clock: float,
+    def process_backbeat(self, event: BeatEvent, clock: float,
                          audio: AudioState, has_lib: bool) -> BeatAction | None:
-        """Process a downbeat event. Returns an action or None."""
+        """Process a backbeat event. Returns an action or None."""
         self._last_downbeat_time = clock
         self._recent_downbeat_energy = self._recent_downbeat_energy * 0.8 + event.energy * 0.2
 

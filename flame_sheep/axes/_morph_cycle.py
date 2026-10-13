@@ -52,7 +52,7 @@ class MorphCycle:
         return self.t >= 1.0
 
     def enter_swap_ready(self) -> None:
-        """MORPHING → SWAP_READY (beat mode: wait for kick to commit)."""
+        """MORPHING → SWAP_READY (beat mode: wait for downbeat to commit)."""
         self.state = MorphState.SWAP_READY
         log.debug('[morph] complete, waiting for beat to swap')
 
